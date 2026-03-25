@@ -34,8 +34,8 @@ try:
         'critic_domain': 'central_critic',
         'neural_network': 'simple_q_network',
         'use_gnn': False,
-        'actor_dims': [26],
-        'critic_dims': [91],
+        'actor_dims': 26,
+        'critic_dims': 91,
         'n_agents': 65,
         'n_actions': 3
     }
