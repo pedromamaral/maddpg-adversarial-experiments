@@ -31,7 +31,7 @@ GPUtil>=1.4.0
 
 # Data handling
 h5py>=3.8.0
-pickle5>=0.0.12
+# pickle5>=0.0.12  # Not needed for Python 3.10+ (pickle is built-in)
 
 # Configuration management
 pyyaml>=6.0

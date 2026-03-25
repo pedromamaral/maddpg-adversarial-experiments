@@ -45,7 +45,7 @@ RUN mkdir -p /workspace/data/results /workspace/data/models /workspace/logs \
     && chmod -R 777 /workspace/data /workspace/logs
 
 # Set environment variables
-ENV PYTHONPATH=/workspace/src/maddpg_clean:/workspace/src/attack_framework:$PYTHONPATH
+ENV PYTHONPATH=/workspace/src/maddpg_clean:/workspace/src/attack_framework
 ENV CUDA_VISIBLE_DEVICES=0
 
 # Create entrypoint script
