@@ -23,7 +23,7 @@
       "neural_network": "simple_q_network", 
       "use_gnn": false,
       "actor_dims": 26,
-      "critic_dims": 1888,
+      "critic_dims": 1891,
       "n_agents": 65,
       "n_actions": 3
     },
@@ -33,7 +33,7 @@
       "neural_network": "duelling_q_network",
       "use_gnn": false,
       "actor_dims": 26,
-      "critic_dims": 1888, 
+      "critic_dims": 1891, 
       "n_agents": 65,
       "n_actions": 3
     },
@@ -53,7 +53,7 @@
       "neural_network": "simple_q_network",
       "use_gnn": true,
       "actor_dims": 26,
-      "critic_dims": 1888,
+      "critic_dims": 1891,
       "n_agents": 65,
       "n_actions": 3
     },
@@ -63,7 +63,7 @@
       "neural_network": "duelling_q_network",
       "use_gnn": true,
       "actor_dims": 26,
-      "critic_dims": 1888,
+      "critic_dims": 1891,
       "n_agents": 65,
       "n_actions": 3
     },
