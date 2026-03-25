@@ -13,7 +13,7 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # Check if nvidia-docker/nvidia-container-runtime is available
-if ! docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu20.04 nvidia-smi &> /dev/null; then
+if ! docker run --rm --gpus all pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" &> /dev/null; then
     echo "❌ NVIDIA Docker not working. Check nvidia-container-runtime installation."
     echo "🛠️  Install with: sudo apt install nvidia-container-runtime"
     exit 1
