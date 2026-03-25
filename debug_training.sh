@@ -31,9 +31,13 @@ try:
     print('🧪 Testing MADDPG variant creation...')
     variant_config = {
         'name': 'CC-Simple',
-        'critic_type': 'central_critic',
-        'network_type': 'simple_q_network',
-        'use_gnn': False
+        'critic_domain': 'central_critic',
+        'neural_network': 'simple_q_network',
+        'use_gnn': False,
+        'actor_dims': [26],
+        'critic_dims': [91],
+        'n_agents': 65,
+        'n_actions': 3
     }
     
     maddpg, network_engine, network_env = runner.create_maddpg_variant(variant_config)
