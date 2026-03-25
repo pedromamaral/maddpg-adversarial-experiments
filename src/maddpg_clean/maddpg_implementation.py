@@ -446,23 +446,55 @@ class MADDPG:
         states_ = torch.tensor(states_, dtype=torch.float).to(device)
         dones = torch.tensor(dones).to(device)
         
+        # Prepare data based on critic type
+        if self.critic_type == 'central_critic':
+            # Central critic: concatenate all agents' states and actions
+            all_states = states.view(batch_size, -1)  # Flatten all agent states
+            all_actions = actions.view(batch_size, -1)  # Flatten all agent actions
+            all_states_ = states_.view(batch_size, -1)  # Flatten all next states
+            
         # Train each agent
         for agent_idx, agent in enumerate(self.agents):
-            # Current agent's data
+            # Current agent's individual data
             agent_states = states[:, agent_idx, :]
-            agent_actions = actions[:, agent_idx, :]
             agent_rewards = rewards[:, agent_idx]
             agent_states_ = states_[:, agent_idx, :]
             agent_dones = dones[:, agent_idx]
             
-            # Critic loss
-            with torch.no_grad():
-                next_actions = agent.target_actor.forward(agent_states_)
-                target_q = agent.target_critic.forward(agent_states_, next_actions)
-                target_q[agent_dones] = 0.0
-                target_q = agent_rewards.unsqueeze(1) + agent.gamma * target_q
+            if self.critic_type == 'central_critic':
+                # Central critic uses all agents' data
+                critic_states = all_states
+                critic_actions = all_actions
+                critic_states_ = all_states_
+                
+                # Get next actions from all agents for target Q computation
+                with torch.no_grad():
+                    next_actions_list = []
+                    for other_agent in self.agents:
+                        other_agent_states_ = states_[:, self.agents.index(other_agent), :]
+                        next_action = other_agent.target_actor.forward(other_agent_states_)
+                        next_actions_list.append(next_action)
+                    next_actions_all = torch.cat(next_actions_list, dim=1)
+                    
+                    target_q = agent.target_critic.forward(critic_states_, next_actions_all)
+                    target_q[agent_dones] = 0.0
+                    target_q = agent_rewards.unsqueeze(1) + agent.gamma * target_q
+                
+                current_q = agent.critic.forward(critic_states, critic_actions)
+                
+            else:  # local_critic
+                # Local critic uses only this agent's data
+                agent_actions = actions[:, agent_idx, :]
+                
+                with torch.no_grad():
+                    next_actions = agent.target_actor.forward(agent_states_)
+                    target_q = agent.target_critic.forward(agent_states_, next_actions)
+                    target_q[agent_dones] = 0.0
+                    target_q = agent_rewards.unsqueeze(1) + agent.gamma * target_q
+                
+                current_q = agent.critic.forward(agent_states, agent_actions)
             
-            current_q = agent.critic.forward(agent_states, agent_actions)
+            # Critic loss (same for both types)
             critic_loss = F.mse_loss(current_q, target_q)
             
             # Update critic
@@ -470,9 +502,16 @@ class MADDPG:
             critic_loss.backward()
             agent.critic.optimizer.step()
             
-            # Actor loss
+            # Actor loss (always uses local data)
             predicted_actions = agent.actor.forward(agent_states)
-            actor_loss = -agent.critic.forward(agent_states, predicted_actions).mean()
+            if self.critic_type == 'central_critic':
+                # For actor update, need to construct full action vector with predicted action
+                all_actions_for_actor = actions.clone()
+                all_actions_for_actor[:, agent_idx, :] = predicted_actions
+                all_actions_for_actor_flat = all_actions_for_actor.view(batch_size, -1)
+                actor_loss = -agent.critic.forward(all_states, all_actions_for_actor_flat).mean()
+            else:
+                actor_loss = -agent.critic.forward(agent_states, predicted_actions).mean()
             
             # Update actor
             agent.actor.optimizer.zero_grad()
