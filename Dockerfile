@@ -38,7 +38,6 @@ COPY analyze_traffic_matrix.py .
 # Copy documentation  
 COPY README.md .
 COPY THESIS_GUIDANCE.md .
-COPY IMPLEMENTATION_SUMMARY.md .
 
 # Create results directory with proper permissions
 RUN mkdir -p /workspace/data/results /workspace/data/models /workspace/logs \
