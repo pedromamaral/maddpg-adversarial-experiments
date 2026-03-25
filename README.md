@@ -27,23 +27,39 @@ This repository contains everything you need:
 - **📊 Thesis-Quality Analysis**: Publication-ready plots and metrics
 - **⚙️ Automated Deployment**: One-click setup and execution
 
-## 🚀 Quick Start (Student Instructions)
+## 🚀 Quick Start (GPU Server - Docker Recommended)
 
-### 🎯 For Students: Complete Experiment in 3 Commands
+### 🎯 **Method 1: Docker (Recommended for GPU Servers)**
 
 ```bash
 # 1. Clone this repository (everything included!)
 git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
 cd maddpg-adversarial-experiments
 
-# 2. Setup environment (automated script)
-./setup_environment.sh
+# 2. Build Docker environment (one command setup)
+./docker_setup.sh
 
 # 3. Run complete experiment
+./run_experiments.sh
+```
+
+### 🖥️ **Method 2: Direct Installation (Local Development)**
+
+```bash
+# 1. Clone repository
+git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
+cd maddpg-adversarial-experiments
+
+# 2. Setup environment
+./setup_environment.sh        # If conda available
+# OR
+./setup_no_conda.sh          # If only Python/pip available
+
+# 3. Run experiments
 python standalone_experiment_runner.py --gpu 0
 ```
 
-**That's it!** No external code to clone, no buggy implementations to fix, no integration headaches.
+**🐳 Docker eliminates ALL environment issues and provides professional deployment!**
 
 ### ⚡ Quick Test Mode (5 minutes)
 
@@ -67,7 +83,16 @@ After running the experiment:
 maddpg-adversarial-experiments/          # Everything you need!
 ├── 🚀 standalone_experiment_runner.py    # Main experiment script
 ├── ⚙️  experiment_config.json             # Configuration
-├── 🛠️  setup_environment.sh               # Automated setup
+├── 🐳 Dockerfile                         # Docker environment
+├── 🛠️  docker_setup.sh                   # Docker build script
+├── 
+├── 🔧 Setup Scripts (choose your deployment):
+│   ├── setup_environment.sh             # Conda-based setup
+│   ├── setup_no_conda.sh               # Python venv setup  
+│   ├── run_container.sh                 # Docker interactive
+│   ├── run_experiments.sh               # Docker batch experiments
+│   ├── test_container.sh                # Docker testing
+│   └── run_jupyter.sh                   # Docker Jupyter Lab
 ├── 
 ├── src/                                  # Clean implementations
 │   ├── maddpg_clean/                    # 🧠 Our MADDPG implementation
@@ -76,7 +101,14 @@ maddpg-adversarial-experiments/          # Everything you need!
 │   └── attack_framework/                # 🔥 Our attack framework
 │       └── improved_fgsm_attack.py     #   └─ Corrected FGSM + metrics
 ├── 
-└── data/                               # Generated during experiments
+├── 📚 Documentation:
+│   ├── README.md                        # Main documentation  
+│   ├── DOCKER_README.md                 # Docker deployment guide
+│   ├── THESIS_GUIDANCE.md               # Academic writing guide
+│   ├── IMPLEMENTATION_SUMMARY.md        # Technical details
+│   └── DEPLOYMENT_GUIDE.md              # Multiple deployment options
+└── 
+└── data/ (created during experiments)    # Generated during experiments
     ├── models/                         # 💾 Trained model weights
     ├── results/                        # 📊 Experimental data
     └── thesis_graphs/                  # 📈 Publication plots
@@ -118,24 +150,34 @@ maddpg-adversarial-experiments/          # Everything you need!
 
 ## 🧪 Running Experiments
 
-### **Complete Experimental Pipeline**
+### **Docker Deployment (Recommended for GPU Servers)**
 
 ```bash
-# Full experiment (6-12 hours on GPU)
-python standalone_experiment_runner.py --config experiment_config.json --gpu 0
+# Complete experimental pipeline (Docker)
+./docker_setup.sh               # One-time setup
+./test_container.sh             # Verify (2 minutes)
+./run_experiments.sh            # Full experiment (6-12 hours)
 
-# Monitor progress
-./scripts/monitor_gpu.sh
+# Interactive development
+./run_container.sh              # Interactive shell
+./run_jupyter.sh                # Jupyter Lab interface
 
-# Check results
-ls data/results/latest/thesis_graphs/
+# Monitor running experiments
+./monitor.sh                    # GPU usage and progress
 ```
 
-### **Quick Test Mode**
+### **Direct Installation Deployment**
 
 ```bash
-# 5-minute validation test
+# Complete experimental pipeline (Direct)
+./setup_environment.sh          # Setup (or setup_no_conda.sh)
+python standalone_experiment_runner.py --gpu 0  # Full experiment
+
+# Quick test mode
 python standalone_experiment_runner.py --quick --gpu 0
+
+# CPU mode (for testing)
+python standalone_experiment_runner.py --gpu -1
 ```
 
 ### **Custom Configurations**
@@ -201,41 +243,121 @@ data/results/standalone_exp_20240325_143022/
 
 ## 🔧 Installation & Setup
 
-### **Prerequisites**
+### **🐳 Docker Setup (Recommended for GPU Servers)**
+
+**Prerequisites:**
+- **Docker** with **nvidia-docker** support
+- **CUDA-capable GPU** (Tesla V100, RTX series, A100)
+
+**One-command setup:**
+```bash
+./docker_setup.sh
+```
+
+This creates a complete CUDA PyTorch environment with all dependencies.
+
+### **📦 Direct Installation**
+
+**Prerequisites:**
 - **Python 3.9+** with pip/conda
 - **CUDA GPU** (recommended) or CPU
 - **8GB+ RAM** for training
-- **20GB+ storage** for complete experiments
 
-### **Automated Setup (One Command)**
-
+**Conda Setup (if available):**
 ```bash
-# Everything you need
 ./setup_environment.sh
+source activate_env.sh
 ```
 
-The setup script automatically:
-- ✅ Creates conda environment
-- ✅ Installs PyTorch with CUDA support
-- ✅ Installs all dependencies
-- ✅ Verifies GPU availability
-- ✅ Tests all implementations
+**Python venv Setup (if no conda):**
+```bash
+./setup_no_conda.sh
+source activate_env.sh
+```
 
-### **Manual Setup (If Needed)**
+### **✅ Verification**
+
+**Docker:**
+```bash
+./test_container.sh
+```
+
+**Direct Installation:**
+```bash
+python test_standalone.sh
+```
+
+## 🚀 Development Workflow
+
+### **🐳 GPU Server Deployment (Docker - Recommended)**
 
 ```bash
-# Create environment
-conda create -n maddpg-attacks python=3.9 -y
-conda activate maddpg-attacks
+# SSH to GPU server  
+ssh user@gpu-server
 
-# Install PyTorch
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Clone and setup
+git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
+cd maddpg-adversarial-experiments
+./docker_setup.sh
 
-# Install dependencies
-pip install -r requirements.txt
+# Run experiments (can disconnect SSH - runs in container)
+./run_experiments.sh
 
-# Test setup
-python test_standalone.sh
+# Check progress later
+./monitor.sh
+```
+
+### **💻 Direct Installation Deployment**
+
+```bash
+# SSH to GPU server
+ssh user@gpu-server
+
+# Clone and setup
+git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
+cd maddpg-adversarial-experiments
+./setup_environment.sh       # or ./setup_no_conda.sh
+
+# Run experiments
+nohup python standalone_experiment_runner.py --gpu 0 > experiment.log 2>&1 &
+
+# Monitor progress
+tail -f experiment.log
+```
+
+### **🔄 Collaborative Workflow**
+
+```bash
+# Student workflow (Docker)
+git clone https://github.com/supervisor/maddpg-adversarial-experiments.git
+cd maddpg-adversarial-experiments
+
+# Run your experiments
+./docker_setup.sh                    # One-time setup
+./run_experiments.sh                 # Run experiments
+
+# Results are automatically saved to host_data/
+# Commit results back if needed
+git add host_data/results/
+git commit -m "Experimental results: robustness evaluation complete"
+git push origin student-experiments
+```
+
+### **🔍 Interactive Development**
+
+```bash
+# Start interactive container
+./run_container.sh
+
+# Inside container:
+> python standalone_experiment_runner.py --quick    # Test
+> python analyze_topology.py                        # Analyze network
+> python analyze_traffic_matrix.py                  # Analyze traffic
+> jupyter lab --ip=0.0.0.0 --allow-root            # Start Jupyter
+
+# Access Jupyter from local machine (SSH tunnel):
+ssh -L 8888:localhost:8888 user@gpu-server
+# Open: http://localhost:8888
 ```
 
 ## ⚡ Performance & Optimization

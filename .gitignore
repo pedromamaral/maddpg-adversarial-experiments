@@ -13,22 +13,12 @@ TOOLS.md
 memory/
 skills/
 
-# Include only framework files
-!src/
-!*.py
-!*.json
-!*.sh
-!*.md
-!requirements.txt
-!thesis_graphs/
-!README.md
-!README_standalone.md
-!IMPLEMENTATION_SUMMARY.md
-!DEPLOYMENT_GUIDE.md
-!FINAL_SUMMARY.md
+# Docker runtime
+host_data/
+host_logs/
+.dockerignore
 
-# Exclude other generated files
-papers/
+# Python runtime
 __pycache__/
 *.pyc
 *.pyo
@@ -61,9 +51,21 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+maddpg_env/
 
-# Experiment outputs
+# Experiment outputs (these are in host_data/ for Docker)
 data/
 logs/
 checkpoints/
 models/
+results/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
