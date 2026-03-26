@@ -17,6 +17,12 @@ fi
 # Remove any stale container with the same name
 docker rm -f "$CONTAINER" 2>/dev/null || true
 
+# Ensure host_data directory exists and is writable
+if [ -d "./host_data" ] && [ ! -w "./host_data" ]; then
+    echo "Fixing permissions for host_data directory..."
+    sudo chown -R $USER:$USER ./host_data 2>/dev/null || true
+fi
+
 mkdir -p ./host_data/results ./host_data/models ./host_logs
 
 docker run -d \
