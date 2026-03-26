@@ -1,173 +1,142 @@
-# 🎯 MADDPG Adversarial Robustness Framework
+# MADDPG Adversarial Robustness Framework
 
-**Complete self-contained MADDPG adversarial robustness evaluation with Docker deployment**
+Self-contained MADDPG adversarial robustness evaluation framework, designed to run on a remote GPU server via Docker in detached mode.
 
 ---
 
-## 🚀 Quick Start
+## Prerequisites
 
-### **Method 1: Docker (Recommended - Zero Setup Issues)**
+- Remote host with Docker + NVIDIA Container Toolkit
+- Git
+
+---
+
+## Workflow
+
+### 1. Clone & build
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
+git clone https://github.com/pedromamaral/maddpg-adversarial-experiments.git
 cd maddpg-adversarial-experiments
-./docker_setup.sh         # Build environment (one-time, ~5 min)
-docker run --gpus all -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh            # Quick test (2 min)
-docker run --gpus all -d --name maddpg-full maddpg-adversarial:latest ./run_full_experiment.sh   # Complete experiments (6-12 hours)
+docker build -t maddpg-adversarial:latest .
 ```
 
-### **Method 2: Direct Installation (Advanced Users)**
+The build takes ~5 minutes and installs all dependencies inside the image.
+
+### 2. Validate (optional but recommended)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
-cd maddpg-adversarial-experiments
-./setup_no_conda.sh       # Python venv setup
-source activate_env.sh    
-python standalone_experiment_runner.py --quick --gpu 0
+./test_quick.sh
+```
+
+Launches a quick smoke-test in the background (~2 min). Check its output with:
+
+```bash
+./check_progress_quick.sh
+```
+
+Press **Ctrl-C** at any time to stop following the logs — the container keeps running.
+
+### 3. Run the full experiment
+
+```bash
+./run_full_experiment.sh
+```
+
+Launches all 6 MADDPG variants × 3 attack types in detached mode. Monitor progress with:
+
+```bash
+./check_progress_full.sh
+```
+
+### 4. Collect results
+
+Results are written to the host machine in real time via volume mounts:
+
+```
+host_data/results/          # JSON stats, CSV tables
+host_data/results/thesis_graphs/   # 300 DPI plots
+host_data/models/           # Trained model checkpoints
+```
+
+Download from a remote server with:
+
+```bash
+scp -r user@your-server:~/maddpg-adversarial-experiments/host_data/results ./results
 ```
 
 ---
 
-## 🐳 Docker Scripts
+## Scripts
 
-| Script | Purpose | Time | Usage |
-|--------|---------|------|--------|
-| `docker_setup.sh` | Build Docker environment | 5 min | One-time setup |
-| `docker run -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh` | Quick functionality test (detached) | 2 min | Starts quick test in background |
-| `docker run -d --name maddpg-full maddpg-adversarial:latest ./run_full_experiment.sh` | Complete experiments (detached) | 6-12 hrs | Starts full experiment in background |
-| `shell.sh` | Interactive development | - | Development/debugging |
+| Script | What it does |
+|--------|--------------|
+| `test_quick.sh` | Launch quick smoke-test in detached mode |
+| `run_full_experiment.sh` | Launch full experiment in detached mode |
+| `check_progress_quick.sh` | Follow logs of the quick-test container |
+| `check_progress_full.sh` | Follow logs of the full-experiment container |
 
 ---
 
-## 📊 What You Get
+## What the experiment evaluates
 
-### **🧠 6 MADDPG Variants Evaluated**
+**6 MADDPG architectural variants:**
 - Central Critic + Simple Q-Network
-- Central Critic + Duelling Q-Network  
+- Central Critic + Duelling Q-Network
 - Local Critic + Duelling Q-Network
-- All variants + Graph Neural Network enhancement
+- All three variants repeated with Graph Neural Network state pre-processing
 
-### **🔥 3 Attack Types**
-- **Packet Loss Attack**: Targets bandwidth perception
-- **Reward Minimization**: Maximizes action entropy
-- **Confusion Attack**: Pushes toward random actions
+**3 FGSM attack types** at 5 epsilon values (0.01 → 0.20):
+- Packet Loss Attack — targets bandwidth perception
+- Reward Minimization — maximises action entropy
+- Confusion Attack — pushes towards random actions
 
-### **📈 Publication-Quality Results**
-- Thesis-ready plots (300 DPI)
-- Statistical significance testing
-- Comprehensive robustness rankings
-- Complete experimental methodology
+**Outputs:** reward degradation, packet-loss increase, attack success rate, robustness score, and publication-quality plots (300 DPI).
 
 ---
 
-## 🎓 For Students
+## Performance reference
 
-### **Zero-Setup Workflow**
-```bash
-# On any GPU server with Docker:
-git clone [repo-url]
-cd maddpg-adversarial-experiments
-./docker_setup.sh && ./run_full_experiment.sh
-
-# Results automatically saved to host_data/results/
-# Thesis plots in: host_data/results/thesis_graphs/
-
-# ---
-# 📦 HOW TO OBTAIN YOUR RESULTS AFTER THE RUN
-
-# 1. List all finished containers (optional):
-docker ps -a
-
-# 2. Check logs to confirm run completion:
-docker logs -f maddpg-full     # or maddpg-quick
-
-# 3. Find all generated files and results:
-ls -lh host_data/results/
-ls -lh host_data/results/thesis_graphs/
-
-# 4. Download results (if remote server):
-# Use scp or rsync, e.g.:
-scp -r user@your-server:~/maddpg-adversarial-experiments/host_data/results ./results_local_copy
-
-# Results include: JSON stats, plots (.png/.pdf), and any experiment logs
-
-# Run in the background (detached):
-docker run --gpus all -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh
-# To see logs:
-docker logs -f maddpg-quick
-# For full experiment (detached):
-docker run --gpus all -d --name maddpg-full maddpg-adversarial:latest ./run_full_experiment.sh
-# See logs for full:
-docker logs -f maddpg-full
-```
-
-### **Complete Documentation**
-- **THESIS_GUIDANCE.md**: Academic writing guide (formal equations, methodology)
-- **Generated results**: Statistical analysis, comparison tables, discussion points
+| Hardware | Quick test | Full experiment |
+|----------|------------|-----------------|
+| RTX 3080 | ~2 min | 6–12 h |
+| RTX 2080 Ti | ~3 min | 8–15 h |
+| Tesla V100 | ~2 min | 4–8 h |
 
 ---
 
-## ⚡ Performance
-
-| Hardware | Quick Test | Single Variant | All 6 Variants |
-|----------|-----------|----------------|----------------|
-| RTX 3080 | 2 minutes | 1-2 hours | 6-12 hours |
-| RTX 2080 Ti | 3 minutes | 2-3 hours | 8-15 hours |
-| Tesla V100 | 2 minutes | 45-90 min | 4-8 hours |
-
----
-
-## 🔧 Framework Features
-
-- ✅ **Self-contained** - No external dependencies
-- ✅ **GPU optimized** - Automatic CUDA detection
-- ✅ **Reproducible** - Controlled random seeds
-- ✅ **Professional** - Industry-standard Docker deployment
-- ✅ **Academic ready** - Formal methodology and documentation
-
----
-
-## 📁 Repository Structure
+## Repository structure
 
 ```
 maddpg-adversarial-experiments/
-├── 🚀 Main Scripts
-│   ├── standalone_experiment_runner.py    # Experiment orchestrator
-│   └── experiment_config.json             # Configuration
-├── 🐳 Docker Deployment  
-│   ├── Dockerfile                         # Complete environment
-│   ├── docker_setup.sh                   # Build & setup utilities
-│   ├── test_quick.sh                      # Quick validation
-│   ├── run_full_experiment.sh            # Complete experiments
-│   └── shell.sh                          # Interactive development
-├── 🔧 Alternative Setup
-│   └── setup_no_conda.sh                 # Python venv (no Docker)
-├── 📚 Documentation
-│   ├── README.md                         # This file
-│   └── THESIS_GUIDANCE.md                # Academic writing guide
-└── 📊 Framework Implementation
-    ├── src/maddpg_clean/                 # Clean MADDPG implementation  
-    ├── src/attack_framework/             # Corrected attack framework
-    └── data/ (generated)                 # Results and models
+├── test_quick.sh                      # Launch quick test (detached)
+├── run_full_experiment.sh             # Launch full experiment (detached)
+├── check_progress_quick.sh            # Monitor quick test logs
+├── check_progress_full.sh             # Monitor full experiment logs
+├── Dockerfile                         # Complete runtime environment
+├── standalone_experiment_runner.py    # Experiment orchestrator
+├── experiment_config.json             # Hyperparameters & topology config
+├── pyproject.toml                     # Installable package definition
+├── requirements.txt                   # Pinned dependencies
+├── README.md
+├── THESIS_GUIDANCE.md                 # Academic writing guide
+└── src/
+    ├── maddpg_clean/
+    │   ├── maddpg_implementation.py   # MADDPG + agents + replay buffer
+    │   └── network_environment.py     # Network simulation environment
+    └── attack_framework/
+        └── improved_fgsm_attack.py    # FGSM attacks + evaluation + plots
 ```
 
 ---
 
-## 🎯 Key Improvements Over Original
+## Documentation
 
-### **✅ What We Fixed**
-- **Mathematical errors** in FGSM attack implementation
-- **Circular dependencies** in attack objectives  
-- **Environment compatibility** issues (conda/pip conflicts)
-- **Missing academic documentation** for thesis writing
-
-### **✅ What We Added**
-- **Complete Docker deployment** (eliminates setup issues)
-- **6 MADDPG architectural variants** with proper evaluation
-- **Comprehensive attack framework** with statistical validation
-- **Publication-quality visualization** and analysis tools
-- **Formal academic guidance** for thesis writing
-
----
-
-**Ready to deploy? Start with `./docker_setup.sh`!** 🚀
+- **THESIS_GUIDANCE.md** — formal equations, methodology narrative, and discussion points for academic writing.
+- Code is fully documented with docstrings. Enable debug logging at runtime:
+  ```bash
+  PYTHONPATH=src python -c "
+  import logging; logging.basicConfig(level=logging.DEBUG)
+  from maddpg_clean.maddpg_implementation import MADDPG
+  "
+  ```

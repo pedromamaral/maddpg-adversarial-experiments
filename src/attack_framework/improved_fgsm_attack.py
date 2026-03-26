@@ -1,364 +1,343 @@
 """
-Improved FGSM Attack Framework for MADDPG Routing
-Fixes attack objective and implements proper comparative metrics for thesis analysis
+Improved FGSM Attack Framework for MADDPG Routing.
+Fixes attack objective and implements proper comparative metrics for thesis analysis.
 """
 
+import logging
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn.functional as F
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import Dict, List, Tuple, Optional
-import pandas as pd
 from collections import defaultdict
-import json
+from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_SAVE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'thesis_graphs')
+
 
 class FGSMAttackFramework:
     """
-    Enhanced FGSM attack framework for adversarial analysis of MADDPG routing variants
+    Enhanced FGSM attack framework for adversarial analysis of MADDPG routing variants.
     """
-    
+
     def __init__(self, epsilon: float = 0.05, attack_type: str = 'packet_loss'):
         """
-        Initialize FGSM attack framework
-        
         Args:
-            epsilon: Perturbation magnitude
-            attack_type: Type of attack objective ('packet_loss', 'reward_minimize', 'confusion')
+            epsilon: Perturbation magnitude (L-inf ball radius).
+            attack_type: One of 'packet_loss', 'reward_minimize', 'confusion'.
         """
         self.epsilon = epsilon
         self.attack_type = attack_type
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Attack statistics
-        self.attack_stats = {
+
+        self.attack_stats: Dict = {
             'clean_rewards': [],
             'attacked_rewards': [],
             'clean_packet_loss': [],
             'attacked_packet_loss': [],
             'attack_success_count': 0,
-            'total_attacks': 0
+            'total_attacks': 0,
         }
-    
-    def generate_adversarial_state(self, state: np.ndarray, 
-                                 agent_network, 
-                                 network_engine, 
-                                 agent_index: int,
-                                 bandwidth_indices: Optional[List[int]] = None) -> np.ndarray:
+
+    def generate_adversarial_state(
+        self,
+        state: np.ndarray,
+        agent_network,
+        network_engine,
+        agent_index: int,
+        bandwidth_indices: Optional[List[int]] = None,
+    ) -> np.ndarray:
         """
-        Generate adversarial state using FGSM with proper attack objective
-        
+        Generate adversarial state using FGSM with proper attack objective.
+
         Args:
-            state: Original state representation
-            agent_network: Actor network of the agent
-            network_engine: Network environment engine
-            agent_index: Index of the target agent
-            bandwidth_indices: Indices of bandwidth values in state vector
-        
+            state: Original 1-D state vector.
+            agent_network: MADDPG Agent whose actor is differentiable.
+            network_engine: Network environment engine.
+            agent_index: Index of the target agent.
+            bandwidth_indices: State indices that represent bandwidth (clamped to [0,1]).
+
         Returns:
-            Adversarial state with perturbations applied
+            Perturbed state as a 1-D numpy array.
         """
-        
-        # Convert to tensor with gradient tracking
-        state_tensor = torch.tensor([state], dtype=torch.float32, requires_grad=True).to(self.device)
-        
+        state_tensor = torch.tensor(
+            [state], dtype=torch.float32, requires_grad=True
+        ).to(self.device)
+
         try:
-            # Get action probabilities from actor
             action_probs = agent_network.actor.forward(state_tensor)
-            
-            # Compute attack objective based on attack type
+
             if self.attack_type == 'packet_loss':
-                loss = self._packet_loss_objective(state_tensor, action_probs, network_engine, agent_index)
+                loss = self._packet_loss_objective(
+                    state_tensor, action_probs, network_engine, agent_index
+                )
             elif self.attack_type == 'reward_minimize':
-                loss = self._reward_minimize_objective(state_tensor, action_probs, network_engine)
+                loss = self._reward_minimize_objective(
+                    state_tensor, action_probs, network_engine
+                )
             elif self.attack_type == 'confusion':
                 loss = self._confusion_objective(action_probs)
             else:
-                raise ValueError(f"Unknown attack type: {self.attack_type}")
-            
-            # Compute gradients
+                raise ValueError(f'Unknown attack type: {self.attack_type}')
+
             loss.backward()
-            
-            # Generate perturbation using FGSM
-            state_grad = state_tensor.grad.data
-            perturbation = self.epsilon * torch.sign(state_grad)
-            
-            # Apply perturbation with domain constraints
+
+            perturbation = self.epsilon * torch.sign(state_tensor.grad.data)
             adversarial_state = state_tensor + perturbation
-            adversarial_state = self._apply_domain_constraints(adversarial_state, bandwidth_indices)
-            
+            adversarial_state = self._apply_domain_constraints(
+                adversarial_state, bandwidth_indices
+            )
             return adversarial_state.detach().cpu().numpy()[0]
-        
-        except Exception as e:
-            print(f"Attack generation failed: {e}")
-            return state  # Return original state on failure
-    
-    def _packet_loss_objective(self, state: torch.Tensor, 
-                             action_probs: torch.Tensor, 
-                             network_engine, 
-                             agent_index: int) -> torch.Tensor:
-        """
-        Attack objective: Maximize packet loss by encouraging congested path selection
-        """
-        # Extract bandwidth information from state (first n elements typically)
-        num_neighbors = network_engine.get_number_neighbors(network_engine.get_all_hosts()[agent_index])
-        
+
+        except Exception:
+            logger.exception('Attack generation failed – returning clean state.')
+            return state
+
+    # ------------------------------------------------------------------
+    # Attack objectives
+    # ------------------------------------------------------------------
+
+    def _packet_loss_objective(
+        self,
+        state: torch.Tensor,
+        action_probs: torch.Tensor,
+        network_engine,
+        agent_index: int,
+    ) -> torch.Tensor:
+        """Encourage congested-path selection to maximise packet loss."""
+        num_neighbors = network_engine.get_number_neighbors(
+            network_engine.get_all_hosts()[agent_index]
+        )
         if num_neighbors == 0:
-            return torch.tensor(0.0, requires_grad=True)
-        
-        # Get bandwidth states (normalized 0-1, where 0 = congested, 1 = free)
+            return torch.zeros(1, requires_grad=True, device=self.device)
+
         bandwidth_states = state[:, :num_neighbors]
-        
-        # Create congestion weights: higher weight for more congested links
-        # Sigmoid transformation to create smooth gradients
         congestion_weights = torch.sigmoid((1.0 - bandwidth_states) * 10.0)
-        
-        # Encourage selection of actions leading to congested paths
-        # This pushes agent toward paths with low available bandwidth
-        congestion_loss = torch.sum(action_probs * congestion_weights.mean(dim=1, keepdim=True))
-        
-        return -congestion_loss  # Maximize congestion (minimize negative)
-    
-    def _reward_minimize_objective(self, state: torch.Tensor, 
-                                 action_probs: torch.Tensor, 
-                                 network_engine) -> torch.Tensor:
-        """
-        Attack objective: Minimize expected reward
-        """
-        # Create penalty weights based on network state
-        # Higher penalties for actions that typically yield good performance
+        congestion_loss = torch.sum(
+            action_probs * congestion_weights.mean(dim=1, keepdim=True)
+        )
+        return -congestion_loss  # maximise congestion
+
+    def _reward_minimize_objective(
+        self,
+        state: torch.Tensor,
+        action_probs: torch.Tensor,
+        network_engine,
+    ) -> torch.Tensor:
+        """Minimise expected reward by penalising all actions uniformly."""
         penalty_weights = torch.ones_like(action_probs)
-        
-        # If we have access to historical performance, weight accordingly
-        # For now, use uniform penalty to encourage suboptimal actions
-        reward_loss = torch.sum(action_probs * penalty_weights)
-        
-        return reward_loss  # Minimize expected reward
-    
+        return torch.sum(action_probs * penalty_weights)
+
     def _confusion_objective(self, action_probs: torch.Tensor) -> torch.Tensor:
-        """
-        Attack objective: Maximize action uncertainty (entropy)
-        """
-        # Maximize entropy to create confused/random behavior
+        """Maximise action entropy to induce uncertain/random behaviour."""
         entropy = -torch.sum(action_probs * torch.log(action_probs + 1e-8))
-        return -entropy  # Minimize negative entropy = maximize entropy
-    
-    def _apply_domain_constraints(self, adversarial_state: torch.Tensor, 
-                                bandwidth_indices: Optional[List[int]] = None) -> torch.Tensor:
-        """
-        Apply domain-specific constraints to adversarial state
-        """
-        # Clone to avoid in-place operations
-        constrained_state = adversarial_state.clone()
-        
-        # Bandwidth values should be in [0, 1] 
+        return -entropy  # minimise negative entropy ↔ maximise entropy
+
+    # ------------------------------------------------------------------
+    # Domain constraints
+    # ------------------------------------------------------------------
+
+    def _apply_domain_constraints(
+        self,
+        adversarial_state: torch.Tensor,
+        bandwidth_indices: Optional[List[int]] = None,
+    ) -> torch.Tensor:
+        """Clamp bandwidth features to valid [0, 1] range."""
+        constrained = adversarial_state.clone()
         if bandwidth_indices is not None:
-            constrained_state[:, bandwidth_indices] = torch.clamp(
-                constrained_state[:, bandwidth_indices], 0.0, 1.0
+            constrained[:, bandwidth_indices] = torch.clamp(
+                constrained[:, bandwidth_indices], 0.0, 1.0
             )
         else:
-            # Assume first elements are bandwidth values (common pattern)
-            # Adjust this based on actual state representation
-            bandwidth_size = min(4, adversarial_state.shape[1])  # Max 4 neighbors typically
-            constrained_state[:, :bandwidth_size] = torch.clamp(
-                constrained_state[:, :bandwidth_size], 0.0, 1.0
+            bw_size = min(4, adversarial_state.shape[1])
+            constrained[:, :bw_size] = torch.clamp(
+                constrained[:, :bw_size], 0.0, 1.0
             )
-        
-        # Other state elements (destinations, flow counts) should remain as integers
-        # For now, we only constrain bandwidth values
-        
-        return constrained_state
-    
-    def update_statistics(self, clean_reward: float, attacked_reward: float,
-                         clean_packet_loss: float, attacked_packet_loss: float):
-        """Update attack effectiveness statistics"""
+        return constrained
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+
+    def update_statistics(
+        self,
+        clean_reward: float,
+        attacked_reward: float,
+        clean_packet_loss: float,
+        attacked_packet_loss: float,
+    ):
+        """Track per-step attack effectiveness statistics."""
         self.attack_stats['clean_rewards'].append(clean_reward)
         self.attack_stats['attacked_rewards'].append(attacked_reward)
         self.attack_stats['clean_packet_loss'].append(clean_packet_loss)
         self.attack_stats['attacked_packet_loss'].append(attacked_packet_loss)
         self.attack_stats['total_attacks'] += 1
-        
-        # Count as successful attack if packet loss increased or reward decreased significantly
-        if (attacked_packet_loss > clean_packet_loss * 1.1) or (attacked_reward < clean_reward * 0.9):
+        if (
+            attacked_packet_loss > clean_packet_loss * 1.1
+            or attacked_reward < clean_reward * 0.9
+        ):
             self.attack_stats['attack_success_count'] += 1
 
 
 class MADDPGRobustnessEvaluator:
-    """
-    Comprehensive evaluation framework for MADDPG variant robustness
-    """
-    
+    """Comprehensive evaluation framework for MADDPG variant robustness."""
+
     def __init__(self, maddpg_variants: Dict, network_engine):
         """
-        Initialize evaluator
-        
         Args:
-            maddpg_variants: Dictionary of MADDPG variants {'name': maddpg_instance}
-            network_engine: Network simulation engine
+            maddpg_variants: {name: maddpg_instance} mapping.
+            network_engine: Network simulation engine.
         """
         self.maddpg_variants = maddpg_variants
         self.network_engine = network_engine
-        self.results = defaultdict(lambda: defaultdict(list))
-        
-    def evaluate_attack_effectiveness(self, attack_framework: FGSMAttackFramework,
-                                   num_episodes: int = 100,
-                                   epsilon_values: List[float] = [0.01, 0.05, 0.1, 0.15, 0.2]) -> Dict:
-        """
-        Comprehensive evaluation of attack effectiveness across variants and intensities
-        """
+        self.results: Dict = defaultdict(lambda: defaultdict(list))
+
+    def evaluate_attack_effectiveness(
+        self,
+        attack_framework: FGSMAttackFramework,
+        num_episodes: int = 100,
+        epsilon_values: List[float] = None,
+    ) -> Dict:
+        """Evaluate attack effectiveness across all variants and epsilon values."""
+        if epsilon_values is None:
+            epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
+
         evaluation_results = {}
-        
         for variant_name, maddpg_agent in self.maddpg_variants.items():
-            print(f"Evaluating {variant_name}...")
+            logger.info('Evaluating %s ...', variant_name)
             variant_results = {}
-            
+
             for epsilon in epsilon_values:
-                print(f"  Testing epsilon = {epsilon}")
+                logger.info('  epsilon = %.3f', epsilon)
                 attack_framework.epsilon = epsilon
-                
-                # Run clean episodes
+
                 clean_metrics = self._run_episodes(maddpg_agent, num_episodes, attack=False)
-                
-                # Run attacked episodes
-                attacked_metrics = self._run_episodes(maddpg_agent, num_episodes, attack=True, 
-                                                    attack_framework=attack_framework)
-                
-                # Compute comparison metrics
-                comparison_metrics = self._compute_comparison_metrics(clean_metrics, attacked_metrics)
-                
+                attacked_metrics = self._run_episodes(
+                    maddpg_agent, num_episodes, attack=True,
+                    attack_framework=attack_framework,
+                )
                 variant_results[f'epsilon_{epsilon}'] = {
                     'clean': clean_metrics,
                     'attacked': attacked_metrics,
-                    'comparison': comparison_metrics
+                    'comparison': self._compute_comparison_metrics(
+                        clean_metrics, attacked_metrics
+                    ),
                 }
-            
+
             evaluation_results[variant_name] = variant_results
-        
+
         return evaluation_results
-    
-    def _run_episodes(self, maddpg_agent, num_episodes: int, attack: bool = False,
-                     attack_framework: Optional[FGSMAttackFramework] = None) -> Dict:
-        """Run episodes with or without attacks and collect metrics"""
-        
-        episode_rewards = []
-        episode_packet_losses = []
-        episode_utilization_distributions = []
-        
-        for episode in range(num_episodes):
-            # Reset environment
+
+    def _run_episodes(
+        self,
+        maddpg_agent,
+        num_episodes: int,
+        attack: bool = False,
+        attack_framework: Optional[FGSMAttackFramework] = None,
+    ) -> Dict:
+        episode_rewards, episode_packet_losses, episode_util_dists = [], [], []
+
+        for _ in range(num_episodes):
             self.network_engine.reset()
-            
-            total_reward = 0
-            total_packet_loss = 0
-            total_packets_sent = 0
-            
-            # Run episode timesteps
-            for timestep in range(256):  # Standard episode length
-                # Get states for all agents
-                states = []
+            total_reward = total_packet_loss = total_packets_sent = 0
+
+            for _ in range(256):
                 all_hosts = self.network_engine.get_all_hosts()
-                
+                states = []
                 for agent_idx, host in enumerate(all_hosts):
                     state = self.network_engine.get_state(host, 1)
-                    
-                    # Apply attack if enabled
                     if attack and attack_framework is not None:
                         state = attack_framework.generate_adversarial_state(
                             state, maddpg_agent, self.network_engine, agent_idx
                         )
-                    
                     states.append(state)
-                
-                # Choose actions
+
                 actions = maddpg_agent.choose_action(states)
-                
-                # Execute actions and get rewards
                 next_states, rewards, packet_loss_info = self._execute_actions(actions)
-                
+
                 total_reward += sum(rewards)
                 total_packet_loss += packet_loss_info['packets_lost']
                 total_packets_sent += packet_loss_info['packets_sent']
-            
-            # Record episode metrics
+
             episode_rewards.append(total_reward)
-            packet_loss_rate = total_packet_loss / max(total_packets_sent, 1) * 100
-            episode_packet_losses.append(packet_loss_rate)
-            
-            # Collect link utilization distribution
-            utilization_dist = self.network_engine.get_link_utilization_distribution()
-            episode_utilization_distributions.append(utilization_dist)
-        
+            episode_packet_losses.append(
+                total_packet_loss / max(total_packets_sent, 1) * 100
+            )
+            episode_util_dists.append(
+                self.network_engine.get_link_utilization_distribution()
+            )
+
         return {
             'rewards': episode_rewards,
             'packet_losses': episode_packet_losses,
-            'utilization_distributions': episode_utilization_distributions,
-            'mean_reward': np.mean(episode_rewards),
-            'std_reward': np.std(episode_rewards),
-            'mean_packet_loss': np.mean(episode_packet_losses),
-            'std_packet_loss': np.std(episode_packet_losses)
+            'utilization_distributions': episode_util_dists,
+            'mean_reward': float(np.mean(episode_rewards)),
+            'std_reward': float(np.std(episode_rewards)),
+            'mean_packet_loss': float(np.mean(episode_packet_losses)),
+            'std_packet_loss': float(np.std(episode_packet_losses)),
         }
-    
-    def _execute_actions(self, actions: List[int]) -> Tuple[List, List[float], Dict]:
-        """Execute actions in environment and return results"""
-        # This would integrate with your NetworkEngine
-        # For now, return mock data structure
-        rewards = [np.random.normal(50, 10) for _ in actions]  # Mock rewards
-        packet_loss_info = {
-            'packets_lost': np.random.poisson(5),
-            'packets_sent': 100
-        }
-        next_states = [np.random.random(26) for _ in actions]  # Mock next states
-        
+
+    def _execute_actions(
+        self, actions: List[int]
+    ) -> Tuple[List, List[float], Dict]:
+        """Execute actions – replace mock data with actual NetworkEngine integration."""
+        rewards = [np.random.normal(50, 10) for _ in actions]
+        packet_loss_info = {'packets_lost': np.random.poisson(5), 'packets_sent': 100}
+        next_states = [np.random.random(26) for _ in actions]
         return next_states, rewards, packet_loss_info
-    
-    def _compute_comparison_metrics(self, clean_metrics: Dict, attacked_metrics: Dict) -> Dict:
-        """Compute comparative metrics between clean and attacked performance"""
-        
-        # Reward degradation
+
+    def _compute_comparison_metrics(
+        self, clean_metrics: Dict, attacked_metrics: Dict
+    ) -> Dict:
+        clean_mean = clean_metrics['mean_reward']
         reward_degradation = (
-            (clean_metrics['mean_reward'] - attacked_metrics['mean_reward']) / 
-            clean_metrics['mean_reward'] * 100
+            (clean_mean - attacked_metrics['mean_reward']) / clean_mean * 100
+            if clean_mean != 0 else 0.0
         )
-        
-        # Packet loss increase
-        packet_loss_increase = attacked_metrics['mean_packet_loss'] - clean_metrics['mean_packet_loss']
-        
-        # Attack success rate (episodes with significant performance drop)
+        packet_loss_increase = (
+            attacked_metrics['mean_packet_loss'] - clean_metrics['mean_packet_loss']
+        )
         clean_rewards = np.array(clean_metrics['rewards'])
         attacked_rewards = np.array(attacked_metrics['rewards'])
-        successful_attacks = np.sum(attacked_rewards < clean_rewards * 0.9)
-        attack_success_rate = successful_attacks / len(clean_rewards) * 100
-        
-        # Performance variance change
+        successful_attacks = int(np.sum(attacked_rewards < clean_rewards * 0.9))
+        attack_success_rate = successful_attacks / max(len(clean_rewards), 1) * 100
+
+        clean_std = clean_metrics['std_reward']
         variance_change = (
-            (attacked_metrics['std_reward'] - clean_metrics['std_reward']) / 
-            clean_metrics['std_reward'] * 100
+            (attacked_metrics['std_reward'] - clean_std) / clean_std * 100
+            if clean_std != 0 else 0.0
         )
-        
+
         return {
             'reward_degradation_percent': reward_degradation,
             'packet_loss_increase_percent': packet_loss_increase,
             'attack_success_rate_percent': attack_success_rate,
             'variance_change_percent': variance_change,
-            'robustness_score': max(0, 100 - reward_degradation - packet_loss_increase)
+            'robustness_score': max(0.0, 100 - reward_degradation - packet_loss_increase),
         }
 
 
 class ThesisVisualizationSuite:
-    """
-    Generate publication-quality graphs for thesis inclusion
-    """
-    
-    def __init__(self, results_data: Dict, save_path: str = '/Users/pedroamaral/.openclaw/workspace/thesis_graphs'):
+    """Generate publication-quality graphs for thesis inclusion."""
+
+    def __init__(
+        self,
+        results_data: Dict,
+        save_path: str = _DEFAULT_SAVE_PATH,
+    ):
         self.results_data = results_data
-        self.save_path = save_path
+        self.save_path = os.path.abspath(save_path)
+        os.makedirs(self.save_path, exist_ok=True)
         self._setup_plotting_style()
-    
+
     def _setup_plotting_style(self):
-        """Configure matplotlib for publication-quality plots"""
         plt.style.use('seaborn-v0_8-paper')
-        sns.set_palette("husl")
-        
+        sns.set_palette('husl')
         plt.rcParams.update({
             'font.size': 12,
             'axes.titlesize': 14,
@@ -370,372 +349,278 @@ class ThesisVisualizationSuite:
             'figure.dpi': 300,
             'savefig.dpi': 300,
             'savefig.bbox': 'tight',
-            'savefig.pad_inches': 0.1
+            'savefig.pad_inches': 0.1,
         })
-    
+
     def generate_all_thesis_plots(self):
-        """Generate complete set of thesis-quality plots"""
-        
-        # 1. Architecture Robustness Comparison
         self.plot_architecture_robustness()
-        
-        # 2. Attack Intensity Analysis
         self.plot_attack_intensity_analysis()
-        
-        # 3. Performance Degradation Matrix
         self.plot_performance_degradation_matrix()
-        
-        # 4. Reward vs Packet Loss Trade-offs
         self.plot_reward_packet_loss_tradeoffs()
-        
-        # 5. GNN Impact on Robustness
         self.plot_gnn_robustness_impact()
-        
-        # 6. Attack Success Rate Analysis
         self.plot_attack_success_rates()
-        
-        print(f"All thesis plots saved to {self.save_path}")
-    
+        logger.info('All thesis plots saved to %s', self.save_path)
+
+    def _save(self, filename: str):
+        """Save current figure and close it."""
+        path = os.path.join(self.save_path, filename)
+        plt.savefig(path)
+        plt.close()
+        logger.info('Saved %s', path)
+
+    def _epsilon_values(self) -> List[float]:
+        first_variant = next(iter(self.results_data.values()))
+        return [
+            float(k.replace('epsilon_', ''))
+            for k in first_variant.keys()
+            if k.startswith('epsilon_')
+        ]
+
     def plot_architecture_robustness(self):
-        """Plot robustness comparison across MADDPG variants"""
+        epsilon_values = self._epsilon_values()
+        variants = list(self.results_data.keys())
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        variants = list(self.results_data.keys())
-        epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
-        
-        # Subplot 1: Reward degradation
+
         for variant in variants:
-            reward_degradations = []
-            for eps in epsilon_values:
-                degradation = self.results_data[variant][f'epsilon_{eps}']['comparison']['reward_degradation_percent']
-                reward_degradations.append(degradation)
-            
-            ax1.plot(epsilon_values, reward_degradations, 'o-', label=variant, linewidth=2, markersize=6)
-        
-        ax1.set_xlabel('Attack Intensity (ε)')
-        ax1.set_ylabel('Reward Degradation (%)')
-        ax1.set_title('Reward Degradation vs Attack Intensity')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Subplot 2: Packet loss increase
-        for variant in variants:
-            packet_loss_increases = []
-            for eps in epsilon_values:
-                increase = self.results_data[variant][f'epsilon_{eps}']['comparison']['packet_loss_increase_percent']
-                packet_loss_increases.append(increase)
-            
-            ax2.plot(epsilon_values, packet_loss_increases, 's-', label=variant, linewidth=2, markersize=6)
-        
-        ax2.set_xlabel('Attack Intensity (ε)')
-        ax2.set_ylabel('Packet Loss Increase (%)')
-        ax2.set_title('Packet Loss Increase vs Attack Intensity')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
+            rd = [
+                self.results_data[variant][f'epsilon_{e}']['comparison']['reward_degradation_percent']
+                for e in epsilon_values
+            ]
+            pl = [
+                self.results_data[variant][f'epsilon_{e}']['comparison']['packet_loss_increase_percent']
+                for e in epsilon_values
+            ]
+            ax1.plot(epsilon_values, rd, 'o-', label=variant, linewidth=2, markersize=6)
+            ax2.plot(epsilon_values, pl, 's-', label=variant, linewidth=2, markersize=6)
+
+        for ax, ylabel, title in [
+            (ax1, 'Reward Degradation (%)', 'Reward Degradation vs Attack Intensity'),
+            (ax2, 'Packet Loss Increase (%)', 'Packet Loss Increase vs Attack Intensity'),
+        ]:
+            ax.set_xlabel('Attack Intensity (ε)')
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
         plt.tight_layout()
-        plt.savefig(f'{self.save_path}/architecture_robustness_comparison.png')
-        plt.show()
-    
+        self._save('architecture_robustness_comparison.png')
+
     def plot_attack_intensity_analysis(self):
-        """Analyze attack effectiveness across different epsilon values"""
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        
-        epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
+        epsilon_values = self._epsilon_values()
         variants = list(self.results_data.keys())
-        
-        # Create heatmap data
-        heatmap_data = []
-        for variant in variants:
-            robustness_scores = []
-            for eps in epsilon_values:
-                score = self.results_data[variant][f'epsilon_{eps}']['comparison']['robustness_score']
-                robustness_scores.append(score)
-            heatmap_data.append(robustness_scores)
-        
-        # Create heatmap
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        heatmap_data = [
+            [
+                self.results_data[v][f'epsilon_{e}']['comparison']['robustness_score']
+                for e in epsilon_values
+            ]
+            for v in variants
+        ]
+
         im = ax.imshow(heatmap_data, cmap='RdYlBu_r', aspect='auto')
-        
-        # Set ticks and labels
         ax.set_xticks(range(len(epsilon_values)))
-        ax.set_xticklabels([f'{eps:.2f}' for eps in epsilon_values])
+        ax.set_xticklabels([f'{e:.2f}' for e in epsilon_values])
         ax.set_yticks(range(len(variants)))
         ax.set_yticklabels(variants)
-        
-        # Add colorbar
         cbar = plt.colorbar(im)
         cbar.set_label('Robustness Score', rotation=270, labelpad=20)
-        
-        # Add text annotations
         for i in range(len(variants)):
             for j in range(len(epsilon_values)):
-                text = ax.text(j, i, f'{heatmap_data[i][j]:.1f}',
-                             ha="center", va="center", color="white", fontweight='bold')
-        
+                ax.text(j, i, f'{heatmap_data[i][j]:.1f}',
+                        ha='center', va='center', color='white', fontweight='bold')
         ax.set_xlabel('Attack Intensity (ε)')
         ax.set_ylabel('MADDPG Variant')
-        ax.set_title('Robustness Score Heatmap Across Variants and Attack Intensities')
-        
+        ax.set_title('Robustness Score Heatmap')
         plt.tight_layout()
-        plt.savefig(f'{self.save_path}/attack_intensity_heatmap.png')
-        plt.show()
-    
+        self._save('attack_intensity_heatmap.png')
+
     def plot_performance_degradation_matrix(self):
-        """Create performance degradation matrix visualization"""
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
-        
+        epsilon_values = self._epsilon_values()
         variants = list(self.results_data.keys())
-        metrics = ['reward_degradation_percent', 'packet_loss_increase_percent', 
-                  'attack_success_rate_percent', 'variance_change_percent']
-        metric_names = ['Reward Degradation (%)', 'Packet Loss Increase (%)', 
-                       'Attack Success Rate (%)', 'Performance Variance Change (%)']
-        axes = [ax1, ax2, ax3, ax4]
-        
-        epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
-        
-        for idx, (metric, metric_name, ax) in enumerate(zip(metrics, metric_names, axes)):
-            # Collect data for all variants
-            for variant in variants:
-                values = []
-                for eps in epsilon_values:
-                    val = self.results_data[variant][f'epsilon_{eps}']['comparison'][metric]
-                    values.append(val)
-                
-                ax.bar([f'{eps:.2f}' for eps in epsilon_values], values, 
-                      alpha=0.7, label=variant, width=0.6/len(variants))
-            
+        metrics = [
+            ('reward_degradation_percent', 'Reward Degradation (%)'),
+            ('packet_loss_increase_percent', 'Packet Loss Increase (%)'),
+            ('attack_success_rate_percent', 'Attack Success Rate (%)'),
+            ('variance_change_percent', 'Performance Variance Change (%)'),
+        ]
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        x = np.arange(len(epsilon_values))
+        width = 0.8 / len(variants)
+
+        for ax, (metric, metric_name) in zip(axes.flat, metrics):
+            for i, variant in enumerate(variants):
+                values = [
+                    self.results_data[variant][f'epsilon_{e}']['comparison'][metric]
+                    for e in epsilon_values
+                ]
+                ax.bar(x + i * width, values, width, label=variant, alpha=0.8)
             ax.set_xlabel('Attack Intensity (ε)')
             ax.set_ylabel(metric_name)
             ax.set_title(f'{metric_name} by Variant')
+            ax.set_xticks(x + width * (len(variants) - 1) / 2)
+            ax.set_xticklabels([f'{e:.2f}' for e in epsilon_values])
             ax.legend()
             ax.grid(True, alpha=0.3)
-        
+
         plt.tight_layout()
-        plt.savefig(f'{self.save_path}/performance_degradation_matrix.png')
-        plt.show()
-    
+        self._save('performance_degradation_matrix.png')
+
     def plot_reward_packet_loss_tradeoffs(self):
-        """Plot reward vs packet loss trade-offs under attack"""
-        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-        
-        colors = sns.color_palette("husl", len(self.results_data.keys()))
-        
+        colors = sns.color_palette('husl', len(self.results_data))
+        fig, ax = plt.subplots(figsize=(10, 8))
+
         for idx, (variant, variant_data) in enumerate(self.results_data.items()):
-            clean_rewards = []
-            clean_packet_losses = []
-            attacked_rewards = []
-            attacked_packet_losses = []
-            
+            clean_r, clean_pl, att_r, att_pl = [], [], [], []
             for eps_key, eps_data in variant_data.items():
-                if 'epsilon_' in eps_key:
-                    clean_rewards.append(eps_data['clean']['mean_reward'])
-                    clean_packet_losses.append(eps_data['clean']['mean_packet_loss'])
-                    attacked_rewards.append(eps_data['attacked']['mean_reward'])
-                    attacked_packet_losses.append(eps_data['attacked']['mean_packet_loss'])
-            
-            # Plot clean performance
-            ax.scatter(clean_packet_losses, clean_rewards, 
-                      c=[colors[idx]], s=100, marker='o', 
-                      label=f'{variant} (Clean)', alpha=0.8)
-            
-            # Plot attacked performance
-            ax.scatter(attacked_packet_losses, attacked_rewards, 
-                      c=[colors[idx]], s=100, marker='x', 
-                      label=f'{variant} (Attacked)', alpha=0.8)
-            
-            # Draw arrows showing attack effect
-            for i in range(len(clean_rewards)):
-                ax.annotate('', xy=(attacked_packet_losses[i], attacked_rewards[i]),
-                           xytext=(clean_packet_losses[i], clean_rewards[i]),
-                           arrowprops=dict(arrowstyle='->', color=colors[idx], alpha=0.5))
-        
+                if not eps_key.startswith('epsilon_'):
+                    continue
+                clean_r.append(eps_data['clean']['mean_reward'])
+                clean_pl.append(eps_data['clean']['mean_packet_loss'])
+                att_r.append(eps_data['attacked']['mean_reward'])
+                att_pl.append(eps_data['attacked']['mean_packet_loss'])
+
+            ax.scatter(clean_pl, clean_r, c=[colors[idx]], s=100, marker='o',
+                       label=f'{variant} (Clean)', alpha=0.8)
+            ax.scatter(att_pl, att_r, c=[colors[idx]], s=100, marker='x',
+                       label=f'{variant} (Attacked)', alpha=0.8)
+            for cr, cpl, ar, apl in zip(clean_r, clean_pl, att_r, att_pl):
+                ax.annotate('', xy=(apl, ar), xytext=(cpl, cr),
+                            arrowprops=dict(arrowstyle='->', color=colors[idx], alpha=0.5))
+
         ax.set_xlabel('Packet Loss (%)')
         ax.set_ylabel('Average Reward')
         ax.set_title('Reward vs Packet Loss Trade-offs Under FGSM Attack')
         ax.legend()
         ax.grid(True, alpha=0.3)
-        
         plt.tight_layout()
-        plt.savefig(f'{self.save_path}/reward_packet_loss_tradeoffs.png')
-        plt.show()
-    
+        self._save('reward_packet_loss_tradeoffs.png')
+
     def plot_gnn_robustness_impact(self):
-        """Compare robustness with and without GNN integration"""
-        # This assumes you have both GNN and non-GNN results
+        epsilon_values = self._epsilon_values()
+        gnn_variants = [k for k in self.results_data if 'GNN' in k]
+        non_gnn_variants = [k for k in self.results_data if 'GNN' not in k]
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Mock data - replace with actual GNN vs non-GNN comparison
-        gnn_variants = [k for k in self.results_data.keys() if 'GNN' in k]
-        non_gnn_variants = [k for k in self.results_data.keys() if 'GNN' not in k]
-        
-        epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
-        
-        # Compare robustness scores
+
+        for variant in gnn_variants:
+            scores = [
+                self.results_data[variant][f'epsilon_{e}']['comparison']['robustness_score']
+                for e in epsilon_values
+            ]
+            ax1.plot(epsilon_values, scores, 'o-', label=variant, linewidth=2)
+        for variant in non_gnn_variants:
+            scores = [
+                self.results_data[variant][f'epsilon_{e}']['comparison']['robustness_score']
+                for e in epsilon_values
+            ]
+            ax1.plot(epsilon_values, scores, 's--', label=variant, linewidth=2)
+
         if gnn_variants and non_gnn_variants:
-            # Plot GNN vs non-GNN robustness
-            for variant in gnn_variants:
-                robustness_scores = []
-                for eps in epsilon_values:
-                    score = self.results_data[variant][f'epsilon_{eps}']['comparison']['robustness_score']
-                    robustness_scores.append(score)
-                ax1.plot(epsilon_values, robustness_scores, 'o-', label=f'{variant}', linewidth=2)
-            
-            for variant in non_gnn_variants:
-                robustness_scores = []
-                for eps in epsilon_values:
-                    score = self.results_data[variant][f'epsilon_{eps}']['comparison']['robustness_score']
-                    robustness_scores.append(score)
-                ax1.plot(epsilon_values, robustness_scores, 's--', label=f'{variant}', linewidth=2)
-        
-        ax1.set_xlabel('Attack Intensity (ε)')
-        ax1.set_ylabel('Robustness Score')
-        ax1.set_title('GNN vs Non-GNN Robustness Comparison')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Attack success rate comparison
-        if gnn_variants and non_gnn_variants:
-            gnn_success_rates = []
-            non_gnn_success_rates = []
-            
-            for eps in epsilon_values:
-                gnn_avg = np.mean([self.results_data[v][f'epsilon_{eps}']['comparison']['attack_success_rate_percent'] 
-                                  for v in gnn_variants])
-                non_gnn_avg = np.mean([self.results_data[v][f'epsilon_{eps}']['comparison']['attack_success_rate_percent'] 
-                                      for v in non_gnn_variants])
-                gnn_success_rates.append(gnn_avg)
-                non_gnn_success_rates.append(non_gnn_avg)
-            
-            ax2.plot(epsilon_values, gnn_success_rates, 'o-', label='With GNN', linewidth=2, markersize=8)
-            ax2.plot(epsilon_values, non_gnn_success_rates, 's-', label='Without GNN', linewidth=2, markersize=8)
-        
-        ax2.set_xlabel('Attack Intensity (ε)')
-        ax2.set_ylabel('Attack Success Rate (%)')
-        ax2.set_title('Attack Success Rate: GNN vs Non-GNN')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
+            gnn_sr = [
+                np.mean([self.results_data[v][f'epsilon_{e}']['comparison']['attack_success_rate_percent']
+                         for v in gnn_variants])
+                for e in epsilon_values
+            ]
+            non_gnn_sr = [
+                np.mean([self.results_data[v][f'epsilon_{e}']['comparison']['attack_success_rate_percent']
+                         for v in non_gnn_variants])
+                for e in epsilon_values
+            ]
+            ax2.plot(epsilon_values, gnn_sr, 'o-', label='With GNN', linewidth=2, markersize=8)
+            ax2.plot(epsilon_values, non_gnn_sr, 's-', label='Without GNN', linewidth=2, markersize=8)
+
+        for ax, ylabel, title in [
+            (ax1, 'Robustness Score', 'GNN vs Non-GNN Robustness'),
+            (ax2, 'Attack Success Rate (%)', 'Attack Success Rate: GNN vs Non-GNN'),
+        ]:
+            ax.set_xlabel('Attack Intensity (ε)')
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
         plt.tight_layout()
-        plt.savefig(f'{self.save_path}/gnn_robustness_impact.png')
-        plt.show()
-    
+        self._save('gnn_robustness_impact.png')
+
     def plot_attack_success_rates(self):
-        """Plot detailed attack success rate analysis"""
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        
+        epsilon_values = self._epsilon_values()
         variants = list(self.results_data.keys())
-        epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
-        
-        # Create grouped bar chart
+        fig, ax = plt.subplots(figsize=(12, 8))
         x = np.arange(len(epsilon_values))
         width = 0.8 / len(variants)
-        
+
         for i, variant in enumerate(variants):
-            success_rates = []
-            for eps in epsilon_values:
-                rate = self.results_data[variant][f'epsilon_{eps}']['comparison']['attack_success_rate_percent']
-                success_rates.append(rate)
-            
-            ax.bar(x + i * width, success_rates, width, label=variant, alpha=0.8)
-        
+            success_rates = [
+                self.results_data[variant][f'epsilon_{e}']['comparison']['attack_success_rate_percent']
+                for e in epsilon_values
+            ]
+            bars = ax.bar(x + i * width, success_rates, width, label=variant, alpha=0.8)
+            for bar, rate in zip(bars, success_rates):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
+                        f'{rate:.1f}%', ha='center', va='bottom', fontsize=9)
+
         ax.set_xlabel('Attack Intensity (ε)')
         ax.set_ylabel('Attack Success Rate (%)')
-        ax.set_title('Attack Success Rate Comparison Across MADDPG Variants')
+        ax.set_title('Attack Success Rate Across MADDPG Variants')
         ax.set_xticks(x + width * (len(variants) - 1) / 2)
-        ax.set_xticklabels([f'{eps:.2f}' for eps in epsilon_values])
+        ax.set_xticklabels([f'{e:.2f}' for e in epsilon_values])
         ax.legend()
         ax.grid(True, alpha=0.3, axis='y')
-        
-        # Add value labels on bars
-        for i, variant in enumerate(variants):
-            success_rates = []
-            for eps in epsilon_values:
-                rate = self.results_data[variant][f'epsilon_{eps}']['comparison']['attack_success_rate_percent']
-                success_rates.append(rate)
-            
-            for j, rate in enumerate(success_rates):
-                ax.text(x[j] + i * width, rate + 1, f'{rate:.1f}%', 
-                       ha='center', va='bottom', fontsize=9)
-        
         plt.tight_layout()
-        plt.savefig(f'{self.save_path}/attack_success_rates.png')
-        plt.show()
+        self._save('attack_success_rates.png')
 
 
-# Mock data for demonstration - replace with actual experimental results
-def generate_mock_results():
-    """Generate mock results for demonstration purposes"""
-    variants = ['CC-Simple', 'CC-Duelling', 'LC-Duelling', 'CC-Simple-GNN', 'CC-Duelling-GNN', 'LC-Duelling-GNN']
+def generate_mock_results() -> Dict:
+    """Generate mock results for demonstration purposes."""
+    variants = [
+        'CC-Simple', 'CC-Duelling', 'LC-Duelling',
+        'CC-Simple-GNN', 'CC-Duelling-GNN', 'LC-Duelling-GNN',
+    ]
     epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
-    
-    results = {}
+    rng = np.random.default_rng(42)  # reproducible mock
+
+    results: Dict = {}
     for variant in variants:
+        base_robustness = 85 if 'GNN' in variant else 80
+        if 'LC' in variant:
+            base_robustness += 5
+        if 'Duelling' in variant:
+            base_robustness += 3
+
         variant_results = {}
         for eps in epsilon_values:
-            # Simulate different robustness levels for different variants
-            base_robustness = 85 if 'GNN' in variant else 80
-            if 'LC' in variant:
-                base_robustness += 5  # Local critic slightly more robust
-            if 'Duelling' in variant:
-                base_robustness += 3  # Duelling architecture slightly better
-            
-            robustness_loss = eps * 100  # More loss with higher epsilon
-            robustness_score = max(20, base_robustness - robustness_loss)
-            
+            robustness_score = max(20.0, base_robustness - eps * 100)
             variant_results[f'epsilon_{eps}'] = {
                 'clean': {
-                    'mean_reward': 1400 + np.random.normal(0, 20),
-                    'mean_packet_loss': 0.5 + np.random.normal(0, 0.1)
+                    'mean_reward': 1400 + float(rng.normal(0, 20)),
+                    'mean_packet_loss': 0.5 + float(rng.normal(0, 0.1)),
                 },
                 'attacked': {
-                    'mean_reward': 1400 - eps * 200 + np.random.normal(0, 30),
-                    'mean_packet_loss': 0.5 + eps * 10 + np.random.normal(0, 0.15)
+                    'mean_reward': 1400 - eps * 200 + float(rng.normal(0, 30)),
+                    'mean_packet_loss': 0.5 + eps * 10 + float(rng.normal(0, 0.15)),
                 },
                 'comparison': {
-                    'reward_degradation_percent': eps * 15 + np.random.normal(0, 2),
-                    'packet_loss_increase_percent': eps * 20 + np.random.normal(0, 3),
-                    'attack_success_rate_percent': min(95, eps * 300 + np.random.normal(0, 5)),
-                    'variance_change_percent': eps * 25 + np.random.normal(0, 4),
-                    'robustness_score': robustness_score
-                }
+                    'reward_degradation_percent': eps * 15 + float(rng.normal(0, 2)),
+                    'packet_loss_increase_percent': eps * 20 + float(rng.normal(0, 3)),
+                    'attack_success_rate_percent': min(95.0, eps * 300 + float(rng.normal(0, 5))),
+                    'variance_change_percent': eps * 25 + float(rng.normal(0, 4)),
+                    'robustness_score': robustness_score,
+                },
             }
         results[variant] = variant_results
-    
+
     return results
 
 
-if __name__ == "__main__":
-    # Example usage and demonstration
-    print("FGSM Attack Framework for MADDPG Routing Analysis")
-    print("=" * 60)
-    
-    # Create mock results for demonstration
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    print('FGSM Attack Framework for MADDPG Routing Analysis')
+    print('=' * 60)
+
     mock_results = generate_mock_results()
-    
-    # Initialize visualization suite
     viz_suite = ThesisVisualizationSuite(mock_results)
-    
-    # Generate all thesis plots
     viz_suite.generate_all_thesis_plots()
-    
-    print("\n✅ Thesis-quality plots generated successfully!")
-    print(f"📊 Plots saved to: {viz_suite.save_path}")
-    print("\n📋 Generated plots include:")
-    print("  1. Architecture Robustness Comparison")
-    print("  2. Attack Intensity Analysis (Heatmap)")
-    print("  3. Performance Degradation Matrix") 
-    print("  4. Reward vs Packet Loss Trade-offs")
-    print("  5. GNN Impact on Robustness")
-    print("  6. Attack Success Rate Analysis")
-    
-    # Print summary statistics for thesis discussion
-    print(f"\n📈 Summary for Thesis Discussion:")
-    print(f"{'Variant':<20} {'Min Robustness':<15} {'Max Attack Success':<20}")
-    print("-" * 55)
-    
-    for variant, data in mock_results.items():
-        min_robustness = min([data[f'epsilon_{eps}']['comparison']['robustness_score'] 
-                             for eps in [0.01, 0.05, 0.1, 0.15, 0.2]])
-        max_success = max([data[f'epsilon_{eps}']['comparison']['attack_success_rate_percent'] 
-                          for eps in [0.01, 0.05, 0.1, 0.15, 0.2]])
-        print(f"{variant:<20} {min_robustness:<15.1f} {max_success:<20.1f}")
+
+    print('\nThesis-quality plots generated successfully!')
+    print(f'Plots saved to: {viz_suite.save_path}')
