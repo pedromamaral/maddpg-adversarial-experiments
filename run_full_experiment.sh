@@ -1,34 +1,32 @@
-#!/bin/bash
-# Run complete MADDPG adversarial robustness experiments
+#!/usr/bin/env bash
+# Launch the full adversarial robustness experiment in detached Docker mode.
+# Usage: ./run_full_experiment.sh
 
-echo "🚀 MADDPG Complete Experiment Runner"
-echo "===================================="
+set -euo pipefail
 
-# Check if Docker image exists
-if ! docker image inspect maddpg-adversarial:latest >/dev/null 2>&1; then
-    echo "❌ Docker image not found. Run ./docker_setup.sh first."
+IMAGE="maddpg-adversarial:latest"
+CONTAINER="maddpg-full"
+
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "[ERROR] Docker image '$IMAGE' not found."
+    echo "        Build it first: docker build -t $IMAGE ."
     exit 1
 fi
 
-# Create data directories
+# Remove any stale container with the same name
+docker rm -f "$CONTAINER" 2>/dev/null || true
+
 mkdir -p ./host_data/results ./host_data/models ./host_logs
 
-echo "🧪 Starting complete adversarial robustness evaluation..."
-echo "⏱️  Estimated time: 6-12 hours on GPU"
-echo "📁 Results will be saved to: host_data/results/"
-echo ""
-
-# Run complete experiments in container
-docker run --rm \
+docker run -d \
     --gpus all \
-    --name maddpg-experiment-full \
-    -v $(pwd)/host_data:/workspace/data \
-    -v $(pwd)/host_logs:/workspace/logs \
-    maddpg-adversarial:latest \
+    --name "$CONTAINER" \
+    -v "$(pwd)/host_data:/workspace/data" \
+    -v "$(pwd)/host_logs:/workspace/logs" \
+    "$IMAGE" \
     python standalone_experiment_runner.py --gpu 0
 
-echo ""
-echo "✅ Complete experiments finished!"
-echo "📊 Results location: host_data/results/"
-echo "📈 Thesis graphs: host_data/results/thesis_graphs/"
-echo "💾 Trained models: host_data/models/"
+echo "Full experiment started in detached mode  (container: $CONTAINER)"
+echo "Estimated runtime: 6-12 hours on a modern GPU."
+echo "Monitor progress with: ./check_progress_full.sh"
+echo "Results will appear in: host_data/results/"
