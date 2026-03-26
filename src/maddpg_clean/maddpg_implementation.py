@@ -448,9 +448,9 @@ class MADDPG:
         
         # Prepare data based on critic type
         if self.critic_type == 'central_critic':
-            # Central critic: concatenate all agents' states and actions
-            all_states = states.view(batch_size, -1)  # Flatten all agent states
-            all_actions = actions.view(batch_size, -1)  # Flatten all agent actions
+            # Central critic: concatenate all agents' states (NOT actions)
+            all_states = states.view(batch_size, -1)  # Flatten all agent states: 26*65=1690
+            all_actions = actions.view(batch_size, -1)  # Flatten all agent actions: 3*65=195
             all_states_ = states_.view(batch_size, -1)  # Flatten all next states
             
         # Train each agent
