@@ -12,8 +12,8 @@
 git clone https://github.com/YOUR_USERNAME/maddpg-adversarial-experiments.git
 cd maddpg-adversarial-experiments
 ./docker_setup.sh         # Build environment (one-time, ~5 min)
-./test_quick.sh            # Quick test (2 min)
-./run_full_experiment.sh   # Complete experiments (6-12 hours)
+docker run --gpus all -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh            # Quick test (2 min)
+docker run --gpus all -d --name maddpg-full maddpg-adversarial:latest ./run_full_experiment.sh   # Complete experiments (6-12 hours)
 ```
 
 ### **Method 2: Direct Installation (Advanced Users)**
@@ -33,8 +33,8 @@ python standalone_experiment_runner.py --quick --gpu 0
 | Script | Purpose | Time | Usage |
 |--------|---------|------|--------|
 | `docker_setup.sh` | Build Docker environment | 5 min | One-time setup |
-| `test_quick.sh` | Quick functionality test | 2 min | Verify setup works |
-| `run_full_experiment.sh` | Complete experiments | 6-12 hrs | Full robustness evaluation |
+| `docker run -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh` | Quick functionality test (detached) | 2 min | Starts quick test in background |
+| `docker run -d --name maddpg-full maddpg-adversarial:latest ./run_full_experiment.sh` | Complete experiments (detached) | 6-12 hrs | Starts full experiment in background |
 | `shell.sh` | Interactive development | - | Development/debugging |
 
 ---
@@ -71,6 +71,15 @@ cd maddpg-adversarial-experiments
 
 # Results automatically saved to host_data/results/
 # Thesis plots in: host_data/results/thesis_graphs/
+
+# Run in the background (detached):
+docker run --gpus all -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh
+# To see logs:
+docker logs -f maddpg-quick
+# For full experiment (detached):
+docker run --gpus all -d --name maddpg-full maddpg-adversarial:latest ./run_full_experiment.sh
+# See logs for full:
+docker logs -f maddpg-full
 ```
 
 ### **Complete Documentation**
