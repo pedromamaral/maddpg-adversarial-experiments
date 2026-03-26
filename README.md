@@ -72,6 +72,25 @@ cd maddpg-adversarial-experiments
 # Results automatically saved to host_data/results/
 # Thesis plots in: host_data/results/thesis_graphs/
 
+# ---
+# 📦 HOW TO OBTAIN YOUR RESULTS AFTER THE RUN
+
+# 1. List all finished containers (optional):
+docker ps -a
+
+# 2. Check logs to confirm run completion:
+docker logs -f maddpg-full     # or maddpg-quick
+
+# 3. Find all generated files and results:
+ls -lh host_data/results/
+ls -lh host_data/results/thesis_graphs/
+
+# 4. Download results (if remote server):
+# Use scp or rsync, e.g.:
+scp -r user@your-server:~/maddpg-adversarial-experiments/host_data/results ./results_local_copy
+
+# Results include: JSON stats, plots (.png/.pdf), and any experiment logs
+
 # Run in the background (detached):
 docker run --gpus all -d --name maddpg-quick maddpg-adversarial:latest ./test_quick.sh
 # To see logs:

@@ -433,7 +433,10 @@ class MADDPG:
         return actions
     
     def learn(self, batch_size: int = 256):
-        """Learn from replay buffer"""
+        """Learn from replay buffer with profiling/logging for CUDA utilization"""
+        import time
+        t_learn_start = time.time()
+
         if not self.memory.ready(batch_size):
             return
         
@@ -441,6 +444,7 @@ class MADDPG:
         states, actions, rewards, states_, dones = self.memory.sample_buffer(batch_size)
         
         device = self.agents[0].actor.device
+        logged_device_info = getattr(self, '_logged_device_info', False)
         
         # Convert to tensors
         states = torch.tensor(states, dtype=torch.float).to(device)
@@ -449,15 +453,22 @@ class MADDPG:
         states_ = torch.tensor(states_, dtype=torch.float).to(device)
         dones = torch.tensor(dones).to(device)
         
+        if not logged_device_info:
+            print(f"[MADDPG] devices -- states: {states.device}, actions: {actions.device}, rewards: {rewards.device}")
+            for idx, agent in enumerate(self.agents):
+                print(f"[MADDPG] Agent {idx} devices: actor={agent.actor.device}, critic={agent.critic.device}")
+            self._logged_device_info = True
+
         # Prepare data based on critic type
         if self.critic_type == 'central_critic':
-            # Central critic: concatenate all agents' states (NOT actions)
-            all_states = states.view(batch_size, -1)  # Flatten all agent states: 26*65=1690
-            all_actions = actions.view(batch_size, -1)  # Flatten all agent actions: 3*65=195
+            all_states = states.view(batch_size, -1)  # Flatten all agent states
+            all_actions = actions.view(batch_size, -1)  # Flatten all agent actions
             all_states_ = states_.view(batch_size, -1)  # Flatten all next states
-            
-        # Train each agent
+        
+        # Train each agent with timing
         for agent_idx, agent in enumerate(self.agents):
+            t_agent_start = time.time()
+
             # Current agent's individual data
             agent_states = states[:, agent_idx, :]
             agent_rewards = rewards[:, agent_idx]
@@ -523,7 +534,13 @@ class MADDPG:
             
             # Update target networks
             agent.update_network_parameters()
-    
+            # --- PROFILE END ---
+            duration = time.time() - t_agent_start
+            print(f"[PROFILE] Agent {agent_idx} update took {duration:.4f}s (GPU: {device})")
+
+        total_duration = time.time() - t_learn_start
+        print(f"[PROFILE] Full MADDPG.learn() call (batch {batch_size}, {len(self.agents)} agents): {total_duration:.4f}s")
+
     def store_transition(self, obs, action, reward, obs_, done):
         """Store transition in replay buffer"""
         self.memory.store_transition(obs, action, reward, obs_, done)
