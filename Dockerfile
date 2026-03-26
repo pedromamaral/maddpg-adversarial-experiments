@@ -40,7 +40,7 @@ RUN pip install -e .
 RUN mkdir -p /workspace/results /workspace/models /workspace/logs
 
 # Set Python path
-ENV PYTHONPATH=/workspace/src:$PYTHONPATH
+ENV PYTHONPATH=/workspace/src:${PYTHONPATH:-}
 ENV PYTHONUNBUFFERED=1
 
 # Default command runs the full experiment
