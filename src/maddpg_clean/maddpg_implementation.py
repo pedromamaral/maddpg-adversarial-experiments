@@ -284,7 +284,8 @@ class Agent:
         # Convert to tensor (optimized for numpy arrays)
         if isinstance(observation, list):
             observation = np.array(observation)
-        state = torch.tensor([observation], dtype=torch.float).to(self.actor.device)
+        # Add batch dimension without creating list
+        state = torch.tensor(observation, dtype=torch.float).unsqueeze(0).to(self.actor.device)
         
         # Get action probabilities
         actions = self.actor.forward(state)
