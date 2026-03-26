@@ -281,7 +281,9 @@ class Agent:
             processed_obs = self.gnn_processor.process_state(observation, topology_info)
             observation = processed_obs
         
-        # Convert to tensor
+        # Convert to tensor (optimized for numpy arrays)
+        if isinstance(observation, list):
+            observation = np.array(observation)
         state = torch.tensor([observation], dtype=torch.float).to(self.actor.device)
         
         # Get action probabilities
