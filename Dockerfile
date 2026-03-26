@@ -47,30 +47,30 @@ RUN mkdir -p /workspace/data/results /workspace/data/models /workspace/logs \
 ENV PYTHONPATH=/workspace/src/maddpg_clean:/workspace/src/attack_framework
 ENV CUDA_VISIBLE_DEVICES=0
 
-# Create entrypoint script
-RUN echo '#!/bin/bash\n\
-echo "🚀 MADDPG Adversarial Robustness Container"\n\
-echo "========================================"\n\
-echo "🐍 Python: $(python --version)"\n\
-echo "🔥 PyTorch: $(python -c \"import torch; print(torch.__version__)\")"\n\
-echo "🎯 CUDA available: $(python -c \"import torch; print(torch.cuda.is_available())\")"\n\
-if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)"; then\n\
-    echo "✅ GPU: $(python -c \"import torch; print(torch.cuda.get_device_name(0))\")"\n\
-    echo "💾 GPU Memory: $(python -c \"import torch; print(f\\\"{torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB\\\")\")"\n\
-else\n\
-    echo "⚠️  CUDA not available - using CPU"\n\
-fi\n\
-echo "📁 Workspace: /workspace"\n\
-echo "📊 Results: /workspace/data/results"\n\
-echo ""\n\
-echo "🎯 Available commands:"\n\
-echo "  python test_standalone.sh           # Test framework"\n\
-echo "  python standalone_experiment_runner.py --quick  # Quick test"\n\
-echo "  python standalone_experiment_runner.py --gpu 0  # Full experiment"\n\
-echo "  jupyter lab --ip=0.0.0.0 --allow-root         # Start Jupyter"\n\
-echo ""\n\
-exec "$@"\n\
-' > /workspace/entrypoint.sh && chmod +x /workspace/entrypoint.sh
+# Create entrypoint script (fixed quote escaping)
+RUN echo '#!/bin/bash' > /workspace/entrypoint.sh && \
+    echo 'echo "🚀 MADDPG Adversarial Robustness Container"' >> /workspace/entrypoint.sh && \
+    echo 'echo "========================================"' >> /workspace/entrypoint.sh && \
+    echo 'echo "🐍 Python: $(python --version)"' >> /workspace/entrypoint.sh && \
+    echo 'echo "🔥 PyTorch: $(python -c "import torch; print(torch.__version__)")"' >> /workspace/entrypoint.sh && \
+    echo 'echo "🎯 CUDA available: $(python -c "import torch; print(torch.cuda.is_available())")"' >> /workspace/entrypoint.sh && \
+    echo 'if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)"; then' >> /workspace/entrypoint.sh && \
+    echo '    echo "✅ GPU: $(python -c "import torch; print(torch.cuda.get_device_name(0))")"' >> /workspace/entrypoint.sh && \
+    echo '    echo "💾 GPU Memory: $(python -c "import torch; print(f\"{torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB\")")"' >> /workspace/entrypoint.sh && \
+    echo 'else' >> /workspace/entrypoint.sh && \
+    echo '    echo "⚠️  CUDA not available - using CPU"' >> /workspace/entrypoint.sh && \
+    echo 'fi' >> /workspace/entrypoint.sh && \
+    echo 'echo "📁 Workspace: /workspace"' >> /workspace/entrypoint.sh && \
+    echo 'echo "📊 Results: /workspace/data/results"' >> /workspace/entrypoint.sh && \
+    echo 'echo ""' >> /workspace/entrypoint.sh && \
+    echo 'echo "🎯 Available commands:"' >> /workspace/entrypoint.sh && \
+    echo 'echo "  python test_standalone.sh           # Test framework"' >> /workspace/entrypoint.sh && \
+    echo 'echo "  python standalone_experiment_runner.py --quick  # Quick test"' >> /workspace/entrypoint.sh && \
+    echo 'echo "  python standalone_experiment_runner.py --gpu 0  # Full experiment"' >> /workspace/entrypoint.sh && \
+    echo 'echo "  jupyter lab --ip=0.0.0.0 --allow-root         # Start Jupyter"' >> /workspace/entrypoint.sh && \
+    echo 'echo ""' >> /workspace/entrypoint.sh && \
+    echo 'exec "$@"' >> /workspace/entrypoint.sh && \
+    chmod +x /workspace/entrypoint.sh
 
 # Default command
 ENTRYPOINT ["/workspace/entrypoint.sh"]
