@@ -9,8 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Pedro Amaral", email = "" },
-]
+    { name = "Pedro Amaral" },]
 keywords = ["MADDPG", "adversarial", "deep reinforcement learning", "network routing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
