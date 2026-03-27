@@ -9,7 +9,7 @@
   },
   
   "training": {
-    "epochs": 200,
+    "epochs": 2,
     "episodes_per_epoch": 100,
     "timesteps_per_episode": 256,
     "batch_size": 256,
