@@ -75,7 +75,8 @@ class FGSMAttackFramework:
                         # Ensure actor network is in training mode for gradient computation
             # Save original training state and ensure training mode for gradient computation
             was_training = agent_network.actor.training
-            agent_network.actor.train()             action_probs = agent_network.actor(state_tensor)
+            agent_network.actor.train()             
+            action_probs = agent_network.actor(state_tensor)
 
             if self.attack_type == 'packet_loss':
                 loss = self._packet_loss_objective(
