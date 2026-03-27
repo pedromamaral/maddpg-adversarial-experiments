@@ -24,15 +24,26 @@ fi
 
 mkdir -p ./host_data/results ./host_data/models ./host_logs
 
+# Detect GPU availability
+GPU_FLAGS=""
+GPU_ARG="--gpu -1"
+if docker run --rm --gpus all "$IMAGE" nvidia-smi >/dev/null 2>&1; then
+    echo "GPU detected — running with CUDA acceleration"
+    GPU_FLAGS="--gpus all"
+    GPU_ARG="--gpu 0"
+else
+    echo "No GPU / NVIDIA runtime detected — running on CPU"
+fi
+
 docker run -d \
-    --gpus all \
+    $GPU_FLAGS \
     --name "$CONTAINER" \
     -v "$(pwd)/host_data:/workspace/data" \
     -v "$(pwd)/host_logs:/workspace/logs" \
     "$IMAGE" \
-    python standalone_experiment_runner.py --gpu 0
+    python standalone_experiment_runner.py $GPU_ARG
 
 echo "Full experiment started in detached mode  (container: $CONTAINER)"
-echo "Estimated runtime: 6-12 hours on a modern GPU."
+echo "Estimated runtime: 6-12 hours on a modern GPU (longer on CPU)."
 echo "Monitor progress with: ./check_progress_full.sh"
 echo "Results will appear in: host_data/results/"
