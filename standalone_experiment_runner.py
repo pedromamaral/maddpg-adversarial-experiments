@@ -673,6 +673,7 @@ def main():
         if args.quick:
             runner.config['training']['epochs'] = 10
             runner.config['training']['episodes_per_epoch'] = 10
+            runner.config['training']['timesteps_per_episode'] = 50          
             for attack_config in runner.config['attack_configs']:
                 attack_config['evaluation_episodes'] = 10
             logger.info("⚡ Config modified for quick testing")
