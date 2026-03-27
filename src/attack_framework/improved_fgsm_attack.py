@@ -73,8 +73,9 @@ class FGSMAttackFramework:
                         # Force gradient computation (overrides any torch.no_grad context)
             torch.set_grad_enabled(True)
                         # Ensure actor network is in training mode for gradient computation
-            agent_network.actor.train()
-            action_probs = agent_network.actor(state_tensor)
+            # Save original training state and ensure training mode for gradient computation
+            was_training = agent_network.actor.training
+            agent_network.actor.train()            action_probs = agent_network.actor(state_tensor)
 
             if self.attack_type == 'packet_loss':
                 loss = self._packet_loss_objective(
@@ -100,6 +101,9 @@ class FGSMAttackFramework:
             adversarial_state = self._apply_domain_constraints(
                 adversarial_state, bandwidth_indices
             )
+                        # Restore original training state
+            if not was_training:
+                agent_network.actor.eval()
             return adversarial_state.detach().cpu().numpy()[0]
 
         except Exception:
