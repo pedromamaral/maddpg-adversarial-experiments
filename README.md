@@ -96,3 +96,69 @@ host_data/
   models/    # Saved model checkpoints
 host_logs/   # Container stdout/stderr logs
 ```
+
+---
+
+## Generating Graphs
+
+After the experiment has finished and results are available in `host_data/results/`, pull them to your local machine and run the plotting tools. All outputs are saved to `tools/figures/` as both `.pdf` and `.png`.
+
+### Prerequisites (local machine, no Docker needed)
+
+```bash
+pip install matplotlib numpy networkx
+```
+
+### 1. Pull results from the server
+
+```bash
+scp -r user@your-server:/path/to/maddpg-adversarial-experiments/host_data/results ./host_data/results
+```
+
+### 2. Plot experiment results
+
+Generates reward curves, packet-loss comparison, and robustness-degradation figures:
+
+```bash
+python tools/plot_results.py --results host_data/results/
+```
+
+Outputs saved to `tools/figures/`:
+
+| File | Description |
+|---|---|
+| `reward_curves.pdf/.png` | Episode reward vs. training step per architecture |
+| `packet_loss_comparison.pdf/.png` | Packet loss bar chart per architecture per attack |
+| `robustness_degradation.pdf/.png` | (clean − attacked) / clean performance degradation |
+
+### 3. Plot network topology
+
+Generates figures of the 65-node service-provider topology used in the experiments:
+
+```bash
+python tools/plot_topology.py
+```
+
+Outputs saved to `tools/figures/`:
+
+| File | Description |
+|---|---|
+| `topology_full.pdf/.png` | Full 65-node service-provider graph |
+| `topology_tiers.pdf/.png` | Same graph, nodes coloured by tier |
+| `degree_distribution.pdf/.png` | Node degree histogram |
+
+### 4. Plot traffic demand model
+
+Generates figures of the traffic demand model used in the experiments:
+
+```bash
+python tools/plot_traffic_matrix.py
+```
+
+Outputs saved to `tools/figures/`:
+
+| File | Description |
+|---|---|
+| `traffic_matrix_heatmap.pdf/.png` | 65×65 empirical demand heatmap |
+| `traffic_flow_stats.pdf/.png` | Flow count, packet distribution, priority pie |
+| `traffic_source_load.pdf/.png` | Per-node outgoing flow load |
