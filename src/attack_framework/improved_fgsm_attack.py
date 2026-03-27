@@ -70,6 +70,8 @@ class FGSMAttackFramework:
         ).to(self.device)
 
         try:
+                        # Force gradient computation (overrides any torch.no_grad context)
+            torch.set_grad_enabled(True)
                         # Ensure actor network is in training mode for gradient computation
             agent_network.actor.train()
             action_probs = agent_network.actor(state_tensor)
