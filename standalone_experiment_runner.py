@@ -130,7 +130,7 @@ class StandaloneExperimentRunner:
                     # Store transition and learn
                     done = [False] * len(states)  # Continuous task
                     maddpg.store_transition(states, actions, rewards, next_states, done)
-                                        if timestep % 10 == 0:
+                    if timestep % 10 == 0:
                         maddpg.learn()
                     # Update states and metrics
                     states = next_states
