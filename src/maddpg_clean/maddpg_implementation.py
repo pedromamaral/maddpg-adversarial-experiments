@@ -432,7 +432,7 @@ class MADDPG:
             agent_reward = rewards_t[:, i]         # [B]
             agent_done = dones_t[:, i]             # [B]
 
-            with autocast(device_type='cuda', enabled=torch.cuda.is_available()):
+            with autocast(enabled=torch.cuda.is_available()):
                 # ---- Critic update ----
                 if self.critic_type == 'central_critic':
                     with torch.no_grad():
@@ -464,7 +464,7 @@ class MADDPG:
             self.scaler.step(agent.critic_optimizer)   
             logger.debug("Agent %d critic loss: %.6f", i, critic_loss.item())
 
-            with autocast(device_type='cuda', enabled=torch.cuda.is_available()):
+            with autocast(enabled=torch.cuda.is_available()):
                 # ---- Actor update ----
                 predicted_actions = agent.actor(states_t[i])
     
