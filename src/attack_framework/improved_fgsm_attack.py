@@ -70,6 +70,8 @@ class FGSMAttackFramework:
         ).to(self.device)
 
         try:
+                        # Ensure actor network is in training mode for gradient computation
+            agent_network.actor.train()
             action_probs = agent_network.actor(state_tensor)
 
             if self.attack_type == 'packet_loss':
@@ -86,6 +88,10 @@ class FGSMAttackFramework:
                 raise ValueError(f'Unknown attack type: {self.attack_type}')
 
             loss.backward()
+                        
+            # Check if gradients were computed
+            if state_tensor.grad is None:
+                raise RuntimeError("Gradients not computed. Actor network may be in eval mode or gradient flow is broken.")
 
             perturbation = self.epsilon * torch.sign(state_tensor.grad.data)
             adversarial_state = state_tensor + perturbation
