@@ -70,7 +70,7 @@ class FGSMAttackFramework:
         ).to(self.device)
 
         try:
-            action_probs = agent_network.actor.forward(state_tensor)
+            action_probs = agent_network.actor(state_tensor)
 
             if self.attack_type == 'packet_loss':
                 loss = self._packet_loss_objective(
