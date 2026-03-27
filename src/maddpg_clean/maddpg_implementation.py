@@ -4,6 +4,7 @@ Based on working components from student's code but reimplemented cleanly
 """
 
 import torch
+from torch.cuda.amp import autocast, GradScaler
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -391,6 +392,8 @@ class MADDPG:
             n_actions=n_actions,
             n_agents=n_agents,
         )
+                             # Mixed-precision scaler (no-op on CPU, ~1.5-2x speedup on GPU)
+        self.scaler = GradScaler(enabled=torch.cuda.is_available())
 
     def choose_action(self, observations, topology_info=None):
         return [
@@ -429,52 +432,55 @@ class MADDPG:
             agent_reward = rewards_t[:, i]         # [B]
             agent_done = dones_t[:, i]             # [B]
 
-            # ---- Critic update ----
-            if self.critic_type == 'central_critic':
-                with torch.no_grad():
-                    next_actions = torch.cat(
-                        [a.target_actor(states_next_t[j]) for j, a in enumerate(self.agents)],
-                        dim=1,
-                    )  # [B, n_agents*n_actions]
-                    target_q = agent.target_critic(all_states_next, next_actions)
-                    target_q[agent_done] = 0.0
-                    target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
-
-                current_q = agent.critic(all_states, all_actions_flat)
-            else:  # local critic
-                agent_states = states_t[i]
-                agent_states_next = states_next_t[i]
-                agent_actions = actions_t[:, i, :]
-
-                with torch.no_grad():
-                    next_a = agent.target_actor(agent_states_next)
-                    target_q = agent.target_critic(agent_states_next, next_a)
-                    target_q[agent_done] = 0.0
-                    target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
-
-                current_q = agent.critic(agent_states, agent_actions)
-
-            critic_loss = F.mse_loss(current_q, target_q)
+            with autocast(device_type='cuda', enabled=torch.cuda.is_available()):
+                # ---- Critic update ----
+                if self.critic_type == 'central_critic':
+                    with torch.no_grad():
+                        next_actions = torch.cat(
+                            [a.target_actor(states_next_t[j]) for j, a in enumerate(self.agents)],
+                            dim=1,
+                        )  # [B, n_agents*n_actions]
+                        target_q = agent.target_critic(all_states_next, next_actions)
+                        target_q[agent_done] = 0.0
+                        target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
+    
+                    current_q = agent.critic(all_states, all_actions_flat)
+                else:  # local critic
+                    agent_states = states_t[i]
+                    agent_states_next = states_next_t[i]
+                    agent_actions = actions_t[:, i, :]
+    
+                    with torch.no_grad():
+                        next_a = agent.target_actor(agent_states_next)
+                        target_q = agent.target_critic(agent_states_next, next_a)
+                        target_q[agent_done] = 0.0
+                        target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
+    
+                    current_q = agent.critic(agent_states, agent_actions)
+    
+                critic_loss = F.mse_loss(current_q, target_q)
             agent.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            agent.critic_optimizer.step()
+            self.scaler.scale(critic_loss).backward()
+            self.scaler.step(agent.critic_optimizer)   
             logger.debug("Agent %d critic loss: %.6f", i, critic_loss.item())
 
-            # ---- Actor update ----
-            predicted_actions = agent.actor(states_t[i])
-
-            if self.critic_type == 'central_critic':
-                actions_for_actor = actions_t.clone()
-                actions_for_actor[:, i, :] = predicted_actions
-                actor_loss = -agent.critic(
-                    all_states, actions_for_actor.view(batch_size, -1)
-                ).mean()
-            else:
-                actor_loss = -agent.critic(states_t[i], predicted_actions).mean()
-
+            with autocast(device_type='cuda', enabled=torch.cuda.is_available()):
+                # ---- Actor update ----
+                predicted_actions = agent.actor(states_t[i])
+    
+                if self.critic_type == 'central_critic':
+                    actions_for_actor = actions_t.clone()
+                    actions_for_actor[:, i, :] = predicted_actions
+                    actor_loss = -agent.critic(
+                        all_states, actions_for_actor.view(batch_size, -1)
+                    ).mean()
+                else:
+                    actor_loss = -agent.critic(states_t[i], predicted_actions).mean()
+    
             agent.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            agent.actor_optimizer.step()
+            self.scaler.scale(actor_loss).backward()
+            self.scaler.step(agent.actor_optimizer)
+            self.scaler.update()
             logger.debug("Agent %d actor loss:  %.6f", i, actor_loss.item())
 
             agent.update_network_parameters()
