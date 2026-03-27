@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -------------------------------------------------------
+# -----------------------------------------------------------
 # reset.sh — Stop containers and wipe previous results
 # Use before re-running experiments from a clean state.
-# -------------------------------------------------------
+# -----------------------------------------------------------
 
 echo "=== MADDPG Experiment Reset ==="
 echo ""
@@ -22,8 +22,11 @@ done
 echo ""
 
 # 2. Wipe previous results and logs
+# Files written inside Docker are owned by root; use sudo to remove them.
 echo "Clearing previous results and logs..."
-rm -rf host_data/results host_logs
+if [ -d host_data/results ] || [ -d host_logs ]; then
+  sudo rm -rf host_data/results host_logs
+fi
 
 # 3. Re-create clean output directories
 mkdir -p host_data/results host_data/models host_logs
@@ -35,5 +38,5 @@ echo "  Cleared            : host_data/results, host_logs"
 echo "  Preserved          : host_data/models, Docker image"
 echo ""
 echo "You can now re-run:"
-echo "  ./test_quick.sh          # quick validation"
-echo "  ./run_full_experiment.sh # full experiment"
+echo "  ./test_quick.sh           # quick validation"
+echo "  ./run_full_experiment.sh  # full experiment"
