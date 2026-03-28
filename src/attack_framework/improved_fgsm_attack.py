@@ -1,7 +1,6 @@
-\"\"\"
-Improved FGSM Attack Framework for MADDPG Routing.
-Fixes attack objective and implements proper comparative metrics for thesis analysis.
-\"\"\"
+
+#Improved FGSM Attack Framework for MADDPG Routing.
+#Fixes attack objective and implements proper comparative metrics for thesis analysis.
 
 import logging
 import os
@@ -19,16 +18,15 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SAVE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'thesis_graphs')
 
 class FGSMAttackFramework:
-    \"\"\"
-    Enhanced FGSM attack framework for adversarial analysis of MADDPG routing variants.
-    \"\"\"
+    
+    #Enhanced FGSM attack framework for adversarial analysis of MADDPG routing variants.
 
     def __init__(self, epsilon: float = 0.05, attack_type: str = 'packet_loss'):
-        \"\"\"
-        Args:
-            epsilon: Perturbation magnitude (L-inf ball radius).
-            attack_type: One of 'packet_loss', 'reward_minimize', 'confusion'.
-        \"\"\"
+ 
+        #Args:
+        #  epsilon: Perturbation magnitude (L-inf ball radius).
+        #  attack_type: One of 'packet_loss', 'reward_minimize', 'confusion'.
+
         self.epsilon = epsilon
         self.attack_type = attack_type
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -50,19 +48,19 @@ class FGSMAttackFramework:
         agent_index: int,
         bandwidth_indices: Optional[List[int]] = None,
     ) -> np.ndarray:
-        \"\"\"
-        Generate adversarial state using FGSM with proper attack objective.
+        #Generate adversarial state using FGSM with proper attack objective.
 
-        Args:
-            state: Original 1-D state vector.
-            agent_network: MADDPG Agent whose actor is differentiable.
-            network_engine: Network environment engine.
-            agent_index: Index of the target agent.
-            bandwidth_indices: State indices that represent bandwidth (clamped to [0,1]).
+        #Args:
+        #    state: Original 1-D state vector.
+        #    agent_network: MADDPG Agent whose actor is differentiable.
+        #    network_engine: Network environment engine.
+        #    agent_index: Index of the target agent.
+        #    bandwidth_indices: State indices that represent bandwidth (clamped to [0,1]).
 
-        Returns:
-            Perturbed state as a 1-D numpy array.
-        \"\"\"
+        #Returns:
+        #   Perturbed state as a 1-D numpy array.
+        
+        
         state_tensor = torch.tensor(
             [state], dtype=torch.float32, requires_grad=True
         ).to(self.device)
@@ -125,7 +123,7 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        \"\"\"Encourage congested-path selection to maximise packet loss.\"\"\"
+        #Encourage congested-path selection to maximise packet loss.
         num_neighbors = network_engine.get_number_neighbors(
             network_engine.get_all_hosts()[agent_index]
         )
@@ -146,14 +144,14 @@ class FGSMAttackFramework:
         action_probs: torch.Tensor,
         network_engine,
     ) -> torch.Tensor:
-        \"\"\"Minimise expected reward by penalising all actions uniformly.\"\"\"
+        #Minimise expected reward by penalising all actions uniformly.
         penalty_weights = torch.ones_like(action_probs)
         # To minimize reward via gradient ascent on 'loss', loss should be -reward.
         # Here we maximize penalty, which is equivalent if penalty is positive.
         return torch.sum(action_probs * penalty_weights)
 
     def _confusion_objective(self, action_probs: torch.Tensor) -> torch.Tensor:
-        \"\"\"Maximise action entropy to induce uncertain/random behaviour.\"\"\"
+        #Maximise action entropy to induce uncertain/random behaviour.
         entropy = -torch.sum(action_probs * torch.log(action_probs + 1e-8))
         return -entropy  # minimise negative entropy <-> maximise entropy
 
@@ -166,7 +164,7 @@ class FGSMAttackFramework:
         adversarial_state: torch.Tensor,
         bandwidth_indices: Optional[List[int]] = None,
     ) -> torch.Tensor:
-        \"\"\"Clamp bandwidth features to valid [0, 1] range.\"\"\"
+        #Clamp bandwidth features to valid [0, 1] range.
         constrained = adversarial_state.clone()
         if bandwidth_indices is not None:
             constrained[:, bandwidth_indices] = torch.clamp(
@@ -190,7 +188,7 @@ class FGSMAttackFramework:
         clean_packet_loss: float,
         attacked_packet_loss: float,
     ):
-        \"\"\"Track per-step attack effectiveness statistics.\"\"\"
+        #Track per-step attack effectiveness statistics.
         self.attack_stats['clean_rewards'].append(clean_reward)
         self.attack_stats['attacked_rewards'].append(attacked_reward)
         self.attack_stats['clean_packet_loss'].append(clean_packet_loss)
@@ -205,14 +203,14 @@ class FGSMAttackFramework:
 
 
 class MADDPGRobustnessEvaluator:
-    \"\"\"Comprehensive evaluation framework for MADDPG variant robustness.\"\"\"
+    #Comprehensive evaluation framework for MADDPG variant robustness.
 
     def __init__(self, maddpg_variants: Dict, network_engine):
-        \"\"\"
-        Args:
-            maddpg_variants: {name: maddpg_instance} mapping.
-            network_engine: Network simulation engine.
-        \"\"\"
+        
+        #Args:
+        #    maddpg_variants: {name: maddpg_instance} mapping.
+        #    network_engine: Network simulation engine.
+        
         self.maddpg_variants = maddpg_variants
         self.network_engine = network_engine
         self.results: Dict = defaultdict(lambda: defaultdict(list))
@@ -223,7 +221,7 @@ class MADDPGRobustnessEvaluator:
         num_episodes: int = 100,
         epsilon_values: List[float] = None,
     ) -> Dict:
-        \"\"\"Evaluate attack effectiveness across all variants and epsilon values.\"\"\"
+        #Evaluate attack effectiveness across all variants and epsilon values.
         if epsilon_values is None:
             epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
 
@@ -306,7 +304,7 @@ class MADDPGRobustnessEvaluator:
     def _execute_actions(
         self, actions: List[int]
     ) -> Tuple[List, List[float], Dict]:
-        \"\"\"Execute actions - replace mock data with actual NetworkEngine integration.\"\"\"
+        #Execute actions - replace mock data with actual NetworkEngine integration.
         rewards = [np.random.normal(50, 10) for _ in actions]
         packet_loss_info = {'packets_lost': np.random.poisson(5), 'packets_sent': 100}
         next_states = [np.random.random(26) for _ in actions]
@@ -347,7 +345,7 @@ class MADDPGRobustnessEvaluator:
 
 
 class ThesisVisualizationSuite:
-    \"\"\"Generate publication-quality graphs for thesis inclusion.\"\"\"
+    #Generate publication-quality graphs for thesis inclusion.
 
     def __init__(
         self,
@@ -386,7 +384,7 @@ class ThesisVisualizationSuite:
         logger.info('All thesis plots saved to %s', self.save_path)
 
     def _save(self, filename: str):
-        \"\"\"Save current figure and close it.\"\"\"
+       #Save current figure and close it.
         path = os.path.join(self.save_path, filename)
         plt.savefig(path)
         plt.close()
@@ -604,7 +602,7 @@ class ThesisVisualizationSuite:
 
 
 def generate_mock_results() -> Dict:
-    \"\"\"Generate mock results for demonstration purposes.\"\"\"
+   #Generate mock results for demonstration purposes.
     variants = [
         'CC-Simple', 'CC-Duelling', 'LC-Duelling',
         'CC-Simple-GNN', 'CC-Duelling-GNN', 'LC-Duelling-GNN',
