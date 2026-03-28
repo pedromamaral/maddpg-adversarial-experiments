@@ -1,4 +1,3 @@
-
 #Improved FGSM Attack Framework for MADDPG Routing.
 #Fixes attack objective and implements proper comparative metrics for thesis analysis.
 
@@ -22,11 +21,10 @@ class FGSMAttackFramework:
     #Enhanced FGSM attack framework for adversarial analysis of MADDPG routing variants.
 
     def __init__(self, epsilon: float = 0.05, attack_type: str = 'packet_loss'):
- 
+        
         #Args:
-        #  epsilon: Perturbation magnitude (L-inf ball radius).
-        #  attack_type: One of 'packet_loss', 'reward_minimize', 'confusion'.
-
+        #    epsilon: Perturbation magnitude (L-inf ball radius).
+        #    attack_type: One of 'packet_loss', 'reward_minimize', 'confusion'.
         self.epsilon = epsilon
         self.attack_type = attack_type
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -49,30 +47,33 @@ class FGSMAttackFramework:
         bandwidth_indices: Optional[List[int]] = None,
     ) -> np.ndarray:
         #Generate adversarial state using FGSM with proper attack objective.
-
         #Args:
         #    state: Original 1-D state vector.
         #    agent_network: MADDPG Agent whose actor is differentiable.
         #    network_engine: Network environment engine.
         #    agent_index: Index of the target agent.
         #    bandwidth_indices: State indices that represent bandwidth (clamped to [0,1]).
-
         #Returns:
-        #   Perturbed state as a 1-D numpy array.
+        #    Perturbed state as a 1-D numpy array.
         
-        
+        # Ensure state is a float32 tensor on the correct device
         state_tensor = torch.tensor(
-            [state], dtype=torch.float32, requires_grad=True
+            [state], dtype=torch.float32
         ).to(self.device)
+        
+        # Enable gradients explicitly for the input
+        state_tensor.requires_grad = True
 
         try:
             # Force gradient computation (overrides any torch.no_grad context)
             torch.set_grad_enabled(True)
 
-            # Ensure actor network is in training mode for gradient computation
             # Save original training state and ensure training mode for gradient computation
             was_training = agent_network.actor.training
             agent_network.actor.train()
+
+            # Ensure actor is on the correct device
+            agent_network.actor.to(self.device)
 
             action_probs = agent_network.actor(state_tensor)
 
@@ -89,11 +90,15 @@ class FGSMAttackFramework:
             else:
                 raise ValueError(f'Unknown attack type: {self.attack_type}')
 
+            # Zero out existing gradients
+            agent_network.actor.zero_grad()
+            
+            # Compute gradients
             loss.backward()
 
             # Check if gradients were computed
             if state_tensor.grad is None:
-                raise RuntimeError("Gradients not computed. Actor network may be in eval mode or gradient flow is broken.")
+                raise RuntimeError(\"Gradients not computed. Actor network output may be detached or gradient flow is broken.\")
 
             perturbation = self.epsilon * torch.sign(state_tensor.grad.data)
             adversarial_state = state_tensor + perturbation
@@ -146,14 +151,12 @@ class FGSMAttackFramework:
     ) -> torch.Tensor:
         #Minimise expected reward by penalising all actions uniformly.
         penalty_weights = torch.ones_like(action_probs)
-        # To minimize reward via gradient ascent on 'loss', loss should be -reward.
-        # Here we maximize penalty, which is equivalent if penalty is positive.
         return torch.sum(action_probs * penalty_weights)
 
     def _confusion_objective(self, action_probs: torch.Tensor) -> torch.Tensor:
         #Maximise action entropy to induce uncertain/random behaviour.
         entropy = -torch.sum(action_probs * torch.log(action_probs + 1e-8))
-        return -entropy  # minimise negative entropy <-> maximise entropy
+        return -entropy  # maximise entropy
 
     # ------------------------------------------------------------------
     # Domain constraints
@@ -384,7 +387,7 @@ class ThesisVisualizationSuite:
         logger.info('All thesis plots saved to %s', self.save_path)
 
     def _save(self, filename: str):
-       #Save current figure and close it.
+        #Save current figure and close it.
         path = os.path.join(self.save_path, filename)
         plt.savefig(path)
         plt.close()
@@ -602,13 +605,13 @@ class ThesisVisualizationSuite:
 
 
 def generate_mock_results() -> Dict:
-   #Generate mock results for demonstration purposes.
+    #Generate mock results for demonstration purposes.
     variants = [
         'CC-Simple', 'CC-Duelling', 'LC-Duelling',
         'CC-Simple-GNN', 'CC-Duelling-GNN', 'LC-Duelling-GNN',
     ]
     epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
-    rng = np.random.default_rng(42)  # reproducible
+    rng = np.random.default_rng(42) # reproducible
 
     results: Dict = {}
     for variant in variants:
