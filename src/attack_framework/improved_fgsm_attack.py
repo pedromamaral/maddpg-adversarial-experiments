@@ -93,7 +93,7 @@ class FGSMAttackFramework:
 
             # Check if gradients were computed
             if state_tensor.grad is None:
-                raise RuntimeError(\"Gradients not computed. Actor network may be in eval mode or gradient flow is broken.\")
+                raise RuntimeError("Gradients not computed. Actor network may be in eval mode or gradient flow is broken.")
 
             perturbation = self.epsilon * torch.sign(state_tensor.grad.data)
             adversarial_state = state_tensor + perturbation
