@@ -292,23 +292,28 @@ class MADDPGRobustnessEvaluator:
             self.network_engine.reset()
             total_reward = total_packet_loss = total_packets_sent = 0
             
+            # Initialise states once at episode start
+            all_hosts = self.network_engine.get_all_hosts()
+            states = [self.network_engine.get_state(host, 1) for host in all_hosts]
+
             for _ in range(256):
-                all_hosts = self.network_engine.get_all_hosts()
-                states = []
-                for agent_idx, host in enumerate(all_hosts):
-                    state = self.network_engine.get_state(host, 1)
-                    if attack and attack_framework is not None:
-                        state = attack_framework.generate_adversarial_state(
+                # Apply adversarial perturbation if attacking
+                if attack and attack_framework is not None:
+                    states = [
+                        attack_framework.generate_adversarial_state(
                             state, maddpg_agent, self.network_engine, agent_idx
                         )
-                    states.append(state)
-                
+                        for agent_idx, state in enumerate(states)
+                    ]
+
                 actions = maddpg_agent.choose_action(states)
                 next_states, rewards, packet_loss_info = self._execute_actions(actions)
-                
+
                 total_reward += sum(rewards)
                 total_packet_loss += packet_loss_info['packets_lost']
                 total_packets_sent += packet_loss_info['packets_sent']
+
+                states = next_states  # ← advance state for next timestep
             
             episode_rewards.append(total_reward)
             episode_packet_losses.append(
@@ -328,14 +333,28 @@ class MADDPGRobustnessEvaluator:
             'std_packet_loss': float(np.std(episode_packet_losses)),
         }
 
-    def _execute_actions(
-        self, actions: List[int]
-    ) -> Tuple[List, List[float], Dict]:
-        """Execute actions – replace mock data with actual NetworkEngine integration."""
-        rewards = [np.random.normal(50, 10) for _ in actions]
-        packet_loss_info = {'packets_lost': np.random.poisson(5), 'packets_sent': 100}
-        next_states = [np.random.random(26) for _ in actions]
-        return next_states, rewards, packet_loss_info
+def _execute_actions(
+    self, actions: List[int]
+) -> Tuple[List, List[float], Dict]:
+    """Execute joint actions in the real NetworkEngine."""
+    all_hosts = self.network_engine.get_all_hosts()
+    num_actions = 3  # K=3 paths per paper
+
+    # Convert integer action indices → one-hot probability arrays
+    # NetworkEngine.step() expects List[np.ndarray] of shape (num_actions,)
+    action_arrays = []
+    for action_idx in actions:
+        one_hot = np.zeros(num_actions, dtype=np.float32)
+        one_hot[int(action_idx) % num_actions] = 1.0
+        action_arrays.append(one_hot)
+
+    next_states, rewards, info = self.network_engine.step(action_arrays)
+
+    packet_loss_info = {
+        'packets_lost': info.get('packets_dropped', 0),
+        'packets_sent': max(info.get('packets_sent', 1), 1),
+    }
+    return next_states, rewards, packet_loss_info
 
     def _compute_comparison_metrics(
         self, clean_metrics: Dict, attacked_metrics: Dict

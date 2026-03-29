@@ -466,6 +466,13 @@ class NetworkEngine:
             stats['delivery_rate'] = 0.0
         
         return stats
+   
+    def get_link_utilization_distribution(self) -> np.ndarray:
+        """Return array of utilization values for all links (for distribution analysis)."""
+        return np.array([
+            self.topology.get_edge_utilization(u, v)
+            for u, v in self.topology.graph.edges()
+        ], dtype=np.float32)
 
 
 class NetworkEnv:
