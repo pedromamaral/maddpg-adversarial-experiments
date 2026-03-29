@@ -66,8 +66,8 @@ class FGSMAttackFramework:
             agent = agent_network
 
         # Create fresh state tensor for gradient computation
-        state_np = state.astype(np.float32)[np.newaxis, :]  # shape: (1, state_size)
-        state_tensor = torch.from_numpy(state_np.copy()).requires_grad_(True).to(self.device)
+        state_np = np.asarray(state, dtype=np.float32)[np.newaxis, :]  # shape: (1, 26)
+        state_tensor = torch.from_numpy(state_np.copy()).to(self.device).requires_grad_(True)
 
         # Save original training state
         was_training = agent.actor.training
@@ -152,12 +152,19 @@ class FGSMAttackFramework:
             # Return zero loss that is still connected to the graph to avoid grad errors
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
 
-        bandwidth_states = state[:, :num_neighbors]
-        congestion_weights = torch.sigmoid((1.0 - bandwidth_states) * 10.0)
-        congestion_loss = torch.sum(
-            action_probs * congestion_weights.mean(dim=1, keepdim=True)
-        )
-        return -congestion_loss  # maximise congestion
+        num_actions = action_probs.shape[-1]  # = 3 per paper (K paths)
+        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
+
+    # Build per-action congestion weight by cycling over neighbor bandwidths.
+    # Action i is associated with the link to neighbor (i % num_neighbors).
+    # This maps each pre-computed path to its first-hop link congestion.
+        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
+        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
+    
+    # High congestion (low bandwidth) → high weight → push agent toward congested paths
+        congestion_weights = torch.sigmoid((1.0 - per_action_bw) * 10.0)
+        congestion_loss = torch.sum(action_probs * congestion_weights)
+        return -congestion_loss  # maximise congestion selection
 
     def _reward_minimize_objective(
         self,
