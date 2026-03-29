@@ -66,9 +66,8 @@ class FGSMAttackFramework:
             agent = agent_network
 
         # Create fresh state tensor for gradient computation
-        state_tensor = torch.tensor(
-            [state], dtype=torch.float32, requires_grad=True, device=self.device
-        )
+        state_np = state.astype(np.float32)[np.newaxis, :]  # shape: (1, state_size)
+        state_tensor = torch.from_numpy(state_np.copy()).requires_grad_(True).to(self.device)
 
         # Save original training state
         was_training = agent.actor.training
