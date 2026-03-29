@@ -82,7 +82,7 @@ class FGSMAttackFramework:
                 if hasattr(agent, 'use_gnn') and agent.use_gnn and hasattr(agent, 'gnn_processor'):
                     gp = agent.gnn_processor
                     if gp is not None and getattr(gp, 'available', False):
-                        if hasattr(gp, 'process_sate'):
+                        if hasattr(gp, 'process_state'):
                             # Use GNNProcessor's own method — it knows the full 65-node topology
                             gnn_embedding = gp.process_state(state_tensor[0].detach().cpu().numpy())
                             current_state = torch.tensor(
