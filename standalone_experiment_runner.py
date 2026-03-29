@@ -671,11 +671,11 @@ def main():
         
         # Modify config for quick mode
         if args.quick:
-            runner.config['training']['epochs'] = 10
-            runner.config['training']['episodes_per_epoch'] = 10
-            runner.config['training']['timesteps_per_episode'] = 50          
+            runner.config['training']['epochs'] = 1
+            runner.config['training']['episodes_per_epoch'] = 1
+            runner.config['training']['timesteps_per_episode'] = 10          
             for attack_config in runner.config['attack_configs']:
-                attack_config['evaluation_episodes'] = 10
+                attack_config['evaluation_episodes'] = 2
             logger.info("⚡ Config modified for quick testing")
         
         # Run complete experiment
