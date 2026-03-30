@@ -93,7 +93,9 @@ class NetworkTopology:
                 if not G.has_edge(access_node, core_node):
                     G.add_edge(access_node, core_node,
                               capacity=1.0, utilization=0.0)
-        
+        self.core_nodes = core_nodes
+        self.dist_nodes = dist_nodes
+        self.access_nodes = access_nodes
         return G
     
     def create_grid_topology(self) -> nx.Graph:
@@ -166,14 +168,23 @@ class FlowManager:
             'dropped': 0
         }
     
-    def generate_random_flows(self, n_flows: int = 50) -> Dict:
-        """Generate random network flows"""
+    def generate_random_flows(self, n_flows: int = 10) -> Dict:
+        """Generate realistic flows — access nodes are sources/sinks, core is transit only."""
         flows = {}
         hosts = self.topology.hosts
         
+        # Use access nodes as sources (realistic), dist nodes occasionally
+        if hasattr(self.topology, 'access_nodes') and len(self.topology.access_nodes) > 1:
+            source_pool = self.topology.access_nodes  # 40 access nodes
+            # 90% access→access, 10% access→distribution
+            sink_pool = self.topology.access_nodes + self.topology.dist_nodes
+        else:
+            source_pool = self.topology.hosts  # fallback for non-SP topologies
+            sink_pool = self.topology.hosts
+
         for _ in range(n_flows):
-            src = random.choice(hosts)
-            dst = random.choice([h for h in hosts if h != src])
+            src = random.choice(source_pool)
+            dst = random.choice([h for h in sink_pool if h != src])
             
             flow_id = f"flow_{self.flow_counter}"
             self.flow_counter += 1
@@ -181,7 +192,7 @@ class FlowManager:
             flows[flow_id] = {
                 'src': src,
                 'dst': dst,
-                'packets': random.randint(5, 20),
+                'packets': random.randint(3, 10),
                 'priority': random.choice(['high', 'medium', 'low']),
                 'created_time': 0
             }
