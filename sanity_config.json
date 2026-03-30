@@ -1,0 +1,32 @@
+{
+  "experiment_name": "Sanity_CC_Simple",
+  "topology": { "type": "service_provider", "nodes": 65, "max_links": 4 },
+  "training": {
+    "epochs": 50,
+    "episodes_per_epoch": 5,
+    "timesteps_per_episode": 256,
+    "batch_size": 256,
+    "memory_size": 50000
+  },
+  "variants": [
+    {
+      "name": "CC-Simple",
+      "critic_domain": "central_critic",
+      "neural_network": "simple_q_network",
+      "use_gnn": false,
+      "actor_dims": 26,
+      "critic_dims": 1882,
+      "n_agents": 65,
+      "n_actions": 3
+    }
+  ],
+  "attack_configs": [
+    {"attack_type": "packet_loss",    "epsilon": 0.05, "evaluation_episodes": 10},
+    {"attack_type": "packet_loss",    "epsilon": 0.10, "evaluation_episodes": 10},
+    {"attack_type": "packet_loss",    "epsilon": 0.20, "evaluation_episodes": 10},
+    {"attack_type": "reward_minimize","epsilon": 0.05, "evaluation_episodes": 10},
+    {"attack_type": "confusion",      "epsilon": 0.05, "evaluation_episodes": 10}
+  ],
+  "hardware": {"gpu_memory_gb": 16, "use_mixed_precision": true, "parallel_episodes": 4},
+  "output": {"save_models": true, "generate_plots": true, "plot_format": "png", "plot_dpi": 300}
+}
