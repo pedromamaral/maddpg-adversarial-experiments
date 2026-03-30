@@ -256,7 +256,7 @@ class NetworkEngine:
         }
         
         # Generate initial flows
-        self.current_flows = self.flow_manager.generate_random_flows(50)
+        self.current_flows = self.flow_manager.generate_random_flows(10)
     
     def get_all_hosts(self) -> List[str]:
         """Get all network hosts"""
@@ -419,7 +419,7 @@ class NetworkEngine:
         
         # Generate new flows occasionally
         if self.time_step % 20 == 0:
-            new_flows = self.flow_manager.generate_random_flows(10)
+            new_flows = self.flow_manager.generate_random_flows(3)
             self.current_flows.update(new_flows)
         
         # Remove old flows
@@ -462,7 +462,7 @@ class NetworkEngine:
         }
         
         # Generate new flows
-        self.current_flows = self.flow_manager.generate_random_flows(50)
+        self.current_flows = self.flow_manager.generate_random_flows(10)
     
     def get_episode_stats(self) -> Dict:
         """Get episode statistics"""

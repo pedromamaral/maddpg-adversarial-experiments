@@ -83,6 +83,8 @@ class StandaloneExperimentRunner:
             chkpt_dir=f"{self.results_dir}/models/{variant_config['name']}",
             critic_type=variant_config['critic_domain'],
             network_type=variant_config['neural_network'],
+            fc1=variant_config.get('fc1', 256),
+            fc2=variant_config.get('fc2', 128),
             use_gnn=variant_config.get('use_gnn', False)
         )
         
@@ -130,8 +132,10 @@ class StandaloneExperimentRunner:
                     # Store transition and learn
                     done = [False] * len(states)  # Continuous task
                     maddpg.store_transition(states, actions, rewards, next_states, done)
-                    if timestep % 25 == 0:
+                    if timestep % 10 == 0 and epoch < 20:
                         maddpg.learn()
+                    elif timestep % 25 == 0:
+                        maddpg.learn()    
                     # Update states and metrics
                     states = next_states
                     episode_reward += sum(rewards)

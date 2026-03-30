@@ -25,7 +25,9 @@
       "actor_dims": 26,
       "critic_dims": 1882,
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "fc1":256,
+      "fc2":128
     },
     {
       "name": "CC-Duelling",
@@ -35,7 +37,10 @@
       "actor_dims": 26,
       "critic_dims": 1882, 
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "fc1":256,
+      "fc2":128
+
     },
     {
       "name": "LC-Duelling", 
@@ -55,7 +60,10 @@
       "actor_dims": 26,
       "critic_dims": 1882,
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "fc1":256,
+      "fc2":128
+
     },
     {
       "name": "CC-Duelling-GNN",
@@ -65,7 +73,9 @@
       "actor_dims": 26,
       "critic_dims": 1882,
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "fc1":256,
+      "fc2":128
     },
     {
       "name": "LC-Duelling-GNN",
