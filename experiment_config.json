@@ -9,8 +9,8 @@
   },
   
   "training": {
-    "epochs": 2,
-    "episodes_per_epoch": 100,
+    "epochs": 200,
+    "episodes_per_epoch": 5,
     "timesteps_per_episode": 256,
     "batch_size": 256,
     "memory_size": 50000
@@ -83,37 +83,37 @@
     {
       "attack_type": "packet_loss",
       "epsilon": 0.01,
-      "evaluation_episodes": 100
+      "evaluation_episodes": 30
     },
     {
       "attack_type": "packet_loss", 
       "epsilon": 0.05,
-      "evaluation_episodes": 100
+      "evaluation_episodes": 30
     },
     {
       "attack_type": "packet_loss",
       "epsilon": 0.1,
-      "evaluation_episodes": 100
+      "evaluation_episodes": 30
     },
     {
       "attack_type": "packet_loss",
       "epsilon": 0.15,
-      "evaluation_episodes": 100
+      "evaluation_episodes": 30
     },
     {
       "attack_type": "packet_loss",
       "epsilon": 0.2, 
-      "evaluation_episodes": 100
+      "evaluation_episodes": 30
     },
     {
       "attack_type": "reward_minimize",
       "epsilon": 0.05,
-      "evaluation_episodes": 50
+      "evaluation_episodes": 30
     },
     {
       "attack_type": "confusion",
       "epsilon": 0.05,
-      "evaluation_episodes": 50
+      "evaluation_episodes": 30
     }
   ],
   

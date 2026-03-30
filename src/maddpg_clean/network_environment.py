@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple, Optional
 import random
 import json
 import os
+import itertools
 
 class NetworkTopology:
     """Clean network topology management"""
@@ -18,6 +19,12 @@ class NetworkTopology:
         self.n_nodes = n_nodes
         self.graph = self.create_topology()
         self.hosts = list(self.graph.nodes())
+        self.path_cache = {}  # Cache for shortest paths to speed up routing decisions
+        for src, dst in itertools.permutations(self.hosts, 2):
+            try:
+                self.path_cache[(src, dst)] = nx.shortest_path(self.graph, src, dst)
+            except nx.NetworkXNoPath:
+                self.path_cache[(src, dst)] = []
         
     def create_topology(self) -> nx.Graph:
         """Create network topology based on type"""
@@ -208,7 +215,9 @@ class FlowManager:
         
         # Route packet (simplified - use shortest path for remaining hops)
         try:
-            path = nx.shortest_path(self.topology.graph, chosen_next_hop, dst)
+            path = self.topology.path_cache.get((chosen_next_hop, dst), [])
+            if not path:
+                raise nx.NetworkXNoPath
             full_path = [src] + path
             
             # Update link utilizations along path
