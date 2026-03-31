@@ -85,6 +85,8 @@ class StandaloneExperimentRunner:
             network_type=variant_config['neural_network'],
             fc1=variant_config.get('fc1', 256),
             fc2=variant_config.get('fc2', 128),
+            alpha=variant_config.get('alpha', 0.001),   
+            beta=variant_config.get('beta', 0.001),     
             use_gnn=variant_config.get('use_gnn', False)
         )
         
@@ -130,7 +132,7 @@ class StandaloneExperimentRunner:
                     next_states, rewards, info = network_env.step(actions)
                     
                     # Store transition and learn
-                    done = [False] * len(states)  # Continuous task
+                    done = [timestep == timesteps_per_episode - 1] * len(states) # Episode ends after fixed timesteps 
                     maddpg.store_transition(states, actions, rewards, next_states, done)
                     if timestep % 10 == 0 and epoch < 20:
                         maddpg.learn()

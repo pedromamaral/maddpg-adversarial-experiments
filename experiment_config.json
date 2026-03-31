@@ -23,11 +23,13 @@
       "neural_network": "simple_q_network", 
       "use_gnn": false,
       "actor_dims": 26,
-      "critic_dims": 1882,
+      "critic_dims": 1690,
       "n_agents": 65,
       "n_actions": 3,
       "fc1":256,
-      "fc2":128
+      "fc2":128,
+      "alpha": 0.001,
+      "beta": 0.001
     },
     {
       "name": "CC-Duelling",
@@ -35,11 +37,13 @@
       "neural_network": "duelling_q_network",
       "use_gnn": false,
       "actor_dims": 26,
-      "critic_dims": 1882, 
+      "critic_dims": 1690, 
       "n_agents": 65,
       "n_actions": 3,
       "fc1":256,
-      "fc2":128
+      "fc2":128,
+      "alpha": 0.001,
+      "beta": 0.001
 
     },
     {
@@ -50,7 +54,9 @@
       "actor_dims": 26,
       "critic_dims": 26,
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "alpha": 0.001,
+      "beta": 0.001
     },
     {
       "name": "CC-Simple-GNN",
@@ -58,11 +64,14 @@
       "neural_network": "simple_q_network",
       "use_gnn": true,
       "actor_dims": 26,
-      "critic_dims": 1882,
+      "critic_dims": 1690,
       "n_agents": 65,
       "n_actions": 3,
       "fc1":256,
-      "fc2":128
+      "fc2":128,
+      "alpha": 0.001,
+      "beta": 0.001
+
 
     },
     {
@@ -71,11 +80,13 @@
       "neural_network": "duelling_q_network",
       "use_gnn": true,
       "actor_dims": 26,
-      "critic_dims": 1882,
+      "critic_dims": 1690,
       "n_agents": 65,
       "n_actions": 3,
       "fc1":256,
-      "fc2":128
+      "fc2":128,
+      "alpha": 0.001,
+      "beta": 0.001 
     },
     {
       "name": "LC-Duelling-GNN",
@@ -85,7 +96,9 @@
       "actor_dims": 26,
       "critic_dims": 26,
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "alpha": 0.001,
+      "beta": 0.001
     }
   ],
   

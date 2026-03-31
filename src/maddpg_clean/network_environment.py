@@ -381,34 +381,41 @@ class NetworkEngine:
                 else:
                     neighbor_probs = np.ones(len(neighbors)) / len(neighbors)
                 
-                chosen_neighbor_idx = np.random.choice(len(neighbors), p=neighbor_probs)
+                chosen_neighbor_idx = int(np.argmax(neighbor_probs))
                 chosen_neighbor = neighbors[chosen_neighbor_idx]
                 
                 # Route packets from this host
                 host_reward = 0.0
+                host_packets_delivered_this_host = 0
                 host_flows = [f for f in self.current_flows.values() if f['src'] == host]
                 
                 for flow in host_flows:
                     step_packets_sent += flow['packets']
-                    
+              
                     # Route each packet in the flow
                     for _ in range(flow['packets']):
                         result = self.flow_manager.route_packet(
                             host, flow['dst'], chosen_neighbor
                         )
-                        
                         if result['success']:
+                            host_packets_delivered_this_host += 1
                             step_packets_delivered += 1
-                            # Reward based on path efficiency and utilization
-                            path_length = len(result['path_used'])
-                            efficiency_bonus = max(0, 10 - path_length) * 2
-                            utilization_penalty = result['utilization_impact'] * 50
-                            host_reward += efficiency_bonus - utilization_penalty
                         else:
                             step_packets_dropped += 1
-                            host_reward -= 10  # Penalty for dropped packets
                 
-                reward = host_reward / max(1, len(host_flows))  # Average reward per flow
+                host_packets_attempted = sum(flow['packets'] for flow in host_flows)
+                delivery_rate = host_packets_delivered_this_host / max(1, host_packets_attempted)
+                # --- Congestion and balance signal from adjacent links ---
+                neighbor_utils = [
+                    self.topology.get_edge_utilization(host, nb)
+                    for nb in neighbors
+                ]
+                max_util = max(neighbor_utils) if neighbor_utils else 0.0
+                util_var  = float(np.var(neighbor_utils)) if len(neighbor_utils) > 1 else 0.0
+
+                # --- Combined reward ---
+                ALPHA, BETA, GAMMA = 1.0, 0.8, 0.4
+                reward = ALPHA * delivery_rate - BETA * max_util - GAMMA * util_var
             
             rewards.append(reward)
             
@@ -432,6 +439,9 @@ class NetworkEngine:
         if self.time_step % 20 == 0:
             new_flows = self.flow_manager.generate_random_flows(3)
             self.current_flows.update(new_flows)
+            while len(self.current_flows) > 15:  # Limit total flows
+                oldest = next(iter(self.current_flows))
+                del self.current_flows[oldest]
         
         # Remove old flows
         if self.time_step % 50 == 0:

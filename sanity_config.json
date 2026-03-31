@@ -15,9 +15,13 @@
       "neural_network": "simple_q_network",
       "use_gnn": false,
       "actor_dims": 26,
-      "critic_dims": 1882,
+      "critic_dims": 1690,
       "n_agents": 65,
-      "n_actions": 3
+      "n_actions": 3,
+      "fc1":256,
+      "fc2":128,
+      "alpha": 0.001,
+      "beta": 0.001
     }
   ],
   "attack_configs": [
