@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p host_logs
+docker rm -f maddpg_paper1 2>/dev/null || true
 docker run -d --gpus all --name maddpg_paper1 \
   -v "$(pwd)/host_data":/workspace/data \
   -v "$(pwd)/host_logs":/workspace/logs \
