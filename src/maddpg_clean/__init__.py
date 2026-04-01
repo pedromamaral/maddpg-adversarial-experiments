@@ -8,7 +8,7 @@ __version__ = "1.0.0"
 __author__ = "Research Team"
 
 from .maddpg_implementation import MADDPG, Agent, ActorNetwork, CriticNetwork, ReplayBuffer
-from .network_environment import NetworkEngine, NetworkEnv, NetworkTopology, FlowManager
+from .network_environment import NetworkEngine, NetworkEnv, NetworkTopology
 
 __all__ = [
     'MADDPG', 
