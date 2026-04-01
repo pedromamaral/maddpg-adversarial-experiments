@@ -93,7 +93,7 @@ class CriticNetwork(nn.Module):
         self.checkpoint_file = os.path.join(chkpt_dir, name + '_critic.pth')
 
         # Shared trunk: concatenate state + action
-        self.fc1 = nn.Linear(input_dims + n_actions, fc1_dims)
+        self.fc1 = nn.Linear(input_dims + n_agents * n_actions, fc1_dims)
         self.fc2 = nn.Linear(fc1_dims, fc2_dims)
 
         if network_type == 'duelling_q_network':
