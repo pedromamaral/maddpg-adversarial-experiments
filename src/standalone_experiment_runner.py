@@ -383,8 +383,8 @@ class StandaloneExperimentRunner:
     def run_all(self):
         t0 = time.time()
         tr = self.run_training()
-        self.evaluate_paper1(tr)
-        self.evaluate_paper2(tr)
+        self.evaluate_maddpg(tr)
+        self.evaluate_fgsm(tr)
         logger.info(f"All phases done in {(time.time()-t0)/3600:.2f} h  →  {self.results_dir}")
 
     # ── persistence ───────────────────────────────────────────────────────────
