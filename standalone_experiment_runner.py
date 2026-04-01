@@ -1,6 +1,9 @@
 """
-Complete Standalone Experiment Runner
-Everything needed to run MADDPG adversarial robustness experiments
+Standalone Experiment Runner
+Three sequential phases:
+  Phase 1  — training  (all 6 variants, hop-by-hop mode)
+  Phase 2  — Paper-1 evaluation (architecture comparison + OSPF baseline)
+  Phase 3  — Paper-2 evaluation (FGSM adversarial attack study)
 """
 
 import os
@@ -10,10 +13,11 @@ import time
 import argparse
 import logging
 from datetime import datetime
+from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
+
 import numpy as np
 
-# Add our clean implementations to path
 sys.path.insert(0, 'src/maddpg_clean')
 sys.path.insert(0, 'src/attack_framework')
 
@@ -21,683 +25,406 @@ from maddpg_implementation import MADDPG
 from network_environment import NetworkEngine, NetworkEnv
 from improved_fgsm_attack import FGSMAttackFramework, ThesisVisualizationSuite
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s  %(levelname)-8s  %(message)s',
+    handlers=[logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
 
+
 class StandaloneExperimentRunner:
-    """
-    Complete standalone experiment runner
-    No external code dependencies - everything is self-contained
-    """
-    
-    def __init__(self, config_path: str, gpu_id: int = 0):
-        self.config = self.load_config(config_path)
+
+    def __init__(self, config_path: str, gpu_id: int = 0,
+                 results_dir: Optional[str] = None):
+        self.config = self._load_config(config_path)
         self.gpu_id = gpu_id
-        self.results_dir = f"data/results/standalone_exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.results_dir = results_dir or f"data/results/exp_{ts}"
         os.makedirs(self.results_dir, exist_ok=True)
-        
-        # Initialize attack framework
         self.attack_framework = FGSMAttackFramework()
-        
-        logger.info("✅ Standalone experiment runner initialized")
-        logger.info(f"📁 Results directory: {self.results_dir}")
-        
-        # Set device
         if gpu_id >= 0:
             os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    
-    def load_config(self, config_path: str) -> Dict:
-        """Load experiment configuration"""
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        
-        # Add default values if missing
-        if 'training' not in config:
-            config['training'] = {
-                'epochs': 200,
-                'episodes_per_epoch': 100,
-                'timesteps_per_episode': 256
-            }
-        
-        return config
-    
-    def create_maddpg_variant(self, variant_config: Dict) -> Tuple[MADDPG, NetworkEngine, NetworkEnv]:
-        """Create MADDPG variant with clean implementation"""
-        
-        logger.info(f"🏗️  Creating {variant_config['name']} variant")
-        
-        # Create network environment
-        network_engine = NetworkEngine(
+        logger.info(f"Results → {self.results_dir}")
+
+    # ── config ────────────────────────────────────────────────────────────────
+
+    def _load_config(self, path: str) -> Dict:
+        with open(path) as f:
+            cfg = json.load(f)
+        cfg.setdefault('training', {'epochs': 200, 'episodes_per_epoch': 5,
+                                    'timesteps_per_episode': 256})
+        return cfg
+
+    # ── factory ───────────────────────────────────────────────────────────────
+
+    def _make_variant(self, vcfg: Dict) -> Tuple[MADDPG, NetworkEngine, NetworkEnv]:
+        engine = NetworkEngine(
             topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
-            n_nodes=variant_config['n_agents']
+            n_nodes=vcfg['n_agents'],
         )
-        network_env = NetworkEnv(network_engine)
-        
-        # Create MADDPG with variant configuration
+        env = NetworkEnv(engine)
         maddpg = MADDPG(
-            actor_dims=variant_config['actor_dims'],
-            critic_dims=variant_config['critic_dims'],
-            n_agents=variant_config['n_agents'],
-            n_actions=variant_config['n_actions'],
-            chkpt_dir=f"{self.results_dir}/models/{variant_config['name']}",
-            critic_type=variant_config['critic_domain'],
-            network_type=variant_config['neural_network'],
-            fc1=variant_config.get('fc1', 256),
-            fc2=variant_config.get('fc2', 128),
-            alpha=variant_config.get('alpha', 0.001),   
-            beta=variant_config.get('beta', 0.001),     
-            use_gnn=variant_config.get('use_gnn', False)
+            actor_dims=vcfg['actor_dims'],
+            critic_dims=vcfg['critic_dims'],
+            n_agents=vcfg['n_agents'],
+            n_actions=vcfg['n_actions'],
+            chkpt_dir=f"{self.results_dir}/models/{vcfg['name']}",
+            critic_type=vcfg['critic_domain'],
+            network_type=vcfg['neural_network'],
+            fc1=vcfg.get('fc1', 256),
+            fc2=vcfg.get('fc2', 128),
+            alpha=vcfg.get('alpha', 0.001),
+            beta=vcfg.get('beta', 0.001),
+            use_gnn=vcfg.get('use_gnn', False),
         )
-        
-        logger.info(f"✅ {variant_config['name']} variant created successfully")
-        return maddpg, network_engine, network_env
-    
-    def train_baseline_variant(self, variant_config: Dict) -> Tuple[str, List[float], List[float]]:
-        """Train baseline MADDPG variant without attacks"""
-        
-        variant_name = variant_config['name']
-        logger.info(f"🚀 Training baseline {variant_name}")
-        
-        # Create variant
-        maddpg, network_engine, network_env = self.create_maddpg_variant(variant_config)
-        
-        # Training metrics
-        episode_rewards = []
-        episode_packet_losses = []
-        
-        # Training configuration
-        epochs = self.config['training']['epochs']
-        episodes_per_epoch = self.config['training']['episodes_per_epoch'] 
-        timesteps_per_episode = self.config['training']['timesteps_per_episode']
-        
-        logger.info(f"📖 Training configuration: {epochs} epochs, {episodes_per_epoch} episodes/epoch")
-        
+        return maddpg, engine, env
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 1 — Training
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def train_variant(self, vcfg: Dict) -> Dict:
+        name = vcfg['name']
+        logger.info(f"[TRAIN] {name} — start")
+        maddpg, engine, env = self._make_variant(vcfg)
+
+        cfg_t      = self.config['training']
+        epochs     = cfg_t['epochs']
+        eps_per_ep = cfg_t['episodes_per_epoch']
+        t_per_ep   = cfg_t['timesteps_per_episode']
+
+        all_rewards, all_losses = [], []
+
         for epoch in range(epochs):
-            epoch_rewards = []
-            epoch_packet_losses = []
-            
-            for episode in range(episodes_per_epoch):
-                # Reset environment
-                states = network_env.reset()
-                episode_reward = 0
-                episode_packets_sent = 0
-                episode_packets_dropped = 0
-                
-                for timestep in range(timesteps_per_episode):
-                    # Choose actions (no attacks during training)
+            ep_rewards, ep_losses = [], []
+            for _ in range(eps_per_ep):
+                states = env.reset()
+                ep_r = ep_sent = ep_dropped = 0
+                for t in range(t_per_ep):
                     actions = maddpg.choose_action(states)
-                    
-                    # Environment step
-                    next_states, rewards, info = network_env.step(actions)
-                    
-                    # Store transition and learn
-                    done = [timestep == timesteps_per_episode - 1] * len(states) # Episode ends after fixed timesteps 
+                    next_states, rewards, info = env.step(actions)
+                    done = [t == t_per_ep - 1] * len(states)
                     maddpg.store_transition(states, actions, rewards, next_states, done)
-                    if timestep % 10 == 0 and epoch < 20:
+                    freq = 10 if epoch < 20 else 25
+                    if t % freq == 0:
                         maddpg.learn()
-                    elif timestep % 25 == 0:
-                        maddpg.learn()    
-                    # Update states and metrics
                     states = next_states
-                    episode_reward += sum(rewards)
-                    episode_packets_sent += info.get('packets_sent', 0)
-                    episode_packets_dropped += info.get('packets_dropped', 0)
-                
-                # Calculate episode metrics
-                total_reward = episode_reward / len(maddpg.agents)  # Average per agent
-                packet_loss_rate = (episode_packets_dropped / max(1, episode_packets_sent)) * 100
-                
-                epoch_rewards.append(total_reward)
-                epoch_packet_losses.append(packet_loss_rate)
-            
-            episode_rewards.extend(epoch_rewards)
-            episode_packet_losses.extend(epoch_packet_losses)
-            
-            # Log progress
+                    ep_r      += sum(rewards)
+                    ep_sent   += info.get('packets_sent', 0)
+                    ep_dropped += info.get('packets_dropped', 0)
+                ep_rewards.append(ep_r / len(maddpg.agents))
+                ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+
+            all_rewards.extend(ep_rewards)
+            all_losses.extend(ep_losses)
+
             if epoch % 20 == 0 or epoch == epochs - 1:
-                avg_reward = np.mean(epoch_rewards)
-                avg_packet_loss = np.mean(epoch_packet_losses)
-                logger.info(f"  Epoch {epoch:3d}: Reward={avg_reward:7.2f}, Packet Loss={avg_packet_loss:5.2f}%")
-        
-        # Save trained model
-        model_path = f"{self.results_dir}/models/{variant_name}_baseline.pth"
+                logger.info(
+                    f"[TRAIN] {name}  epoch {epoch:3d}  "
+                    f"reward={np.mean(ep_rewards):7.2f}  "
+                    f"pkt_loss={np.mean(ep_losses):5.2f}%"
+                )
+
         maddpg.save_checkpoint()
-        
-        logger.info(f"✅ {variant_name} training complete. Model saved to {model_path}")
-        
-        return model_path, episode_rewards, episode_packet_losses
-    
-    def evaluate_variant_robustness(self, variant_config: Dict, model_path: str) -> Dict:
-        """Evaluate variant robustness under adversarial attacks"""
-        
-        variant_name = variant_config['name']
-        logger.info(f"🎯 Evaluating {variant_name} robustness")
-        
-        # Load trained model
-        maddpg, network_engine, network_env = self.create_maddpg_variant(variant_config)
-        maddpg.load_checkpoint()
-        
-        attack_results = {}
-        
-        # Test each attack configuration
-        for attack_config in self.config['attack_configs']:
-            attack_type = attack_config['attack_type']
-            epsilon = attack_config['epsilon']
-            n_episodes = attack_config['evaluation_episodes']
-            
-            logger.info(f"  🔥 Testing {attack_type} attack with ε={epsilon}")
-            
-            # Configure attack framework
-            self.attack_framework.epsilon = epsilon
-            self.attack_framework.attack_type = attack_type
-            
-            clean_results = []
-            attacked_results = []
-            
-            for episode in range(n_episodes):
-                # Run clean episode
-                clean_reward, clean_packet_loss = self.run_evaluation_episode(
-                    maddpg, network_env, use_attack=False
-                )
-                clean_results.append({
-                    'reward': clean_reward,
-                    'packet_loss': clean_packet_loss
-                })
-                
-                # Run attacked episode
-                attacked_reward, attacked_packet_loss = self.run_evaluation_episode(
-                    maddpg, network_env, use_attack=True
-                )
-                attacked_results.append({
-                    'reward': attacked_reward,
-                    'packet_loss': attacked_packet_loss
-                })
-            
-            # Compute comparison metrics
-            comparison_metrics = self.compute_attack_metrics(clean_results, attacked_results)
-            
-            # Store results
-            attack_key = f"{attack_type}_eps{epsilon}"
-            attack_results[attack_key] = {
-                'attack_config': attack_config,
-                'clean_results': clean_results,
-                'attacked_results': attacked_results,
-                'comparison_metrics': comparison_metrics
-            }
-            
-            # Log results
-            degradation = comparison_metrics['reward_degradation_percent']
-            success_rate = comparison_metrics['attack_success_rate_percent']
-            logger.info(f"    💥 Reward degradation: {degradation:.1f}%, Success rate: {success_rate:.1f}%")
-        
-        logger.info(f"✅ {variant_name} robustness evaluation complete")
-        return attack_results
-    
-    def run_evaluation_episode(self, maddpg: MADDPG, network_env: NetworkEnv, 
-                              use_attack: bool = False) -> Tuple[float, float]:
-        """Run single evaluation episode with or without attack"""
-        
-        states = network_env.reset()
-        episode_reward = 0
-        episode_packets_sent = 0
-        episode_packets_dropped = 0
-        
-        for timestep in range(256):  # Standard episode length
-            if use_attack:
-                # Apply adversarial attack to states
-                attacked_states = []
-                for agent_idx, state in enumerate(states):
-                    attacked_state = self.attack_framework.generate_adversarial_state(
-                        state=state,
-                        agent_network=maddpg.agents[agent_idx],
-                        network_engine=network_env.engine,  # Pass network engine
-                        agent_index=agent_idx
-                    )
-                    attacked_states.append(attacked_state)
-                states = attacked_states
-            
-            # Choose actions
-            actions = maddpg.choose_action(states)
-            
-            # Environment step
-            next_states, rewards, info = network_env.step(actions)
-            
-            # Update metrics
-            states = next_states
-            episode_reward += sum(rewards)
-            episode_packets_sent += info.get('packets_sent', 0)
-            episode_packets_dropped += info.get('packets_dropped', 0)
-        
-        # Calculate final metrics
-        avg_reward = episode_reward / len(maddpg.agents)
-        packet_loss_rate = (episode_packets_dropped / max(1, episode_packets_sent)) * 100
-        
-        return avg_reward, packet_loss_rate
-    
-    def compute_attack_metrics(self, clean_results: List[Dict], 
-                              attacked_results: List[Dict]) -> Dict:
-        """Compute comparative attack metrics"""
-        
-        clean_rewards = [r['reward'] for r in clean_results]
-        attacked_rewards = [r['reward'] for r in attacked_results]
-        clean_packet_losses = [r['packet_loss'] for r in clean_results]
-        attacked_packet_losses = [r['packet_loss'] for r in attacked_results]
-        
-        # Reward degradation
-        mean_clean_reward = np.mean(clean_rewards)
-        mean_attacked_reward = np.mean(attacked_rewards)
-        reward_degradation = ((mean_clean_reward - mean_attacked_reward) / 
-                            abs(mean_clean_reward) * 100)
-        
-        # Packet loss increase
-        packet_loss_increase = np.mean(attacked_packet_losses) - np.mean(clean_packet_losses)
-        
-        # Attack success rate (episodes with >10% reward degradation)
-        successful_attacks = sum(
-            1 for clean_r, attacked_r in zip(clean_rewards, attacked_rewards)
-            if attacked_r < clean_r * 0.9
-        )
-        attack_success_rate = (successful_attacks / len(clean_results)) * 100
-        
-        # Performance variance change
-        clean_std = np.std(clean_rewards)
-        attacked_std = np.std(attacked_rewards)
-        variance_change = ((attacked_std - clean_std) / abs(clean_std) * 100) if clean_std > 0 else 0
-        
-        # Robustness score (higher is better)
-        robustness_score = max(0, 100 - abs(reward_degradation) - packet_loss_increase)
-        
+        logger.info(f"[TRAIN] {name} — done")
         return {
-            'reward_degradation_percent': reward_degradation,
-            'packet_loss_increase_percent': packet_loss_increase,
-            'attack_success_rate_percent': attack_success_rate,
-            'variance_change_percent': variance_change,
-            'robustness_score': robustness_score
+            'name':           name,
+            'model_dir':      f"{self.results_dir}/models/{name}",
+            'rewards':        all_rewards,
+            'pkt_losses':     all_losses,
+            'final_reward':   float(np.mean(all_rewards[-50:])),
+            'final_pkt_loss': float(np.mean(all_losses[-50:])),
         }
-    
-    def run_complete_experiment(self) -> Dict:
-        """Run complete standalone experiment"""
-        
-        logger.info("🚀 Starting Complete MADDPG Adversarial Robustness Experiment")
-        logger.info("=" * 70)
-        
-        experiment_start = time.time()
-        all_results = {}
-        
-        # Phase 1: Baseline Training
-        logger.info("📚 PHASE 1: Baseline Training")
-        logger.info("-" * 30)
-        
-        training_results = {}
-        for variant_config in self.config['variants']:
-            variant_name = variant_config['name']
-            
+
+    def run_training(self) -> Dict:
+        logger.info("══════ PHASE 1 — TRAINING ══════")
+        results = {}
+        for vcfg in self.config['variants']:
             try:
-                model_path, rewards, packet_losses = self.train_baseline_variant(variant_config)
-                training_results[variant_name] = {
-                    'model_path': model_path,
-                    'training_rewards': rewards,
-                    'training_packet_losses': packet_losses,
-                    'final_avg_reward': np.mean(rewards[-50:]),  # Last 50 episodes
-                    'final_avg_packet_loss': np.mean(packet_losses[-50:])
-                }
-                logger.info(f"✅ {variant_name} training successful")
-                
-            except Exception as e:
-                logger.error(f"❌ {variant_name} training failed: {e}")
+                results[vcfg['name']] = self.train_variant(vcfg)
+            except Exception as exc:
+                logger.error(f"[TRAIN] {vcfg['name']} FAILED: {exc}")
+        self._save(results, 'phase1_training_results.json')
+        return results
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 2 — MADDPG evaluation
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def evaluate_maddpg(self, training_results: Optional[Dict] = None) -> Dict:
+        logger.info("══════ PHASE 2 — MADDPG EVALUATION ══════")
+        if training_results is None:
+            training_results = self._load('phase1_training_results.json')
+
+        results  = {}
+        eval_eps = self.config.get('paper1_eval', {}).get('evaluation_episodes', 30)
+        t_per_ep = self.config['training']['timesteps_per_episode']
+
+        # MADDPG variants
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                logger.warning(f"[P1] {name} — no trained model, skipping")
                 continue
-        
-        # Phase 2: Robustness Evaluation
-        logger.info("\n🛡️  PHASE 2: Robustness Evaluation")
-        logger.info("-" * 35)
-        
-        for variant_config in self.config['variants']:
-            variant_name = variant_config['name']
-            
-            if variant_name not in training_results:
-                logger.warning(f"⏭️  Skipping {variant_name} (training failed)")
-                continue
-            
-            try:
-                model_path = training_results[variant_name]['model_path']
-                attack_results = self.evaluate_variant_robustness(variant_config, model_path)
-                
-                all_results[variant_name] = {
-                    'training_results': training_results[variant_name],
-                    'attack_results': attack_results
-                }
-                
-                # Log summary for this variant
-                avg_robustness = np.mean([
-                    data['comparison_metrics']['robustness_score']
-                    for data in attack_results.values()
-                ])
-                logger.info(f"✅ {variant_name} evaluation complete (Avg robustness: {avg_robustness:.1f})")
-                
-            except Exception as e:
-                logger.error(f"❌ {variant_name} evaluation failed: {e}")
-                continue
-        
-        # Phase 3: Analysis and Visualization
-        logger.info("\n📊 PHASE 3: Analysis and Visualization")
-        logger.info("-" * 40)
-        
-        try:
-            self.generate_complete_analysis(all_results)
-            logger.info("✅ Analysis and visualization complete")
-            
-        except Exception as e:
-            logger.error(f"❌ Analysis failed: {e}")
-        
-        # Save complete results
-        results_file = f"{self.results_dir}/complete_experiment_results.json"
-        with open(results_file, 'w') as f:
-            json.dump(all_results, f, indent=2, default=str)
-        
-        experiment_time = time.time() - experiment_start
-        logger.info(f"\n🎉 EXPERIMENT COMPLETE!")
-        logger.info(f"⏱️  Total time: {experiment_time/3600:.2f} hours")
-        logger.info(f"📁 Results saved to: {self.results_dir}")
-        
-        return all_results
-    
-    def generate_complete_analysis(self, results: Dict):
-        """Generate complete analysis including plots and summary"""
-        
-        # Transform results for visualization
-        viz_data = self.transform_results_for_visualization(results)
-        
-        # Generate thesis plots
-        viz_suite = ThesisVisualizationSuite(
-            viz_data,
-            save_path=f"{self.results_dir}/thesis_graphs"
+            logger.info(f"[P1] Evaluating {name}")
+            maddpg, engine, env = self._make_variant(vcfg)
+            maddpg.load_checkpoint()
+            normal   = self._run_eval_episodes(maddpg, env, eval_eps, t_per_ep)
+            failures = self._run_eval_episodes(maddpg, env, eval_eps, t_per_ep,
+                                               n_link_failures=2)
+            results[name] = {'normal': normal, 'dual_link_failure': failures}
+
+        # OSPF baseline
+        logger.info("[P1] OSPF baseline")
+        engine = NetworkEngine(
+            topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
+            n_nodes=65,
         )
-        viz_suite.generate_all_thesis_plots()
-        
-        # Generate statistical summary
-        self.generate_comprehensive_summary(results)
-        
-        logger.info(f"📊 Thesis graphs saved to: {self.results_dir}/thesis_graphs/")
-    
-    def transform_results_for_visualization(self, results: Dict) -> Dict:
-        """Transform results for visualization suite"""
-        
-        viz_data = {}
-        
-        for variant_name, variant_results in results.items():
-            if 'attack_results' not in variant_results:
+        results['OSPF'] = {
+            'normal':           self._run_ospf_episodes(engine, eval_eps, t_per_ep),
+            'dual_link_failure': self._run_ospf_episodes(engine, eval_eps, t_per_ep,
+                                                         n_link_failures=2),
+        }
+
+        self._save(results, 'phase2_maddpg_results.json')
+        logger.info("[P1] evaluation complete")
+        return results
+
+    def _run_eval_episodes(self, maddpg: MADDPG, env: NetworkEnv,
+                           n_eps: int, t_per_ep: int,
+                           n_link_failures: int = 0) -> Dict:
+        ep_rewards, ep_losses, ep_utils = [], [], []
+        for _ in range(n_eps):
+            states = env.reset()
+            if n_link_failures:
+                self._inject_failures(env.engine, n_link_failures)
+            ep_r = ep_sent = ep_dropped = 0
+            for t in range(t_per_ep):
+                actions = maddpg.choose_action(states)
+                next_states, rewards, info = env.step(actions)
+                states = next_states
+                ep_r      += sum(rewards)
+                ep_sent   += info['packets_sent']
+                ep_dropped += info['packets_dropped']
+            ep_rewards.append(ep_r / len(maddpg.agents))
+            ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+            ep_utils.append(float(np.mean(env.engine.get_link_utilization_distribution())))
+        return {
+            'mean_reward':   float(np.mean(ep_rewards)),
+            'std_reward':    float(np.std(ep_rewards)),
+            'mean_pkt_loss': float(np.mean(ep_losses)),
+            'std_pkt_loss':  float(np.std(ep_losses)),
+            'mean_util':     float(np.mean(ep_utils)),
+        }
+
+    def _run_ospf_episodes(self, engine: NetworkEngine,
+                           n_eps: int, t_per_ep: int,
+                           n_link_failures: int = 0) -> Dict:
+        ep_losses, ep_utils = [], []
+        for _ in range(n_eps):
+            engine.reset()
+            if n_link_failures:
+                self._inject_failures(engine, n_link_failures)
+            ep_sent = ep_dropped = 0
+            for _ in range(t_per_ep):
+                info = engine.ospf_step()
+                ep_sent    += info['packets_sent']
+                ep_dropped += info['packets_dropped']
+            ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+            ep_utils.append(float(np.mean(engine.get_link_utilization_distribution())))
+        return {
+            'mean_pkt_loss': float(np.mean(ep_losses)),
+            'std_pkt_loss':  float(np.std(ep_losses)),
+            'mean_util':     float(np.mean(ep_utils)),
+        }
+
+    @staticmethod
+    def _inject_failures(engine: NetworkEngine, n: int):
+        edges = list(engine.topology.graph.edges())
+        for idx in np.random.choice(len(edges), size=min(n, len(edges)), replace=False):
+            u, v = edges[idx]
+            if engine.topology.graph.has_edge(u, v):
+                engine.topology.graph.remove_edge(u, v)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 3 — FGSM atttack evaluation
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def evaluate_fgsm(self, training_results: Optional[Dict] = None) -> Dict:
+        logger.info("══════ PHASE 3 — FGSM ATTACK EVALUATION ══════")
+        if training_results is None:
+            training_results = self._load('phase1_training_results.json')
+
+        all_results = {}
+
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                logger.warning(f"[P2] {name} — no trained model, skipping")
                 continue
-            
-            viz_data[variant_name] = {}
-            
-            for attack_key, attack_data in variant_results['attack_results'].items():
-                # Extract epsilon from attack key
-                try:
-                    epsilon = float(attack_key.split('_eps')[-1])
-                    epsilon_key = f"epsilon_{epsilon}"
-                    
-                    clean_results = attack_data['clean_results']
-                    attacked_results = attack_data['attacked_results']
-                    
-                    viz_data[variant_name][epsilon_key] = {
-                        'clean': {
-                            'mean_reward': np.mean([r['reward'] for r in clean_results]),
-                            'mean_packet_loss': np.mean([r['packet_loss'] for r in clean_results])
-                        },
-                        'attacked': {
-                            'mean_reward': np.mean([r['reward'] for r in attacked_results]),
-                            'mean_packet_loss': np.mean([r['packet_loss'] for r in attacked_results])
-                        },
-                        'comparison': attack_data['comparison_metrics']
-                    }
-                except (ValueError, IndexError):
-                    continue
-        
-        return viz_data
-    
-    def generate_comprehensive_summary(self, results: Dict):
-        """Generate comprehensive experimental summary"""
-        
-        summary = {
-            "experiment_metadata": {
-                "timestamp": datetime.now().isoformat(),
-                "variants_tested": list(results.keys()),
-                "total_variants": len(results),
-                "framework": "standalone_clean_implementation"
-            },
-            "key_findings": {},
-            "robustness_rankings": {},
-            "architecture_analysis": {},
-            "recommendations": {}
-        }
-        
-        # Analyze robustness across variants
-        variant_robustness = {}
-        variant_details = {}
-        
-        for variant_name, variant_results in results.items():
-            if 'attack_results' in variant_results:
-                # Calculate average robustness
-                robustness_scores = []
-                reward_degradations = []
-                attack_success_rates = []
-                
-                for attack_data in variant_results['attack_results'].values():
-                    metrics = attack_data['comparison_metrics']
-                    robustness_scores.append(metrics['robustness_score'])
-                    reward_degradations.append(metrics['reward_degradation_percent'])
-                    attack_success_rates.append(metrics['attack_success_rate_percent'])
-                
-                avg_robustness = np.mean(robustness_scores)
-                avg_degradation = np.mean(reward_degradations)
-                avg_success_rate = np.mean(attack_success_rates)
-                
-                variant_robustness[variant_name] = avg_robustness
-                variant_details[variant_name] = {
-                    'avg_robustness_score': avg_robustness,
-                    'avg_reward_degradation': avg_degradation,
-                    'avg_attack_success_rate': avg_success_rate,
-                    'training_final_reward': variant_results['training_results'].get('final_avg_reward', 0),
-                    'training_final_packet_loss': variant_results['training_results'].get('final_avg_packet_loss', 0)
+            logger.info(f"[P2] Attacking {name}")
+            maddpg, engine, env = self._make_variant(vcfg)
+            maddpg.load_checkpoint()
+            variant_results = {}
+
+            # Standard FGSM sweep
+            for acfg in self.config['attack_configs']:
+                atype    = acfg['attack_type']
+                eps      = acfg['epsilon']
+                n_eps    = acfg['evaluation_episodes']
+                t_per_ep = self.config['training']['timesteps_per_episode']
+                key      = f"{atype}_eps{eps}"
+                logger.info(f"[P2]   {name}  {key}")
+                clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+                attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
+                                                 attack=True, attack_type=atype,
+                                                 epsilon=eps)
+                variant_results[key] = {
+                    'clean': clean, 'attacked': attacked,
+                    'metrics': self._compare(clean, attacked),
                 }
-        
-        # Robustness rankings
-        if variant_robustness:
-            ranked_variants = sorted(variant_robustness.items(), key=lambda x: x[1], reverse=True)
-            
-            summary['key_findings'] = {
-                "most_robust_variant": {
-                    "name": ranked_variants[0][0],
-                    "robustness_score": ranked_variants[0][1]
-                },
-                "least_robust_variant": {
-                    "name": ranked_variants[-1][0],
-                    "robustness_score": ranked_variants[-1][1]
-                },
-                "robustness_range": ranked_variants[0][1] - ranked_variants[-1][1]
-            }
-            
-            summary['robustness_rankings'] = {name: score for name, score in ranked_variants}
-            summary['variant_details'] = variant_details
-        
-        # Architecture analysis
-        summary['architecture_analysis'] = self.analyze_architectural_impact(variant_robustness)
-        
-        # Generate recommendations
-        summary['recommendations'] = self.generate_recommendations(variant_details)
-        
-        # Save summary
-        summary_file = f"{self.results_dir}/comprehensive_summary.json"
-        with open(summary_file, 'w') as f:
-            json.dump(summary, f, indent=2, default=str)
-        
-        # Print key findings to console
-        logger.info("🔍 KEY EXPERIMENTAL FINDINGS:")
-        if 'most_robust_variant' in summary['key_findings']:
-            most_robust = summary['key_findings']['most_robust_variant']
-            least_robust = summary['key_findings']['least_robust_variant']
-            
-            logger.info(f"  🥇 Most Robust: {most_robust['name']} (Score: {most_robust['robustness_score']:.1f})")
-            logger.info(f"  🥉 Least Robust: {least_robust['name']} (Score: {least_robust['robustness_score']:.1f})")
-            
-            arch_analysis = summary['architecture_analysis']
-            if 'gnn_impact' in arch_analysis:
-                gnn_impact = arch_analysis['gnn_impact']
-                logger.info(f"  🤖 GNN Impact: {gnn_impact['improvement_percentage']:.1f}% improvement")
-        
-        logger.info(f"📄 Comprehensive summary saved to: {summary_file}")
-    
-    def analyze_architectural_impact(self, variant_robustness: Dict) -> Dict:
-        """Analyze impact of different architectural choices"""
-        
-        analysis = {}
-        
-        # GNN impact analysis
-        gnn_variants = {k: v for k, v in variant_robustness.items() if 'GNN' in k}
-        non_gnn_variants = {k: v for k, v in variant_robustness.items() if 'GNN' not in k}
-        
-        if gnn_variants and non_gnn_variants:
-            gnn_avg = np.mean(list(gnn_variants.values()))
-            non_gnn_avg = np.mean(list(non_gnn_variants.values()))
-            improvement = gnn_avg - non_gnn_avg
-            
-            analysis['gnn_impact'] = {
-                "gnn_average_robustness": gnn_avg,
-                "non_gnn_average_robustness": non_gnn_avg,
-                "improvement_percentage": improvement,
-                "conclusion": "GNN improves robustness" if improvement > 0 else "GNN reduces robustness"
-            }
-        
-        # Critic type analysis
-        central_critics = {k: v for k, v in variant_robustness.items() if k.startswith('CC')}
-        local_critics = {k: v for k, v in variant_robustness.items() if k.startswith('LC')}
-        
-        if central_critics and local_critics:
-            cc_avg = np.mean(list(central_critics.values()))
-            lc_avg = np.mean(list(local_critics.values()))
-            
-            analysis['critic_comparison'] = {
-                "central_critic_avg": cc_avg,
-                "local_critic_avg": lc_avg,
-                "conclusion": "Local critics more robust" if lc_avg > cc_avg else "Central critics more robust"
-            }
-        
-        # Network type analysis
-        simple_networks = {k: v for k, v in variant_robustness.items() if 'Simple' in k}
-        duelling_networks = {k: v for k, v in variant_robustness.items() if 'Duelling' in k}
-        
-        if simple_networks and duelling_networks:
-            simple_avg = np.mean(list(simple_networks.values()))
-            duelling_avg = np.mean(list(duelling_networks.values()))
-            
-            analysis['network_comparison'] = {
-                "simple_q_avg": simple_avg,
-                "duelling_q_avg": duelling_avg,
-                "conclusion": "Duelling networks more robust" if duelling_avg > simple_avg else "Simple networks more robust"
-            }
-        
-        return analysis
-    
-    def generate_recommendations(self, variant_details: Dict) -> Dict:
-        """Generate practical recommendations based on results"""
-        
-        if not variant_details:
-            return {"error": "No variant details available for recommendations"}
-        
-        recommendations = {}
-        
-        # Find best overall variant
-        best_variant = max(variant_details.items(), 
-                          key=lambda x: x[1]['avg_robustness_score'])
-        
-        recommendations['best_overall_choice'] = {
-            "variant": best_variant[0],
-            "reasoning": f"Highest robustness score ({best_variant[1]['avg_robustness_score']:.1f}) with good training performance"
+
+            # Attack-surface analysis (core vs dist vs access)
+            logger.info(f"[P2]   {name}  attack surface analysis")
+            n_eps    = self.config['attack_configs'][-1]['evaluation_episodes']
+            t_per_ep = self.config['training']['timesteps_per_episode']
+            variant_results['surface'] = self._attack_surface_analysis(
+                maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+
+            # GNN embedding attack (GNN variants only)
+            if vcfg.get('use_gnn', False):
+                logger.info(f"[P2]   {name}  GNN embedding attack")
+                variant_results['gnn_embedding_attack'] = self._attack_episodes(
+                    maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
+                    attack=True, attack_type='packet_loss', epsilon=0.10)
+
+            all_results[name] = variant_results
+
+        self._save(all_results, 'phase3_fgsm_results.json')
+        logger.info("[P2] evaluation complete")
+        return all_results
+
+    def _attack_episodes(self, maddpg: MADDPG, env: NetworkEnv,
+                         n_eps: int, t_per_ep: int,
+                         attack: bool = False,
+                         attack_type: str = 'packet_loss',
+                         epsilon: float = 0.05,
+                         targeted_tiers: Optional[List[str]] = None) -> Dict:
+        ep_rewards, ep_losses = [], []
+        hosts = env.engine.get_all_hosts()
+
+        for _ in range(n_eps):
+            states = env.reset()
+            ep_r = ep_sent = ep_dropped = 0
+            for _ in range(t_per_ep):
+                if attack:
+                    adv = []
+                    for idx, (host, s) in enumerate(zip(hosts, states)):
+                        if targeted_tiers and env.engine.get_tier(host) not in targeted_tiers:
+                            adv.append(s)
+                        else:
+                            adv.append(self.attack_framework.generate_adversarial_state(
+                                state=s,
+                                agent_network=maddpg.agents[idx],
+                                network_engine=env.engine,
+                                agent_index=idx,
+                            ))
+                    states = adv
+                actions = maddpg.choose_action(states)
+                next_states, rewards, info = env.step(actions)
+                states = next_states
+                ep_r      += sum(rewards)
+                ep_sent   += info['packets_sent']
+                ep_dropped += info['packets_dropped']
+            ep_rewards.append(ep_r / len(maddpg.agents))
+            ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+
+        return {
+            'mean_reward':   float(np.mean(ep_rewards)),
+            'std_reward':    float(np.std(ep_rewards)),
+            'mean_pkt_loss': float(np.mean(ep_losses)),
+            'std_pkt_loss':  float(np.std(ep_losses)),
         }
-        
-        # Performance vs robustness trade-off
-        balanced_variants = []
-        for name, details in variant_details.items():
-            training_reward = details.get('training_final_reward', 0)
-            robustness_score = details['avg_robustness_score']
-            
-            # Simple scoring: balance training performance and robustness
-            balanced_score = (training_reward / 1000) + robustness_score  # Normalize training reward
-            balanced_variants.append((name, balanced_score, details))
-        
-        balanced_variants.sort(key=lambda x: x[1], reverse=True)
-        
-        recommendations['balanced_choice'] = {
-            "variant": balanced_variants[0][0],
-            "reasoning": "Best balance between training performance and adversarial robustness"
+
+    def _attack_surface_analysis(self, maddpg: MADDPG, env: NetworkEnv,
+                                  n_eps: int, t_per_ep: int,
+                                  epsilon: float = 0.10) -> Dict:
+        clean  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+        core_r = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
+                                       attack_type='packet_loss', epsilon=epsilon,
+                                       targeted_tiers=['core'])
+        dist_r = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
+                                       attack_type='packet_loss', epsilon=epsilon,
+                                       targeted_tiers=['dist'])
+        acc_r  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
+                                       attack_type='packet_loss', epsilon=epsilon,
+                                       targeted_tiers=['access'])
+        return {
+            'clean':           clean,
+            'core_attacked':   {'results': core_r, 'metrics': self._compare(clean, core_r)},
+            'dist_attacked':   {'results': dist_r, 'metrics': self._compare(clean, dist_r)},
+            'access_attacked': {'results': acc_r,  'metrics': self._compare(clean, acc_r)},
+            'n_core_agents':   len(env.engine.topology.core_nodes),
+            'n_dist_agents':   len(env.engine.topology.dist_nodes),
+            'n_access_agents': len(env.engine.topology.access_nodes),
         }
-        
-        # Security-critical recommendation
-        most_robust_name = max(variant_details.items(), 
-                              key=lambda x: x[1]['avg_robustness_score'])[0]
-        
-        recommendations['security_critical_choice'] = {
-            "variant": most_robust_name,
-            "reasoning": "Highest adversarial robustness for security-critical applications"
+
+    @staticmethod
+    def _compare(clean: Dict, attacked: Dict) -> Dict:
+        cr, ar = clean['mean_reward'], attacked['mean_reward']
+        return {
+            'reward_degradation_pct':  float((cr - ar) / abs(cr) * 100 if cr != 0 else 0),
+            'pkt_loss_increase_pct':   float(attacked['mean_pkt_loss'] - clean['mean_pkt_loss']),
         }
-        
-        return recommendations
+
+    # ── full pipeline ─────────────────────────────────────────────────────────
+
+    def run_all(self):
+        t0 = time.time()
+        tr = self.run_training()
+        self.evaluate_paper1(tr)
+        self.evaluate_paper2(tr)
+        logger.info(f"All phases done in {(time.time()-t0)/3600:.2f} h  →  {self.results_dir}")
+
+    # ── persistence ───────────────────────────────────────────────────────────
+
+    def _save(self, obj, filename: str):
+        path = os.path.join(self.results_dir, filename)
+        with open(path, 'w') as f:
+            json.dump(obj, f, indent=2, default=str)
+        logger.info(f"Saved {path}")
+
+    def _load(self, filename: str) -> Dict:
+        path = os.path.join(self.results_dir, filename)
+        with open(path) as f:
+            return json.load(f)
 
 
 def main():
-    """Main execution function"""
-    
-    parser = argparse.ArgumentParser(description='Standalone MADDPG Adversarial Robustness Experiments')
-    parser.add_argument('--config', type=str, default='experiment_config.json',
-                       help='Experiment configuration file')
-    parser.add_argument('--gpu', type=int, default=0,
-                       help='GPU device ID (-1 for CPU)')
-    parser.add_argument('--quick', action='store_true',
-                       help='Quick test mode (reduced epochs and episodes)')
-    
-    args = parser.parse_args()
-    
-    print("🔬 STANDALONE MADDPG ADVERSARIAL ROBUSTNESS EXPERIMENT")
-    print("=" * 60)
-    print("✅ Self-contained implementation - no external code dependencies")
-    print("✅ Clean MADDPG training implementation")
-    print("✅ Corrected FGSM attack framework")
-    print("✅ Thesis-quality analysis and visualization")
-    print("")
-    
-    # Quick mode adjustments
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--config',      default='experiment_config.json')
+    ap.add_argument('--gpu',         type=int, default=0)
+    ap.add_argument('--results-dir', default=None)
+    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2'], default='all')
+    ap.add_argument('--quick', action='store_true')
+    args = ap.parse_args()
+
+    runner = StandaloneExperimentRunner(args.config, args.gpu, args.results_dir)
+
     if args.quick:
-        print("⚡ Quick test mode enabled")
-        # Will modify config to reduce training time
-    
-    # Initialize and run experiment
-    try:
-        runner = StandaloneExperimentRunner(args.config, args.gpu)
-        
-        # Modify config for quick mode
-        if args.quick:
-            runner.config['training']['epochs'] = 1
-            runner.config['training']['episodes_per_epoch'] = 1
-            runner.config['training']['timesteps_per_episode'] = 10          
-            for attack_config in runner.config['attack_configs']:
-                attack_config['evaluation_episodes'] = 2
-            logger.info("⚡ Config modified for quick testing")
-        
-        # Run complete experiment
-        results = runner.run_complete_experiment()
-        
-        print("\n🎉 EXPERIMENT COMPLETED SUCCESSFULLY!")
-        print("📁 Check the results directory for:")
-        print("   • Trained model weights")
-        print("   • Experimental data (JSON)")
-        print("   • Thesis-quality plots (PNG)")
-        print("   • Comprehensive analysis summary")
-        
-    except Exception as e:
-        logger.error(f"💥 Experiment failed: {e}")
-        raise
+        runner.config['training'].update(
+            epochs=1, episodes_per_epoch=1, timesteps_per_episode=10)
+        for a in runner.config['attack_configs']:
+            a['evaluation_episodes'] = 2
+        runner.config.setdefault('paper1_eval', {})['evaluation_episodes'] = 2
+        logger.info("Quick mode active")
+
+    if   args.phase == 'all':    runner.run_all()
+    elif args.phase == 'train':  runner.run_training()
+    elif args.phase == 'paper1': runner.evaluate_paper1()
+    elif args.phase == 'paper2': runner.evaluate_paper2()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

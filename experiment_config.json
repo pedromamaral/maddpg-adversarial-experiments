@@ -1,13 +1,13 @@
 {
-  "experiment_name": "MADDPG_Adversarial_Robustness_Study",
-  "description": "Comprehensive evaluation of MADDPG variants under FGSM attacks",
-  
+  "experiment_name": "MADDPG_Hop_By_Hop_Routing",
+  "description": "Hop-by-hop MADDPG variants — architecture comparison (Paper 1) and adversarial attack study (Paper 2)",
+
   "topology": {
     "type": "service_provider",
     "nodes": 65,
     "max_links": 4
   },
-  
+
   "training": {
     "epochs": 200,
     "episodes_per_epoch": 5,
@@ -15,137 +15,89 @@
     "batch_size": 256,
     "memory_size": 50000
   },
-  
+
+  "paper1_eval": {
+    "evaluation_episodes": 30,
+    "link_failure_scenarios": [0, 2]
+  },
+
   "variants": [
     {
       "name": "CC-Simple",
       "critic_domain": "central_critic",
-      "neural_network": "simple_q_network", 
+      "neural_network": "simple_q_network",
       "use_gnn": false,
-      "actor_dims": 26,
-      "critic_dims": 1690,
-      "n_agents": 65,
-      "n_actions": 3,
-      "fc1":256,
-      "fc2":128,
-      "alpha": 0.001,
-      "beta": 0.001
+      "actor_dims": 26, "critic_dims": 1690,
+      "n_agents": 65, "n_actions": 3,
+      "fc1": 256, "fc2": 128,
+      "alpha": 0.001, "beta": 0.001
     },
     {
       "name": "CC-Duelling",
       "critic_domain": "central_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 26,
-      "critic_dims": 1690, 
-      "n_agents": 65,
-      "n_actions": 3,
-      "fc1":256,
-      "fc2":128,
-      "alpha": 0.001,
-      "beta": 0.001
-
+      "actor_dims": 26, "critic_dims": 1690,
+      "n_agents": 65, "n_actions": 3,
+      "fc1": 256, "fc2": 128,
+      "alpha": 0.001, "beta": 0.001
     },
     {
-      "name": "LC-Duelling", 
+      "name": "LC-Duelling",
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 26,
-      "critic_dims": 26,
-      "n_agents": 65,
-      "n_actions": 3,
-      "alpha": 0.001,
-      "beta": 0.001
+      "actor_dims": 26, "critic_dims": 26,
+      "n_agents": 65, "n_actions": 3,
+      "alpha": 0.001, "beta": 0.001
     },
     {
       "name": "CC-Simple-GNN",
       "critic_domain": "central_critic",
       "neural_network": "simple_q_network",
       "use_gnn": true,
-      "actor_dims": 26,
-      "critic_dims": 1690,
-      "n_agents": 65,
-      "n_actions": 3,
-      "fc1":256,
-      "fc2":128,
-      "alpha": 0.001,
-      "beta": 0.001
-
-
+      "actor_dims": 26, "critic_dims": 1690,
+      "n_agents": 65, "n_actions": 3,
+      "fc1": 256, "fc2": 128,
+      "alpha": 0.001, "beta": 0.001
     },
     {
       "name": "CC-Duelling-GNN",
-      "critic_domain": "central_critic", 
+      "critic_domain": "central_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 26,
-      "critic_dims": 1690,
-      "n_agents": 65,
-      "n_actions": 3,
-      "fc1":256,
-      "fc2":128,
-      "alpha": 0.001,
-      "beta": 0.001 
+      "actor_dims": 26, "critic_dims": 1690,
+      "n_agents": 65, "n_actions": 3,
+      "fc1": 256, "fc2": 128,
+      "alpha": 0.001, "beta": 0.001
     },
     {
       "name": "LC-Duelling-GNN",
       "critic_domain": "local_critic",
-      "neural_network": "duelling_q_network", 
+      "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 26,
-      "critic_dims": 26,
-      "n_agents": 65,
-      "n_actions": 3,
-      "alpha": 0.001,
-      "beta": 0.001
+      "actor_dims": 26, "critic_dims": 26,
+      "n_agents": 65, "n_actions": 3,
+      "alpha": 0.001, "beta": 0.001
     }
   ],
-  
+
   "attack_configs": [
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.01,
-      "evaluation_episodes": 30
-    },
-    {
-      "attack_type": "packet_loss", 
-      "epsilon": 0.05,
-      "evaluation_episodes": 30
-    },
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.1,
-      "evaluation_episodes": 30
-    },
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.15,
-      "evaluation_episodes": 30
-    },
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.2, 
-      "evaluation_episodes": 30
-    },
-    {
-      "attack_type": "reward_minimize",
-      "epsilon": 0.05,
-      "evaluation_episodes": 30
-    },
-    {
-      "attack_type": "confusion",
-      "epsilon": 0.05,
-      "evaluation_episodes": 30
-    }
+    {"attack_type": "packet_loss",     "epsilon": 0.01, "evaluation_episodes": 30},
+    {"attack_type": "packet_loss",     "epsilon": 0.05, "evaluation_episodes": 30},
+    {"attack_type": "packet_loss",     "epsilon": 0.10, "evaluation_episodes": 30},
+    {"attack_type": "packet_loss",     "epsilon": 0.15, "evaluation_episodes": 30},
+    {"attack_type": "packet_loss",     "epsilon": 0.20, "evaluation_episodes": 30},
+    {"attack_type": "reward_minimize", "epsilon": 0.05, "evaluation_episodes": 30},
+    {"attack_type": "confusion",       "epsilon": 0.05, "evaluation_episodes": 30}
   ],
-  
+
   "hardware": {
     "gpu_memory_gb": 16,
     "use_mixed_precision": true,
     "parallel_episodes": 4
   },
-  
+
   "output": {
     "save_models": true,
     "save_intermediate_results": true,
