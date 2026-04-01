@@ -1,23 +1,20 @@
-# MADDPG Adversarial Robustness - Docker Setup
-# Use CUDA-enabled PyTorch base image
+# MADDPG Adversarial Robustness — Docker Setup
 FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
 
-# Set working directory
 WORKDIR /workspace
 
-# Install system dependencies
+# System dependencies — nvidia-utils removed (already in base image)
 RUN apt-get update && apt-get install -y \
     git \
     vim \
     htop \
-    nvidia-utils-525 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Python dependencies from requirements.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install additional packages for experiments
+# Additional packages
 RUN pip install --no-cache-dir \
     torch-geometric \
     jupyter \
@@ -27,21 +24,27 @@ RUN pip install --no-cache-dir \
     GPUtil \
     psutil
 
-# Copy source code
+# Source code
 COPY src/ ./src/
-COPY standalone_experiment_runner.py .
+COPY src/standalone_experiment_runner.py ./src/standalone_experiment_runner.py
 COPY experiment_config.json .
 COPY pyproject.toml .
 
-# Install the package in editable mode
+# Install package in editable mode
 RUN pip install -e .
 
-# Create directories for results and models
-RUN mkdir -p /workspace/results /workspace/models /workspace/logs
+# Directories that map to Docker volume mounts
+RUN mkdir -p /workspace/data/results \
+             /workspace/data/models \
+             /workspace/logs
 
-# Set Python path
-ENV PYTHONPATH=/workspace/src:
+# Python path — covers both sub-packages the runner imports from
+ENV PYTHONPATH=/workspace/src:/workspace/src/maddpg_clean:/workspace/src/attack_framework
 ENV PYTHONUNBUFFERED=1
 
-# Default command runs the full experiment
-CMD ["python", "standalone_experiment_runner.py", "--config", "experiment_config.json"]
+# Default: run full experiment (all three phases)
+CMD ["python", "src/standalone_experiment_runner.py", \
+     "--config", "experiment_config.json", \
+     "--gpu", "0", \
+     "--phase", "all", \
+     "--results-dir", "data/results/main_run"]
