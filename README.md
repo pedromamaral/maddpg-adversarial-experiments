@@ -95,11 +95,13 @@ Outputs:
 
 ### 4. Run Everything End-to-End
 
-```bash
-./run_full_experiment.sh
-```
+Run phases sequentially with the provided scripts:
 
-Use this only after the smoke test succeeds.
+```bash
+./run_training.sh
+./run_maddpg_eval.sh
+./run_fgsm_eval.sh
+```
 
 ## Output Layout
 
@@ -326,7 +328,6 @@ or reduce Phase 3 pruning aggressiveness.
 | `check_progress_maddpg.sh` | tail Phase 2 logs |
 | `run_fgsm_eval.sh` | run Phase 3 |
 | `check_progress_fgsm.sh` | tail Phase 3 logs |
-| `run_full_experiment.sh` | detached all-in-one run |
 | `reset_results.sh` | delete results only |
 | `reset.sh` | delete results and models |
 
