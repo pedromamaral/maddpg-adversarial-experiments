@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir \
 # Source code
 COPY src/ ./src/
 COPY src/standalone_experiment_runner.py ./src/standalone_experiment_runner.py
+COPY tools/ ./tools/
 COPY experiment_config.json .
 COPY pyproject.toml .
 

@@ -294,10 +294,17 @@ All runtime behavior is controlled by `experiment_config.json`.
 
 Likely causes:
 
+- `tools/plot_results.py` is not present in the container (older image build)
 - `matplotlib` is unavailable in the runtime environment
 - the phase failed before writing its JSON files
 
-Check the phase logs first, then re-run plotting manually.
+Check the phase logs first. If you see "Plotting utilities unavailable", rebuild the image with no cache:
+
+```bash
+docker build --no-cache -t maddpg-exp:latest .
+```
+
+Then re-run the phase, or re-run plotting manually.
 
 ### Phase 2 or Phase 3 says no trained model
 
