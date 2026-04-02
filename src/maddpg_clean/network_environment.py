@@ -157,11 +157,20 @@ class NetworkEngine:
     """
 
     def __init__(self, topology_type: str = "service_provider",
-                 n_nodes: int = 65, seed: int = 42):
+                 n_nodes: int = 65, seed: int = 42,
+                 reward_config: Optional[Dict[str, float]] = None):
         self.topology = NetworkTopology(topology_type, n_nodes, seed)
         self.time_step = 0
         self.packet_queue: Dict[str, List[Dict]] = defaultdict(list)
         self._episode_stats = self._blank_stats()
+        base_reward = {
+            'delivery_weight': ALPHA,
+            'max_util_penalty': BETA,
+            'var_util_penalty': GAMMA,
+            'drop_penalty': 0.6,
+            'backlog_penalty': 0.05,
+        }
+        self.reward_cfg = {**base_reward, **(reward_config or {})}
 
         # Node-tier lookup — used by Paper-2 attack surface analysis
         self._tier: Dict[str, str] = {}
@@ -248,6 +257,13 @@ class NetworkEngine:
         next_queue: Dict[str, List[Dict]] = defaultdict(list)
         step_sent = step_delivered = step_dropped = 0
         rewards = []
+        reward_components = {
+            'delivery_term': 0.0,
+            'max_util_term': 0.0,
+            'var_util_term': 0.0,
+            'drop_term': 0.0,
+            'backlog_term': 0.0,
+        }
 
         for i, host in enumerate(hosts):
             action = actions[i] if i < len(actions) else np.array([1.0, 0.0, 0.0])
@@ -269,10 +285,16 @@ class NetworkEngine:
             # forward packets
             delivered = dropped = 0
             for pkt in q:
+                pkt_hops = int(pkt.get('hops', 0))
+                pkt_created = int(pkt.get('created_at', 0))
                 step_sent += 1
                 if self.topology.avail_bw(host, chosen) < PACKET_SIZE:
                     dropped += 1
                     step_dropped += 1
+                    self._episode_stats['dropped_delay_samples'].append(
+                        max(0, self.time_step - pkt_created)
+                    )
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, chosen)
                 self.topology.set_util(host, chosen, cur + PACKET_SIZE)
@@ -280,19 +302,48 @@ class NetworkEngine:
                 if chosen == pkt['dst']:
                     delivered += 1
                     step_delivered += 1
+                    final_hops = pkt_hops + 1
+                    self._episode_stats['delivered_delay_samples'].append(
+                        max(0, self.time_step - pkt_created)
+                    )
+                    self._episode_stats['delivered_hop_samples'].append(final_hops)
                 elif pkt['ttl'] > 0:
-                    next_queue[chosen].append({'dst': pkt['dst'], 'ttl': pkt['ttl'] - 1})
+                    next_queue[chosen].append({
+                        'dst': pkt['dst'],
+                        'ttl': pkt['ttl'] - 1,
+                        'created_at': pkt_created,
+                        'hops': pkt_hops + 1,
+                    })
                 else:
                     dropped += 1
                     step_dropped += 1   # TTL expired
+                    self._episode_stats['dropped_delay_samples'].append(
+                        max(0, self.time_step - pkt_created)
+                    )
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
             # per-agent reward
             total    = len(q)
             dr       = delivered / total
+            drop_ratio = dropped / total
+            backlog_ratio = min(len(q), 20) / 20.0
             utils    = [self.topology.get_util(host, nb) for nb in nbrs]
             mx_util  = max(utils)
             var_util = float(np.var(utils)) if len(utils) > 1 else 0.0
-            rewards.append(ALPHA * dr - BETA * mx_util - GAMMA * var_util)
+            delivery_term = self.reward_cfg['delivery_weight'] * dr
+            max_util_term = self.reward_cfg['max_util_penalty'] * mx_util
+            var_util_term = self.reward_cfg['var_util_penalty'] * var_util
+            drop_term = self.reward_cfg['drop_penalty'] * drop_ratio
+            backlog_term = self.reward_cfg['backlog_penalty'] * backlog_ratio
+
+            rewards.append(
+                delivery_term - max_util_term - var_util_term - drop_term - backlog_term
+            )
+            reward_components['delivery_term'] += delivery_term
+            reward_components['max_util_term'] += max_util_term
+            reward_components['var_util_term'] += var_util_term
+            reward_components['drop_term'] += drop_term
+            reward_components['backlog_term'] += backlog_term
 
         # bookkeeping
         self.topology.decay_utils()
@@ -304,25 +355,80 @@ class NetworkEngine:
         self._episode_stats['packets_delivered'] += step_delivered
         self._episode_stats['packets_dropped']   += step_dropped
         self._episode_stats['total_reward']      += sum(rewards)
+        self._episode_stats['steps'] += 1
+        for k, v in reward_components.items():
+            self._episode_stats['reward_component_sums'][k] += v
+
+        current_backlog = sum(len(q) for q in self.packet_queue.values())
+        self._episode_stats['backlog_sum'] += current_backlog
+        self._episode_stats['backlog_peak'] = max(
+            self._episode_stats['backlog_peak'], current_backlog
+        )
+
+        util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
+        mean_util = float(np.mean(util_values)) if util_values else 0.0
+        max_util = float(np.max(util_values)) if util_values else 0.0
+        self._episode_stats['step_mean_utils'].append(mean_util)
+        self._episode_stats['step_max_utils'].append(max_util)
 
         next_states = [self.get_state(h) for h in hosts]
         info = {
             'packets_sent':      step_sent,
             'packets_delivered': step_delivered,
             'packets_dropped':   step_dropped,
+            'delivery_rate':     step_delivered / max(1, step_sent) * 100,
             'packet_loss_rate':  step_dropped / max(1, step_sent) * 100,
-            'network_utilization': float(np.mean(
-                [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
-            )),
+            'network_utilization': mean_util,
+            'max_link_utilization': max_util,
+            'backlog_packets': current_backlog,
+            'reward_components': {
+                'delivery_term': reward_components['delivery_term'],
+                'max_util_term': reward_components['max_util_term'],
+                'var_util_term': reward_components['var_util_term'],
+                'drop_term': reward_components['drop_term'],
+                'backlog_term': reward_components['backlog_term'],
+            },
         }
         return next_states, rewards, info
 
     def get_episode_stats(self) -> Dict:
-        s    = self._episode_stats.copy()
+        s = self._episode_stats
         sent = max(1, s['packets_sent'])
-        s['packet_loss_rate'] = s['packets_dropped'] / sent * 100
-        s['delivery_rate']    = s['packets_delivered'] / sent * 100
-        return s
+        steps = max(1, s['steps'])
+
+        delivered_delay = np.array(s['delivered_delay_samples'], dtype=np.float32)
+        delivered_hops = np.array(s['delivered_hop_samples'], dtype=np.float32)
+        step_mean_utils = np.array(s['step_mean_utils'], dtype=np.float32)
+        step_max_utils = np.array(s['step_max_utils'], dtype=np.float32)
+        per_agent_steps = max(1, steps * len(self.topology.hosts))
+
+        return {
+            'total_reward': s['total_reward'],
+            'packets_sent': s['packets_sent'],
+            'packets_delivered': s['packets_delivered'],
+            'packets_dropped': s['packets_dropped'],
+            'packet_loss_rate': s['packets_dropped'] / sent * 100,
+            'delivery_rate': s['packets_delivered'] / sent * 100,
+            'goodput_per_step': s['packets_delivered'] / steps,
+            'backlog_end': sum(len(q) for q in self.packet_queue.values()),
+            'backlog_avg': s['backlog_sum'] / steps,
+            'backlog_peak': s['backlog_peak'],
+            'delay_mean': float(np.mean(delivered_delay)) if delivered_delay.size else 0.0,
+            'delay_p95': float(np.percentile(delivered_delay, 95)) if delivered_delay.size else 0.0,
+            'hops_mean': float(np.mean(delivered_hops)) if delivered_hops.size else 0.0,
+            'hops_p95': float(np.percentile(delivered_hops, 95)) if delivered_hops.size else 0.0,
+            'util_mean': float(np.mean(step_mean_utils)) if step_mean_utils.size else 0.0,
+            'util_p95': float(np.percentile(step_mean_utils, 95)) if step_mean_utils.size else 0.0,
+            'util_max': float(np.max(step_max_utils)) if step_max_utils.size else 0.0,
+            'overload_step_fraction': float(
+                np.mean(step_max_utils >= 0.80)
+            ) if step_max_utils.size else 0.0,
+            'reward_components': {
+                k: float(v / per_agent_steps)
+                for k, v in s['reward_component_sums'].items()
+            },
+            'reward_config': self.reward_cfg,
+        }
 
     def get_link_utilization_distribution(self) -> np.ndarray:
         return np.array(
@@ -343,6 +449,8 @@ class NetworkEngine:
 
         for host, q in list(self.packet_queue.items()):
             for pkt in q:
+                pkt_hops = int(pkt.get('hops', 0))
+                pkt_created = int(pkt.get('created_at', 0))
                 sent += 1
                 path = self.topology.path_cache.get((host, pkt['dst']), [])
                 if len(path) < 2:
@@ -357,7 +465,12 @@ class NetworkEngine:
                 if nxt == pkt['dst']:
                     delivered += 1
                 elif pkt['ttl'] > 0:
-                    next_queue[nxt].append({'dst': pkt['dst'], 'ttl': pkt['ttl'] - 1})
+                    next_queue[nxt].append({
+                        'dst': pkt['dst'],
+                        'ttl': pkt['ttl'] - 1,
+                        'created_at': pkt_created,
+                        'hops': pkt_hops + 1,
+                    })
                 else:
                     dropped += 1
 
@@ -381,12 +494,37 @@ class NetworkEngine:
         for _ in range(n):
             src = random.choice(srcs)
             dst = random.choice([h for h in dsts if h != src])
-            self.packet_queue[src].append({'dst': dst, 'ttl': TTL_INIT})
+            self.packet_queue[src].append({
+                'dst': dst,
+                'ttl': TTL_INIT,
+                'created_at': self.time_step,
+                'hops': 0,
+            })
 
     @staticmethod
     def _blank_stats() -> Dict:
-        return {'total_reward': 0.0, 'packets_sent': 0,
-                'packets_delivered': 0, 'packets_dropped': 0}
+        return {
+            'total_reward': 0.0,
+            'packets_sent': 0,
+            'packets_delivered': 0,
+            'packets_dropped': 0,
+            'steps': 0,
+            'backlog_sum': 0,
+            'backlog_peak': 0,
+            'delivered_delay_samples': [],
+            'delivered_hop_samples': [],
+            'dropped_delay_samples': [],
+            'dropped_hop_samples': [],
+            'step_mean_utils': [],
+            'step_max_utils': [],
+            'reward_component_sums': {
+                'delivery_term': 0.0,
+                'max_util_term': 0.0,
+                'var_util_term': 0.0,
+                'drop_term': 0.0,
+                'backlog_term': 0.0,
+            },
+        }
 
 
 class NetworkEnv:

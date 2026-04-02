@@ -251,31 +251,41 @@ class MADDPGRobustnessEvaluator:
         attack_framework: FGSMAttackFramework,
         num_episodes: int = 100,
         epsilon_values: List[float] = None,
+        attack_types: Optional[List[str]] = None,
     ) -> Dict:
         """Evaluate attack effectiveness across all variants and epsilon values."""
         if epsilon_values is None:
             epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
+        if attack_types is None:
+            attack_types = ['packet_loss']
 
         evaluation_results = {}
         for variant_name, maddpg_agent in self.maddpg_variants.items():
             logger.info('Evaluating %s ...', variant_name)
             variant_results = {}
-            for epsilon in epsilon_values:
-                logger.info('  epsilon = %.3f', epsilon)
-                attack_framework.epsilon = epsilon
-                
-                clean_metrics = self._run_episodes(maddpg_agent, num_episodes, attack=False)
-                attacked_metrics = self._run_episodes(
-                    maddpg_agent, num_episodes, attack=True, attack_framework=attack_framework,
-                )
-                
-                variant_results[f'epsilon_{epsilon}'] = {
-                    'clean': clean_metrics,
-                    'attacked': attacked_metrics,
-                    'comparison': self._compute_comparison_metrics(
-                        clean_metrics, attacked_metrics
-                    ),
-                }
+            for attack_type in attack_types:
+                for epsilon in epsilon_values:
+                    logger.info('  type = %s, epsilon = %.3f', attack_type, epsilon)
+                    attack_framework.attack_type = attack_type
+                    attack_framework.epsilon = epsilon
+
+                    clean_metrics = self._run_episodes(maddpg_agent, num_episodes, attack=False)
+                    attacked_metrics = self._run_episodes(
+                        maddpg_agent, num_episodes, attack=True, attack_framework=attack_framework,
+                    )
+
+                    variant_results[f'{attack_type}_epsilon_{epsilon}'] = {
+                        'clean': clean_metrics,
+                        'attacked': attacked_metrics,
+                        'comparison': self._compute_comparison_metrics(
+                            clean_metrics, attacked_metrics
+                        ),
+                        'run_config': {
+                            'attack_type': attack_type,
+                            'epsilon': float(epsilon),
+                            'evaluation_episodes': int(num_episodes),
+                        },
+                    }
             evaluation_results[variant_name] = variant_results
         return evaluation_results
 

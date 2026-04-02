@@ -12,18 +12,33 @@ import json
 import time
 import argparse
 import logging
+import warnings
 from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
+from pathlib import Path
 
 import numpy as np
 
+try:
+    from scipy.stats import kendalltau
+except ImportError:
+    kendalltau = None
+
 sys.path.insert(0, 'src/maddpg_clean')
 sys.path.insert(0, 'src/attack_framework')
+sys.path.insert(0, 'tools')
 
 from maddpg_implementation import MADDPG
 from network_environment import NetworkEngine, NetworkEnv
 from improved_fgsm_attack import FGSMAttackFramework, ThesisVisualizationSuite
+
+try:
+    from plot_results import plot_phase1_training, plot_phase2_evaluation, plot_phase3_fgsm
+    PLOTTING_AVAILABLE = True
+except ImportError:
+    warnings.warn("Plotting utilities unavailable; plots will be skipped.")
+    PLOTTING_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,14 +69,65 @@ class StandaloneExperimentRunner:
             cfg = json.load(f)
         cfg.setdefault('training', {'epochs': 200, 'episodes_per_epoch': 5,
                                     'timesteps_per_episode': 256})
+        cfg.setdefault('fgsm_slo', {
+            'max_pkt_loss_pct': 10.0,
+            'min_delivery_rate_pct': 85.0,
+            'max_reward_degradation_pct': 25.0,
+            'max_delay_p95': 12.0,
+        })
+        runtime_cfg = cfg.setdefault('runtime_control', {})
+        runtime_cfg.setdefault('profile', 'standard')
+        runtime_cfg.setdefault('max_attack_cases_per_variant', -1)
+        runtime_cfg.setdefault('max_attack_variants', -1)
+        runtime_cfg.setdefault('phase3_enable_slo_pruning', True)
+        runtime_cfg.setdefault('phase3_consecutive_fail_limit', 2)
+        runtime_cfg.setdefault('phase3_skip_after_critical_epsilon', True)
+        seed_cfg = runtime_cfg.setdefault('seed_expansion', {})
+        seed_cfg.setdefault('enable_adaptive', True)
+        seed_cfg.setdefault('initial_seeds', 10)
+        seed_cfg.setdefault('max_seeds_for_ranking', 50)
+        seed_cfg.setdefault('rank_stability_check_interval', 5)
+        seed_cfg.setdefault('top_k_for_stability', 5)
+        seed_cfg.setdefault('stability_threshold', 0.95)
+        runtime_cfg.setdefault('profiles', {
+            'standard': {},
+            'thorough': {},
+            'quick': {
+                'training': {'epochs': 1, 'episodes_per_epoch': 1, 'timesteps_per_episode': 10},
+                'paper1_eval': {'evaluation_episodes': 2},
+                'attack_eval_episodes': 2,
+            },
+        })
+        self._apply_runtime_profile(cfg)
         return cfg
+
+    @staticmethod
+    def _apply_runtime_profile(cfg: Dict):
+        runtime_cfg = cfg.get('runtime_control', {})
+        profile_name = runtime_cfg.get('profile', 'standard')
+        profiles = runtime_cfg.get('profiles', {})
+        profile = profiles.get(profile_name, {})
+        if not profile:
+            return
+
+        if 'training' in profile:
+            cfg.setdefault('training', {}).update(profile['training'])
+        if 'paper1_eval' in profile:
+            cfg.setdefault('paper1_eval', {}).update(profile['paper1_eval'])
+
+        attack_eval_eps = profile.get('attack_eval_episodes')
+        if attack_eval_eps is not None:
+            for attack_cfg in cfg.get('attack_configs', []):
+                attack_cfg['evaluation_episodes'] = int(attack_eval_eps)
 
     # ── factory ───────────────────────────────────────────────────────────────
 
     def _make_variant(self, vcfg: Dict) -> Tuple[MADDPG, NetworkEngine, NetworkEnv]:
+        reward_cfg = self.config.get('reward', {})
         engine = NetworkEngine(
             topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
             n_nodes=vcfg['n_agents'],
+            reward_config=reward_cfg,
         )
         env = NetworkEnv(engine)
         maddpg = MADDPG(
@@ -146,6 +212,7 @@ class StandaloneExperimentRunner:
             except Exception as exc:
                 logger.error(f"[TRAIN] {vcfg['name']} FAILED: {exc}")
         self._save(results, 'phase1_training_results.json')
+        self._generate_plots_for_phase(1)
         return results
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -157,44 +224,158 @@ class StandaloneExperimentRunner:
         if training_results is None:
             training_results = self._load('phase1_training_results.json')
 
-        results  = {}
-        eval_eps = self.config.get('paper1_eval', {}).get('evaluation_episodes', 30)
+        seed_cfg = self.config.get('runtime_control', {}).get('seed_expansion', {})
+        adaptive_enabled = seed_cfg.get('enable_adaptive', True)
+        initial_seeds = seed_cfg.get('initial_seeds', 10)
+        max_seeds = seed_cfg.get('max_seeds_for_ranking', 50)
+        check_interval = seed_cfg.get('rank_stability_check_interval', 5)
+        top_k = seed_cfg.get('top_k_for_stability', 5)
+        stability_thresh = seed_cfg.get('stability_threshold', 0.95)
+
+        base_eval_eps = self.config.get('paper1_eval', {}).get('evaluation_episodes', 30)
         t_per_ep = self.config['training']['timesteps_per_episode']
 
-        # MADDPG variants
+        convergence_history = {}
+        curr_seeds = initial_seeds if adaptive_enabled else base_eval_eps
+        prev_ranking = None
+        stability_achieved = False
+        convergence_seed_n = -1
+
+        if adaptive_enabled:
+            logger.info(f"[P2] Adaptive seed expansion: init={initial_seeds}, max={max_seeds}, "
+                       f"interval={check_interval}, top_k={top_k}, thresh={stability_thresh:.2f}")
+
+        # Iteratively expand seeds until stable or hit max
+        while curr_seeds <= max_seeds:
+            logger.info(f"[P2] Running evaluation with {curr_seeds} seeds per scenario")
+            
+            results = {}
+            
+            # MADDPG variants
+            for vcfg in self.config['variants']:
+                name = vcfg['name']
+                if name not in training_results:
+                    if name not in convergence_history:
+                        logger.warning(f"[P2] {name} — no trained model, skipping")
+                    continue
+                
+                logger.info(f"[P2]   {name}")
+                maddpg, engine, env = self._make_variant(vcfg)
+                maddpg.load_checkpoint()
+                
+                # Run evaluation episodes
+                normal   = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep,
+                                                   n_link_failures=0)
+                failures = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep,
+                                                   n_link_failures=2)
+                
+                results[name] = {'normal': normal, 'dual_link_failure': failures}
+
+            # OSPF baseline
+            if len(results) > 0:  # Only run if at least one variant ran
+                logger.info(f"[P2]   OSPF baseline")
+                engine = NetworkEngine(
+                    topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
+                    n_nodes=65,
+                )
+                results['OSPF'] = {
+                    'normal': self._run_ospf_episodes(engine, curr_seeds, t_per_ep),
+                    'dual_link_failure': self._run_ospf_episodes(engine, curr_seeds, t_per_ep,
+                                                                  n_link_failures=2),
+                }
+
+            # Build rankings
+            ranking = self._build_phase2_rankings(results)
+            
+            # Check ranking stability if adaptive enabled
+            if adaptive_enabled and prev_ranking is not None:
+                # Compare top-K rankings across scenarios
+                tau_scores = []
+                for scenario in ['normal', 'dual_link_failure']:
+                    for profile_name in ['default']:  # Can be extended to multiple profiles
+                        if scenario in ranking.get('scenarios', {}) \
+                           and profile_name in ranking['scenarios'][scenario]:
+                            curr_ranked = ranking['scenarios'][scenario][profile_name]
+                            prev_ranked = prev_ranking.get('scenarios', {}).get(scenario, {}).get(profile_name, [])
+                            if prev_ranked and curr_ranked:
+                                tau = self._compute_rank_stability(prev_ranked, curr_ranked, top_k)
+                                tau_scores.append(tau)
+                
+                if tau_scores:
+                    mean_tau = float(np.mean(tau_scores))
+                    convergence_history[curr_seeds] = mean_tau
+                    logger.info(f"[P2]   Rank stability (top-{top_k}): tau={mean_tau:.3f}")
+                    
+                    if mean_tau >= stability_thresh:
+                        logger.info(f"[P2] ✓ Rank stability achieved at {curr_seeds} seeds "
+                                   f"(tau={mean_tau:.3f} >= {stability_thresh:.2f})")
+                        stability_achieved = True
+                        convergence_seed_n = curr_seeds
+                        break
+            
+            prev_ranking = ranking
+            
+            # Expand seeds for next iteration
+            if adaptive_enabled and curr_seeds < max_seeds:
+                next_seeds = min(curr_seeds + check_interval, max_seeds)
+                if next_seeds > curr_seeds:
+                    curr_seeds = next_seeds
+                else:
+                    break
+            else:
+                break
+
+        # Final results with ONE seed count (use largest evaluated)
+        logger.info(f"[P2] Finalizing results with {curr_seeds} seeds")
+        results = {}
+        
         for vcfg in self.config['variants']:
             name = vcfg['name']
             if name not in training_results:
-                logger.warning(f"[P1] {name} — no trained model, skipping")
+                logger.warning(f"[P2] {name} — no trained model, skipping")
                 continue
-            logger.info(f"[P1] Evaluating {name}")
+            logger.info(f"[P2]   {name}")
             maddpg, engine, env = self._make_variant(vcfg)
             maddpg.load_checkpoint()
-            normal   = self._run_eval_episodes(maddpg, env, eval_eps, t_per_ep)
-            failures = self._run_eval_episodes(maddpg, env, eval_eps, t_per_ep,
-                                               n_link_failures=2)
+            
+            normal   = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep)
+            failures = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep, n_link_failures=2)
+            
             results[name] = {'normal': normal, 'dual_link_failure': failures}
 
-        # OSPF baseline
-        logger.info("[P1] OSPF baseline")
+        logger.info("[P2] OSPF baseline")
         engine = NetworkEngine(
             topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
             n_nodes=65,
         )
         results['OSPF'] = {
-            'normal':           self._run_ospf_episodes(engine, eval_eps, t_per_ep),
-            'dual_link_failure': self._run_ospf_episodes(engine, eval_eps, t_per_ep,
-                                                         n_link_failures=2),
+            'normal': self._run_ospf_episodes(engine, curr_seeds, t_per_ep),
+            'dual_link_failure': self._run_ospf_episodes(engine, curr_seeds, t_per_ep, n_link_failures=2),
         }
 
         self._save(results, 'phase2_maddpg_results.json')
-        logger.info("[P1] evaluation complete")
+        ranking = self._build_phase2_rankings(results)
+        
+        # Add convergence telemetry to ranking output
+        ranking['seed_convergence'] = {
+            'total_seeds_used': curr_seeds,
+            'stability_achieved_at_seed_n': convergence_seed_n if stability_achieved else -1,
+            'stability_threshold': stability_thresh,
+            'stability_history': convergence_history,
+            'top_k_for_stability': top_k,
+        }
+        
+        self._save(ranking, 'phase2_rankings.json')
+        self._generate_plots_for_phase(2)
+        logger.info("[P2] evaluation complete")
         return results
 
     def _run_eval_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                            n_eps: int, t_per_ep: int,
                            n_link_failures: int = 0) -> Dict:
         ep_rewards, ep_losses, ep_utils = [], [], []
+        ep_delivery, ep_goodput = [], []
+        ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
         for _ in range(n_eps):
             states = env.reset()
             if n_link_failures:
@@ -210,12 +391,23 @@ class StandaloneExperimentRunner:
             ep_rewards.append(ep_r / len(maddpg.agents))
             ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
             ep_utils.append(float(np.mean(env.engine.get_link_utilization_distribution())))
+            ep_stats = env.get_stats()
+            ep_delivery.append(float(ep_stats.get('delivery_rate', 0.0)))
+            ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
+            ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
+            ep_backlog.append(float(ep_stats.get('backlog_end', 0.0)))
+            ep_util_p95.append(float(ep_stats.get('util_p95', 0.0)))
         return {
             'mean_reward':   float(np.mean(ep_rewards)),
             'std_reward':    float(np.std(ep_rewards)),
             'mean_pkt_loss': float(np.mean(ep_losses)),
             'std_pkt_loss':  float(np.std(ep_losses)),
             'mean_util':     float(np.mean(ep_utils)),
+            'mean_delivery_rate': float(np.mean(ep_delivery)),
+            'mean_goodput_per_step': float(np.mean(ep_goodput)),
+            'mean_delay_p95': float(np.mean(ep_delay_p95)),
+            'mean_backlog_end': float(np.mean(ep_backlog)),
+            'mean_util_p95': float(np.mean(ep_util_p95)),
         }
 
     def _run_ospf_episodes(self, engine: NetworkEngine,
@@ -256,9 +448,37 @@ class StandaloneExperimentRunner:
         if training_results is None:
             training_results = self._load('phase1_training_results.json')
 
-        all_results = {}
+        phase_t0 = time.time()
+        runtime_cfg = self.config.get('runtime_control', {})
+        seed_cfg = runtime_cfg.get('seed_expansion', {})
+        max_attack_variants = int(runtime_cfg.get('max_attack_variants', -1))
+        max_attack_cases = int(runtime_cfg.get('max_attack_cases_per_variant', -1))
+        phase3_enable_slo_pruning = bool(runtime_cfg.get('phase3_enable_slo_pruning', True))
+        phase3_consecutive_fail_limit = int(runtime_cfg.get('phase3_consecutive_fail_limit', 2))
+        phase3_skip_after_critical = bool(
+            runtime_cfg.get('phase3_skip_after_critical_epsilon', True)
+        )
+        attack_configs = self.config.get('attack_configs', [])
+        if max_attack_cases > 0:
+            attack_configs = attack_configs[:max_attack_cases]
 
-        for vcfg in self.config['variants']:
+        all_results = {}
+        all_results['_run_config'] = {
+            'runtime_profile': runtime_cfg.get('profile', 'standard'),
+            'max_attack_cases_per_variant': max_attack_cases,
+            'max_attack_variants': max_attack_variants,
+            'phase3_enable_slo_pruning': phase3_enable_slo_pruning,
+            'phase3_consecutive_fail_limit': phase3_consecutive_fail_limit,
+            'phase3_skip_after_critical_epsilon': phase3_skip_after_critical,
+            'attack_cases_used': len(attack_configs),
+        }
+
+        variants = self.config['variants']
+        if max_attack_variants > 0:
+            variants = variants[:max_attack_variants]
+
+        for vcfg in variants:
+            variant_t0 = time.time()
             name = vcfg['name']
             if name not in training_results:
                 logger.warning(f"[P2] {name} — no trained model, skipping")
@@ -267,42 +487,112 @@ class StandaloneExperimentRunner:
             maddpg, engine, env = self._make_variant(vcfg)
             maddpg.load_checkpoint()
             variant_results = {}
+            skipped_cases = []
+            critical_by_type = {}
+            consecutive_failures = 0
+            variant_pruned = False
 
             # Standard FGSM sweep
-            for acfg in self.config['attack_configs']:
+            for acfg in attack_configs:
                 atype    = acfg['attack_type']
                 eps      = acfg['epsilon']
                 n_eps    = acfg['evaluation_episodes']
                 t_per_ep = self.config['training']['timesteps_per_episode']
                 key      = f"{atype}_eps{eps}"
+
+                if phase3_skip_after_critical and atype in critical_by_type and eps > critical_by_type[atype]:
+                    skipped_cases.append({
+                        'attack_type': atype,
+                        'epsilon': eps,
+                        'reason': 'skipped_after_critical_epsilon',
+                    })
+                    continue
+
                 logger.info(f"[P2]   {name}  {key}")
+                case_t0 = time.time()
                 clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
                 attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
                                                  attack=True, attack_type=atype,
                                                  epsilon=eps)
+                slo_eval = self._evaluate_attack_slo(clean, attacked)
                 variant_results[key] = {
                     'clean': clean, 'attacked': attacked,
                     'metrics': self._compare(clean, attacked),
+                    'slo': slo_eval,
+                    'run_config': {
+                        'attack_type': atype,
+                        'epsilon': eps,
+                        'evaluation_episodes': n_eps,
+                        'timesteps_per_episode': t_per_ep,
+                        'runtime_sec': float(time.time() - case_t0),
+                    },
                 }
 
-            # Attack-surface analysis (core vs dist vs access)
-            logger.info(f"[P2]   {name}  attack surface analysis")
-            n_eps    = self.config['attack_configs'][-1]['evaluation_episodes']
-            t_per_ep = self.config['training']['timesteps_per_episode']
-            variant_results['surface'] = self._attack_surface_analysis(
-                maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+                if not slo_eval['success']:
+                    consecutive_failures += 1
+                    if atype not in critical_by_type:
+                        critical_by_type[atype] = eps
+                else:
+                    consecutive_failures = 0
 
-            # GNN embedding attack (GNN variants only)
-            if vcfg.get('use_gnn', False):
-                logger.info(f"[P2]   {name}  GNN embedding attack")
-                variant_results['gnn_embedding_attack'] = self._attack_episodes(
-                    maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
-                    attack=True, attack_type='packet_loss', epsilon=0.10)
+                if phase3_enable_slo_pruning and phase3_consecutive_fail_limit > 0 \
+                   and consecutive_failures >= phase3_consecutive_fail_limit:
+                    variant_pruned = True
+                    variant_results['_pruned'] = {
+                        'reason': 'consecutive_slo_failures',
+                        'limit': phase3_consecutive_fail_limit,
+                        'at_case': key,
+                    }
+                    break
 
+            if not variant_pruned:
+                # Attack-surface analysis (core vs dist vs access)
+                logger.info(f"[P2]   {name}  attack surface analysis")
+                n_eps    = self.config['attack_configs'][-1]['evaluation_episodes']
+                t_per_ep = self.config['training']['timesteps_per_episode']
+                variant_results['surface'] = self._attack_surface_analysis(
+                    maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+
+                # GNN embedding attack (GNN variants only)
+                if vcfg.get('use_gnn', False):
+                    logger.info(f"[P2]   {name}  GNN embedding attack")
+                    variant_results['gnn_embedding_attack'] = self._attack_episodes(
+                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
+                        attack=True, attack_type='packet_loss', epsilon=0.10)
+            else:
+                skipped_cases.append({
+                    'attack_type': 'surface_and_gnn',
+                    'epsilon': None,
+                    'reason': 'variant_pruned',
+                })
+
+            variant_results['attack_summary'] = self._summarize_variant_attacks(variant_results)
+            variant_results['_runtime'] = {
+                'variant_runtime_sec': float(time.time() - variant_t0),
+                'skipped_cases': skipped_cases,
+                'critical_epsilon_by_type': critical_by_type,
+            }
             all_results[name] = variant_results
 
+        all_results['_run_config']['phase3_runtime_sec'] = float(time.time() - phase_t0)
         self._save(all_results, 'phase3_fgsm_results.json')
-        logger.info("[P2] evaluation complete")
+        ranking = self._build_phase3_rankings(all_results)
+        
+        # Add seed convergence telemetry for Phase 3
+        # Track the attack evaluation episodes used
+        attack_episodes_used = set()
+        for acfg in attack_configs:
+            attack_episodes_used.add(acfg.get('evaluation_episodes', 30))
+        
+        ranking['seed_convergence'] = {
+            'attack_evaluation_episodes': list(attack_episodes_used),
+            'adaptive_expansion_enabled': seed_cfg.get('enable_adaptive', False),
+            'total_attack_cases': len(attack_configs),
+        }
+        
+        self._save(ranking, 'phase3_rankings.json')
+        self._generate_plots_for_phase(3)
+        logger.info("[P3] evaluation complete")
         return all_results
 
     def _attack_episodes(self, maddpg: MADDPG, env: NetworkEnv,
@@ -311,12 +601,17 @@ class StandaloneExperimentRunner:
                          attack_type: str = 'packet_loss',
                          epsilon: float = 0.05,
                          targeted_tiers: Optional[List[str]] = None) -> Dict:
-        ep_rewards, ep_losses = [], []
+        ep_rewards, ep_losses, ep_delivery = [], [], []
+        ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         hosts = env.engine.get_all_hosts()
+
+        if attack:
+            self.attack_framework.epsilon = float(epsilon)
+            self.attack_framework.attack_type = attack_type
 
         for _ in range(n_eps):
             states = env.reset()
-            ep_r = ep_sent = ep_dropped = 0
+            ep_r = ep_sent = ep_dropped = ep_delivered = 0
             for _ in range(t_per_ep):
                 if attack:
                     adv = []
@@ -336,15 +631,34 @@ class StandaloneExperimentRunner:
                 states = next_states
                 ep_r      += sum(rewards)
                 ep_sent   += info['packets_sent']
+                ep_delivered += info.get('packets_delivered', 0)
                 ep_dropped += info['packets_dropped']
             ep_rewards.append(ep_r / len(maddpg.agents))
             ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+            ep_delivery.append(ep_delivered / max(1, ep_sent) * 100)
+            ep_stats = env.get_stats()
+            ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
+            ep_backlog.append(float(ep_stats.get('backlog_end', 0.0)))
+            ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
 
         return {
             'mean_reward':   float(np.mean(ep_rewards)),
             'std_reward':    float(np.std(ep_rewards)),
             'mean_pkt_loss': float(np.mean(ep_losses)),
             'std_pkt_loss':  float(np.std(ep_losses)),
+            'mean_delivery_rate': float(np.mean(ep_delivery)),
+            'std_delivery_rate': float(np.std(ep_delivery)),
+            'mean_delay_p95': float(np.mean(ep_delay_p95)),
+            'mean_backlog_end': float(np.mean(ep_backlog)),
+            'mean_goodput_per_step': float(np.mean(ep_goodput)),
+            'run_config': {
+                'attack': attack,
+                'attack_type': attack_type if attack else 'clean',
+                'epsilon': float(epsilon) if attack else 0.0,
+                'targeted_tiers': targeted_tiers or [],
+                'evaluation_episodes': int(n_eps),
+                'timesteps_per_episode': int(t_per_ep),
+            },
         }
 
     def _attack_surface_analysis(self, maddpg: MADDPG, env: NetworkEnv,
@@ -362,29 +676,395 @@ class StandaloneExperimentRunner:
                                        targeted_tiers=['access'])
         return {
             'clean':           clean,
-            'core_attacked':   {'results': core_r, 'metrics': self._compare(clean, core_r)},
-            'dist_attacked':   {'results': dist_r, 'metrics': self._compare(clean, dist_r)},
-            'access_attacked': {'results': acc_r,  'metrics': self._compare(clean, acc_r)},
+            'core_attacked': {
+                'results': core_r,
+                'metrics': self._compare(clean, core_r),
+                'slo': self._evaluate_attack_slo(clean, core_r),
+            },
+            'dist_attacked': {
+                'results': dist_r,
+                'metrics': self._compare(clean, dist_r),
+                'slo': self._evaluate_attack_slo(clean, dist_r),
+            },
+            'access_attacked': {
+                'results': acc_r,
+                'metrics': self._compare(clean, acc_r),
+                'slo': self._evaluate_attack_slo(clean, acc_r),
+            },
             'n_core_agents':   len(env.engine.topology.core_nodes),
             'n_dist_agents':   len(env.engine.topology.dist_nodes),
             'n_access_agents': len(env.engine.topology.access_nodes),
         }
 
-    @staticmethod
-    def _compare(clean: Dict, attacked: Dict) -> Dict:
+    def _compare(self, clean: Dict, attacked: Dict) -> Dict:
         cr, ar = clean['mean_reward'], attacked['mean_reward']
+        clean_delivery = clean.get('mean_delivery_rate', 0.0)
+        attacked_delivery = attacked.get('mean_delivery_rate', 0.0)
         return {
             'reward_degradation_pct':  float((cr - ar) / abs(cr) * 100 if cr != 0 else 0),
             'pkt_loss_increase_pct':   float(attacked['mean_pkt_loss'] - clean['mean_pkt_loss']),
+            'delivery_rate_drop_pct':  float(clean_delivery - attacked_delivery),
         }
+
+    def _evaluate_attack_slo(self, clean: Dict, attacked: Dict) -> Dict:
+        slo_cfg = self.config.get('fgsm_slo', {})
+        max_pkt_loss_pct = float(slo_cfg.get('max_pkt_loss_pct', 100.0))
+        min_delivery_rate_pct = float(slo_cfg.get('min_delivery_rate_pct', 0.0))
+        max_reward_degradation_pct = float(slo_cfg.get('max_reward_degradation_pct', 100.0))
+        max_delay_p95 = float(slo_cfg.get('max_delay_p95', 1e9))
+
+        reward_deg = self._compare(clean, attacked)['reward_degradation_pct']
+        pkt_loss = float(attacked.get('mean_pkt_loss', 0.0))
+        delivery = float(attacked.get('mean_delivery_rate', 0.0))
+        delay_p95 = float(attacked.get('mean_delay_p95', 0.0))
+
+        checks = {
+            'pkt_loss_within_slo': pkt_loss <= max_pkt_loss_pct,
+            'delivery_within_slo': delivery >= min_delivery_rate_pct,
+            'reward_degradation_within_slo': reward_deg <= max_reward_degradation_pct,
+            'delay_p95_within_slo': delay_p95 <= max_delay_p95,
+        }
+        violated = [name for name, passed in checks.items() if not passed]
+
+        return {
+            'success': len(violated) == 0,
+            'violated_checks': violated,
+            'thresholds': {
+                'max_pkt_loss_pct': max_pkt_loss_pct,
+                'min_delivery_rate_pct': min_delivery_rate_pct,
+                'max_reward_degradation_pct': max_reward_degradation_pct,
+                'max_delay_p95': max_delay_p95,
+            },
+            'observed': {
+                'mean_pkt_loss': pkt_loss,
+                'mean_delivery_rate': delivery,
+                'reward_degradation_pct': reward_deg,
+                'mean_delay_p95': delay_p95,
+            },
+        }
+
+    def _summarize_variant_attacks(self, variant_results: Dict) -> Dict:
+        by_type = defaultdict(list)
+        total_cases = 0
+        success_cases = 0
+
+        for key, payload in variant_results.items():
+            if not isinstance(payload, dict):
+                continue
+            if 'run_config' not in payload or 'slo' not in payload:
+                continue
+            run_cfg = payload['run_config']
+            attack_type = run_cfg.get('attack_type', 'unknown')
+            epsilon = float(run_cfg.get('epsilon', 0.0))
+            success = bool(payload['slo'].get('success', False))
+            by_type[attack_type].append((epsilon, success))
+            total_cases += 1
+            if success:
+                success_cases += 1
+
+        attack_type_summary = {}
+        for attack_type, cases in by_type.items():
+            ordered = sorted(cases, key=lambda x: x[0])
+            critical = None
+            for eps, success in ordered:
+                if not success:
+                    critical = eps
+                    break
+            attack_type_summary[attack_type] = {
+                'tested_cases': len(ordered),
+                'slo_success_rate_pct': float(
+                    100.0 * sum(1 for _, success in ordered if success) / max(1, len(ordered))
+                ),
+                'critical_epsilon': critical,
+            }
+
+        return {
+            'tested_cases': total_cases,
+            'slo_success_rate_pct': float(100.0 * success_cases / max(1, total_cases)),
+            'attack_types': attack_type_summary,
+        }
+
+    # ── ranking helpers ─────────────────────────────────────────────────────
+
+    def _score_profiles(self) -> Dict:
+        cfg = self.config.get('scoring', {})
+        profiles = cfg.get('profiles')
+        if profiles:
+            return profiles
+        return {
+            'default': {
+                'higher_is_better': {
+                    'mean_delivery_rate': 0.35,
+                    'mean_goodput_per_step': 0.30,
+                },
+                'lower_is_better': {
+                    'mean_pkt_loss': 0.20,
+                    'mean_delay_p95': 0.10,
+                    'mean_backlog_end': 0.05,
+                },
+            }
+        }
+
+    @staticmethod
+    def _normalized_scores(items: List[Dict], metric: str, higher_is_better: bool) -> Dict[str, float]:
+        vals = [float(it.get(metric, 0.0)) for it in items]
+        if not vals:
+            return {}
+        vmin, vmax = min(vals), max(vals)
+        if vmax - vmin < 1e-12:
+            return {it['name']: 1.0 for it in items}
+
+        out = {}
+        for it in items:
+            v = float(it.get(metric, 0.0))
+            base = (v - vmin) / (vmax - vmin)
+            out[it['name']] = base if higher_is_better else (1.0 - base)
+        return out
+
+    def _compute_composite_scores(self, items: List[Dict], profile: Dict) -> List[Dict]:
+        higher = profile.get('higher_is_better', {})
+        lower = profile.get('lower_is_better', {})
+        metric_scores = {}
+
+        for metric in higher:
+            metric_scores[metric] = self._normalized_scores(items, metric, higher_is_better=True)
+        for metric in lower:
+            metric_scores[metric] = self._normalized_scores(items, metric, higher_is_better=False)
+
+        total_weight = float(sum(higher.values()) + sum(lower.values())) or 1.0
+        ranked = []
+        for it in items:
+            name = it['name']
+            weighted = 0.0
+            for metric, w in higher.items():
+                weighted += float(w) * metric_scores.get(metric, {}).get(name, 0.0)
+            for metric, w in lower.items():
+                weighted += float(w) * metric_scores.get(metric, {}).get(name, 0.0)
+            ranked.append({
+                'name': name,
+                'composite_score': float(100.0 * weighted / total_weight),
+                'metrics': it,
+            })
+
+        ranked.sort(key=lambda x: x['composite_score'], reverse=True)
+        for i, row in enumerate(ranked, start=1):
+            row['rank'] = i
+        return ranked
+
+    def _build_phase2_rankings(self, phase2_results: Dict) -> Dict:
+        profiles = self._score_profiles()
+        out = {'profiles': {}, 'scenarios': {}}
+
+        for scenario in ['normal', 'dual_link_failure']:
+            items = []
+            for name, payload in phase2_results.items():
+                if name == 'OSPF':
+                    continue
+                if scenario not in payload:
+                    continue
+                metrics = payload[scenario]
+                items.append({'name': name, **metrics})
+
+            out['scenarios'][scenario] = {}
+            for profile_name, profile in profiles.items():
+                out['scenarios'][scenario][profile_name] = self._compute_composite_scores(items, profile)
+
+        out['profiles'] = profiles
+        return out
+
+    def _build_phase3_rankings(self, phase3_results: Dict) -> Dict:
+        profiles = self._score_profiles()
+        out = {'profiles': profiles, 'overall': {}, 'by_attack_type': {}}
+
+        # Aggregate per variant across all standard attack cases
+        per_variant = []
+        by_attack_type = defaultdict(list)
+        for name, payload in phase3_results.items():
+            if name.startswith('_') or not isinstance(payload, dict):
+                continue
+
+            summary = payload.get('attack_summary', {})
+            metrics_acc = {
+                'mean_pkt_loss': [],
+                'mean_delivery_rate': [],
+                'mean_delay_p95': [],
+                'mean_backlog_end': [],
+                'mean_goodput_per_step': [],
+            }
+
+            for key, case in payload.items():
+                if not isinstance(case, dict):
+                    continue
+                if 'attacked' not in case or 'run_config' not in case:
+                    continue
+                attacked = case['attacked']
+                run_cfg = case['run_config']
+                atype = run_cfg.get('attack_type', 'unknown')
+                row = {
+                    'name': name,
+                    'attack_type': atype,
+                    'mean_pkt_loss': float(attacked.get('mean_pkt_loss', 0.0)),
+                    'mean_delivery_rate': float(attacked.get('mean_delivery_rate', 0.0)),
+                    'mean_delay_p95': float(attacked.get('mean_delay_p95', 0.0)),
+                    'mean_backlog_end': float(attacked.get('mean_backlog_end', 0.0)),
+                    'mean_goodput_per_step': float(attacked.get('mean_goodput_per_step', 0.0)),
+                }
+                by_attack_type[atype].append(row)
+                for metric in metrics_acc:
+                    metrics_acc[metric].append(row[metric])
+
+            per_variant.append({
+                'name': name,
+                'mean_pkt_loss': float(np.mean(metrics_acc['mean_pkt_loss'])) if metrics_acc['mean_pkt_loss'] else 0.0,
+                'mean_delivery_rate': float(np.mean(metrics_acc['mean_delivery_rate'])) if metrics_acc['mean_delivery_rate'] else 0.0,
+                'mean_delay_p95': float(np.mean(metrics_acc['mean_delay_p95'])) if metrics_acc['mean_delay_p95'] else 0.0,
+                'mean_backlog_end': float(np.mean(metrics_acc['mean_backlog_end'])) if metrics_acc['mean_backlog_end'] else 0.0,
+                'mean_goodput_per_step': float(np.mean(metrics_acc['mean_goodput_per_step'])) if metrics_acc['mean_goodput_per_step'] else 0.0,
+                'slo_success_rate_pct': float(summary.get('slo_success_rate_pct', 0.0)),
+            })
+
+        for profile_name, profile in profiles.items():
+            out['overall'][profile_name] = self._compute_composite_scores(per_variant, profile)
+
+        # Per attack type ranking
+        for atype, rows in by_attack_type.items():
+            out['by_attack_type'][atype] = {}
+            # collapse by variant within attack type
+            per_variant_rows = defaultdict(lambda: {
+                'mean_pkt_loss': [],
+                'mean_delivery_rate': [],
+                'mean_delay_p95': [],
+                'mean_backlog_end': [],
+                'mean_goodput_per_step': [],
+            })
+            for row in rows:
+                p = per_variant_rows[row['name']]
+                for k in p:
+                    p[k].append(row[k])
+
+            collapsed = []
+            for name, data in per_variant_rows.items():
+                collapsed.append({
+                    'name': name,
+                    'mean_pkt_loss': float(np.mean(data['mean_pkt_loss'])) if data['mean_pkt_loss'] else 0.0,
+                    'mean_delivery_rate': float(np.mean(data['mean_delivery_rate'])) if data['mean_delivery_rate'] else 0.0,
+                    'mean_delay_p95': float(np.mean(data['mean_delay_p95'])) if data['mean_delay_p95'] else 0.0,
+                    'mean_backlog_end': float(np.mean(data['mean_backlog_end'])) if data['mean_backlog_end'] else 0.0,
+                    'mean_goodput_per_step': float(np.mean(data['mean_goodput_per_step'])) if data['mean_goodput_per_step'] else 0.0,
+                })
+
+            for profile_name, profile in profiles.items():
+                out['by_attack_type'][atype][profile_name] = self._compute_composite_scores(
+                    collapsed, profile
+                )
+
+        return out
+
+    # ── seed expansion & rank stability ─────────────────────────────────────
+
+    @staticmethod
+    def _kendall_tau_simple(rank1: List[str], rank2: List[str]) -> float:
+        """Compute Kendall tau correlation between two rank orderings.
+        
+        Simple implementation: count concordant vs discordant pairs.
+        Returns tau in [-1, 1] where 1 = perfect agreement, 0 = independence.
+        """
+        if not rank1 or not rank2:
+            return 1.0
+        
+        # Map names to indices in rank2
+        rank2_idx = {name: i for i, name in enumerate(rank2)}
+        
+        # Count concordant and discordant pairs in rank1 that map to rank2
+        concordant = discordant = 0
+        for i in range(len(rank1)):
+            for j in range(i + 1, len(rank1)):
+                name_i, name_j = rank1[i], rank1[j]
+                if name_i not in rank2_idx or name_j not in rank2_idx:
+                    continue
+                idx_i, idx_j = rank2_idx[name_i], rank2_idx[name_j]
+                if idx_i < idx_j:  # Same order in rank2
+                    concordant += 1
+                else:
+                    discordant += 1
+        
+        total = concordant + discordant
+        if total == 0:
+            return 1.0
+        
+        tau = (concordant - discordant) / total
+        return float(tau)
+
+    def _compute_rank_stability(self, prev_ranked: List[Dict], curr_ranked: List[Dict],
+                                top_k: int = 5) -> float:
+        """Compute stability between previous and current rankings using top-K order.
+        
+        Uses Kendall tau correlation on top-K variants.
+        Returns tau in [0, 1] (clamped to non-negative for agreement metric).
+        """
+        prev_names = [r['name'] for r in prev_ranked[:top_k]]
+        curr_names = [r['name'] for r in curr_ranked[:top_k]]
+        
+        if not prev_names or not curr_names:
+            return 1.0
+        
+        if kendalltau is not None:
+            try:
+                # Use scipy if available
+                tau_val, _ = kendalltau(
+                    [next((i for i, n in enumerate(prev_names) if n == name), len(prev_names)) 
+                     for name in curr_names],
+                    list(range(len(curr_names)))
+                )
+                return float(max(0.0, tau_val))  # Ensure non-negative
+            except Exception:
+                pass  # Fall back to simple implementation
+        
+        # Simple Kendall tau implementation
+        tau = self._kendall_tau_simple(prev_names, curr_names)
+        return float(max(0.0, tau))
+
+    # ── plotting ──────────────────────────────────────────────────────────────
+
+    def _generate_plots_for_phase(self, phase: int):
+        if not PLOTTING_AVAILABLE:
+            return
+
+        logger.info(f"[Plot] Generating plots for Phase {phase}")
+        try:
+            output_dir = Path(self.results_dir)
+            if phase == 1:
+                plot_phase1_training(
+                    self._load('phase1_training_results.json'),
+                    output_dir,
+                )
+            elif phase == 2:
+                plot_phase2_evaluation(
+                    self._load('phase2_maddpg_results.json'),
+                    output_dir,
+                    self._load('phase2_rankings.json'),
+                )
+            elif phase == 3:
+                plot_phase3_fgsm(
+                    self._load('phase3_fgsm_results.json'),
+                    output_dir,
+                    self._load('phase3_rankings.json'),
+                )
+        except Exception as exc:
+            logger.error(f"[Plot] Phase {phase} plot generation failed: {exc}")
 
     # ── full pipeline ─────────────────────────────────────────────────────────
 
     def run_all(self):
         t0 = time.time()
         tr = self.run_training()
-        self.evaluate_maddpg(tr)
-        self.evaluate_fgsm(tr)
+        p2 = self.evaluate_maddpg(tr)
+        p3 = self.evaluate_fgsm(tr)
+        summary = {
+            'phase2': self._build_phase2_rankings(p2),
+            'phase3': self._build_phase3_rankings(p3),
+        }
+        self._save(summary, 'experiment_summary_rankings.json')
         logger.info(f"All phases done in {(time.time()-t0)/3600:.2f} h  →  {self.results_dir}")
 
     # ── persistence ───────────────────────────────────────────────────────────
@@ -422,8 +1102,8 @@ def main():
 
     if   args.phase == 'all':    runner.run_all()
     elif args.phase == 'train':  runner.run_training()
-    elif args.phase == 'paper1': runner.evaluate_paper1()
-    elif args.phase == 'paper2': runner.evaluate_paper2()
+    elif args.phase == 'paper1': runner.evaluate_maddpg()
+    elif args.phase == 'paper2': runner.evaluate_fgsm()
 
 
 if __name__ == '__main__':

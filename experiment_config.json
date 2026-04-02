@@ -21,6 +21,46 @@
     "link_failure_scenarios": [0, 2]
   },
 
+  "reward": {
+    "delivery_weight": 1.0,
+    "max_util_penalty": 0.8,
+    "var_util_penalty": 0.4,
+    "drop_penalty": 0.6,
+    "backlog_penalty": 0.05
+  },
+
+  "runtime_control": {
+    "profile": "standard",
+    "max_attack_cases_per_variant": -1,
+    "max_attack_variants": -1,
+    "phase3_enable_slo_pruning": true,
+    "phase3_consecutive_fail_limit": 2,
+    "phase3_skip_after_critical_epsilon": true,
+    "seed_expansion": {
+      "enable_adaptive": true,
+      "initial_seeds": 10,
+      "max_seeds_for_ranking": 50,
+      "rank_stability_check_interval": 5,
+      "top_k_for_stability": 5,
+      "stability_threshold": 0.95
+    },
+    "profiles": {
+      "standard": {},
+      "thorough": {},
+      "quick": {
+        "training": {
+          "epochs": 1,
+          "episodes_per_epoch": 1,
+          "timesteps_per_episode": 10
+        },
+        "paper1_eval": {
+          "evaluation_episodes": 2
+        },
+        "attack_eval_episodes": 2
+      }
+    }
+  },
+
   "variants": [
     {
       "name": "CC-Simple",
@@ -91,6 +131,40 @@
     {"attack_type": "reward_minimize", "epsilon": 0.05, "evaluation_episodes": 30},
     {"attack_type": "confusion",       "epsilon": 0.05, "evaluation_episodes": 30}
   ],
+
+  "fgsm_slo": {
+    "max_pkt_loss_pct": 10.0,
+    "min_delivery_rate_pct": 85.0,
+    "max_reward_degradation_pct": 25.0,
+    "max_delay_p95": 12.0
+  },
+
+  "scoring": {
+    "profiles": {
+      "default": {
+        "higher_is_better": {
+          "mean_delivery_rate": 0.35,
+          "mean_goodput_per_step": 0.30
+        },
+        "lower_is_better": {
+          "mean_pkt_loss": 0.20,
+          "mean_delay_p95": 0.10,
+          "mean_backlog_end": 0.05
+        }
+      },
+      "robustness": {
+        "higher_is_better": {
+          "mean_delivery_rate": 0.25,
+          "mean_goodput_per_step": 0.20
+        },
+        "lower_is_better": {
+          "mean_pkt_loss": 0.30,
+          "mean_delay_p95": 0.15,
+          "mean_backlog_end": 0.10
+        }
+      }
+    }
+  },
 
   "hardware": {
     "gpu_memory_gb": 16,
