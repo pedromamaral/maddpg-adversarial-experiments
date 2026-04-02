@@ -81,6 +81,7 @@ class CriticNetwork(nn.Module):
 
     def __init__(self, input_dims: int, fc1_dims: int, fc2_dims: int,
                  n_agents: int, n_actions: int, name: str, chkpt_dir: str,
+                 action_input_dims: Optional[int] = None,
                  network_type: str = 'simple_q_network'):
         super(CriticNetwork, self).__init__()
 
@@ -88,12 +89,13 @@ class CriticNetwork(nn.Module):
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
         self.n_actions = n_actions
+        self.action_input_dims = action_input_dims or (n_agents * n_actions)
         self.network_type = network_type
         self.name = name
         self.checkpoint_file = os.path.join(chkpt_dir, name + '_critic.pth')
 
         # Shared trunk: concatenate state + action
-        self.fc1 = nn.Linear(input_dims + n_agents * n_actions, fc1_dims)
+        self.fc1 = nn.Linear(input_dims + self.action_input_dims, fc1_dims)
         self.fc2 = nn.Linear(fc1_dims, fc2_dims)
 
         if network_type == 'duelling_q_network':
@@ -225,6 +227,9 @@ class Agent:
             GNNProcessor(input_dim=1, hidden_dim=16, output_dim=actor_dims)
             if use_gnn else None
         )
+        critic_action_dims = (
+            n_agents * n_actions if critic_type == 'central_critic' else n_actions
+        )
 
         # Online networks
         self.actor = ActorNetwork(
@@ -235,6 +240,7 @@ class Agent:
             input_dims=critic_dims, fc1_dims=fc1, fc2_dims=fc2,
             n_agents=n_agents, n_actions=n_actions,
             name=f'{self.agent_name}_critic', chkpt_dir=chkpt_dir,
+            action_input_dims=critic_action_dims,
             network_type=network_type
         )
 
@@ -247,6 +253,7 @@ class Agent:
             input_dims=critic_dims, fc1_dims=fc1, fc2_dims=fc2,
             n_agents=n_agents, n_actions=n_actions,
             name=f'{self.agent_name}_target_critic', chkpt_dir=chkpt_dir,
+            action_input_dims=critic_action_dims,
             network_type=network_type
         )
 
@@ -505,21 +512,40 @@ if __name__ == '__main__':
     set_global_seeds(42)
 
     actor_dims = [26] * 5
-    critic_dims = [130] * 5  # central: 5 agents * 26 obs
     n_agents = 5
     n_actions = 3
 
     configs = [
-        {'critic_type': 'central_critic', 'network_type': 'simple_q_network', 'use_gnn': False},
-        {'critic_type': 'central_critic', 'network_type': 'duelling_q_network', 'use_gnn': False},
-        {'critic_type': 'local_critic',   'network_type': 'duelling_q_network', 'use_gnn': False},
-        {'critic_type': 'central_critic', 'network_type': 'simple_q_network',   'use_gnn': True},
+        {
+            'critic_type': 'central_critic',
+            'critic_dims': [130] * 5,
+            'network_type': 'simple_q_network',
+            'use_gnn': False,
+        },
+        {
+            'critic_type': 'central_critic',
+            'critic_dims': [130] * 5,
+            'network_type': 'duelling_q_network',
+            'use_gnn': False,
+        },
+        {
+            'critic_type': 'local_critic',
+            'critic_dims': [26] * 5,
+            'network_type': 'duelling_q_network',
+            'use_gnn': False,
+        },
+        {
+            'critic_type': 'central_critic',
+            'critic_dims': [130] * 5,
+            'network_type': 'simple_q_network',
+            'use_gnn': True,
+        },
     ]
 
     for i, config in enumerate(configs):
         print(f'\nConfiguration {i + 1}: {config}')
         maddpg = MADDPG(
-            actor_dims=actor_dims, critic_dims=critic_dims,
+            actor_dims=actor_dims, critic_dims=config['critic_dims'],
             n_agents=n_agents, n_actions=n_actions,
             chkpt_dir=f'test_models/config_{i}', **config
         )
