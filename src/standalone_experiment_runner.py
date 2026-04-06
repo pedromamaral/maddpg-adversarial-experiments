@@ -374,8 +374,9 @@ class StandaloneExperimentRunner:
                            n_eps: int, t_per_ep: int,
                            n_link_failures: int = 0) -> Dict:
         ep_rewards, ep_losses, ep_utils = [], [], []
-        ep_delivery, ep_goodput = [], []
+        ep_pdr, ep_hop_frac, ep_goodput = [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
+        ep_hops_mean, ep_overload_frac = [], []
         for _ in range(n_eps):
             states = env.reset()
             if n_link_failures:
@@ -390,24 +391,30 @@ class StandaloneExperimentRunner:
                 ep_dropped += info['packets_dropped']
             ep_rewards.append(ep_r / len(maddpg.agents))
             ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
-            ep_utils.append(float(np.mean(env.engine.get_link_utilization_distribution())))
+            ep_utils.append(float(np.nanmean(env.engine.get_link_utilization_distribution())))
             ep_stats = env.get_stats()
-            ep_delivery.append(float(ep_stats.get('delivery_rate', 0.0)))
+            ep_pdr.append(float(ep_stats.get('end_to_end_pdr', 0.0)))
+            ep_hop_frac.append(float(ep_stats.get('hop_delivery_frac', 0.0)))
             ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
             ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
             ep_backlog.append(float(ep_stats.get('backlog_end', 0.0)))
             ep_util_p95.append(float(ep_stats.get('util_p95', 0.0)))
+            ep_hops_mean.append(float(ep_stats.get('hops_mean', 0.0)))
+            ep_overload_frac.append(float(ep_stats.get('overload_step_fraction', 0.0)))
         return {
-            'mean_reward':   float(np.mean(ep_rewards)),
-            'std_reward':    float(np.std(ep_rewards)),
-            'mean_pkt_loss': float(np.mean(ep_losses)),
-            'std_pkt_loss':  float(np.std(ep_losses)),
-            'mean_util':     float(np.mean(ep_utils)),
-            'mean_delivery_rate': float(np.mean(ep_delivery)),
+            'mean_reward':      float(np.mean(ep_rewards)),
+            'std_reward':       float(np.std(ep_rewards)),
+            'mean_pkt_loss':    float(np.mean(ep_losses)),
+            'std_pkt_loss':     float(np.std(ep_losses)),
+            'mean_util':        float(np.mean(ep_utils)),
+            'mean_end_to_end_pdr':   float(np.mean(ep_pdr)),
+            'mean_hop_delivery_frac': float(np.mean(ep_hop_frac)),
             'mean_goodput_per_step': float(np.mean(ep_goodput)),
-            'mean_delay_p95': float(np.mean(ep_delay_p95)),
+            'mean_delay_p95':   float(np.mean(ep_delay_p95)),
             'mean_backlog_end': float(np.mean(ep_backlog)),
-            'mean_util_p95': float(np.mean(ep_util_p95)),
+            'mean_util_p95':    float(np.mean(ep_util_p95)),
+            'mean_hops_mean':   float(np.mean(ep_hops_mean)),
+            'mean_overload_fraction': float(np.mean(ep_overload_frac)),
         }
 
     def _run_ospf_episodes(self, engine: NetworkEngine,
@@ -424,7 +431,7 @@ class StandaloneExperimentRunner:
                 ep_sent    += info['packets_sent']
                 ep_dropped += info['packets_dropped']
             ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
-            ep_utils.append(float(np.mean(engine.get_link_utilization_distribution())))
+            ep_utils.append(float(np.nanmean(engine.get_link_utilization_distribution())))
         return {
             'mean_pkt_loss': float(np.mean(ep_losses)),
             'std_pkt_loss':  float(np.std(ep_losses)),
@@ -438,6 +445,7 @@ class StandaloneExperimentRunner:
             u, v = edges[idx]
             if engine.topology.graph.has_edge(u, v):
                 engine.topology.graph.remove_edge(u, v)
+        engine.topology.refresh_path_cache()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # PHASE 3 — FGSM atttack evaluation
@@ -640,14 +648,15 @@ class StandaloneExperimentRunner:
             ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
             ep_backlog.append(float(ep_stats.get('backlog_end', 0.0)))
             ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
+            ep_delivery[-1] = float(ep_stats.get('end_to_end_pdr', ep_delivery[-1]))
 
         return {
             'mean_reward':   float(np.mean(ep_rewards)),
             'std_reward':    float(np.std(ep_rewards)),
             'mean_pkt_loss': float(np.mean(ep_losses)),
             'std_pkt_loss':  float(np.std(ep_losses)),
-            'mean_delivery_rate': float(np.mean(ep_delivery)),
-            'std_delivery_rate': float(np.std(ep_delivery)),
+            'mean_end_to_end_pdr': float(np.mean(ep_delivery)),
+            'std_end_to_end_pdr':  float(np.std(ep_delivery)),
             'mean_delay_p95': float(np.mean(ep_delay_p95)),
             'mean_backlog_end': float(np.mean(ep_backlog)),
             'mean_goodput_per_step': float(np.mean(ep_goodput)),
@@ -698,8 +707,8 @@ class StandaloneExperimentRunner:
 
     def _compare(self, clean: Dict, attacked: Dict) -> Dict:
         cr, ar = clean['mean_reward'], attacked['mean_reward']
-        clean_delivery = clean.get('mean_delivery_rate', 0.0)
-        attacked_delivery = attacked.get('mean_delivery_rate', 0.0)
+        clean_delivery = clean.get('mean_end_to_end_pdr', 0.0)
+        attacked_delivery = attacked.get('mean_end_to_end_pdr', 0.0)
         return {
             'reward_degradation_pct':  float((cr - ar) / abs(cr) * 100 if cr != 0 else 0),
             'pkt_loss_increase_pct':   float(attacked['mean_pkt_loss'] - clean['mean_pkt_loss']),
@@ -715,7 +724,7 @@ class StandaloneExperimentRunner:
 
         reward_deg = self._compare(clean, attacked)['reward_degradation_pct']
         pkt_loss = float(attacked.get('mean_pkt_loss', 0.0))
-        delivery = float(attacked.get('mean_delivery_rate', 0.0))
+        delivery = float(attacked.get('mean_end_to_end_pdr', 0.0))
         delay_p95 = float(attacked.get('mean_delay_p95', 0.0))
 
         checks = {
@@ -737,7 +746,7 @@ class StandaloneExperimentRunner:
             },
             'observed': {
                 'mean_pkt_loss': pkt_loss,
-                'mean_delivery_rate': delivery,
+                'mean_end_to_end_pdr': delivery,
                 'reward_degradation_pct': reward_deg,
                 'mean_delay_p95': delay_p95,
             },
@@ -794,15 +803,30 @@ class StandaloneExperimentRunner:
         return {
             'default': {
                 'higher_is_better': {
-                    'mean_delivery_rate': 0.35,
-                    'mean_goodput_per_step': 0.30,
+                    'mean_end_to_end_pdr':   0.35,
+                    'mean_goodput_per_step': 0.20,
                 },
                 'lower_is_better': {
-                    'mean_pkt_loss': 0.20,
-                    'mean_delay_p95': 0.10,
-                    'mean_backlog_end': 0.05,
+                    'mean_pkt_loss':          0.20,
+                    'mean_delay_p95':         0.10,
+                    'mean_backlog_end':       0.05,
+                    'mean_hops_mean':         0.05,
+                    'mean_overload_fraction': 0.05,
                 },
-            }
+            },
+            'robustness': {
+                'higher_is_better': {
+                    'mean_end_to_end_pdr':   0.35,
+                    'mean_goodput_per_step': 0.20,
+                },
+                'lower_is_better': {
+                    'mean_pkt_loss':          0.20,
+                    'mean_delay_p95':         0.10,
+                    'mean_backlog_end':       0.05,
+                    'mean_hops_mean':         0.05,
+                    'mean_overload_fraction': 0.05,
+                },
+            },
         }
 
     @staticmethod

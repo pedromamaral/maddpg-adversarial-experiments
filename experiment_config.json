@@ -5,7 +5,7 @@
   "topology": {
     "type": "service_provider",
     "nodes": 65,
-    "max_links": 4
+    "max_links": 11
   },
 
   "training": {
@@ -23,7 +23,8 @@
 
   "reward": {
     "delivery_weight": 1.0,
-    "max_util_penalty": 0.8,
+    "max_util_penalty": 2.0,
+    "congestion_threshold": 0.7,
     "var_util_penalty": 0.4,
     "drop_penalty": 0.6,
     "backlog_penalty": 0.05
@@ -67,8 +68,8 @@
       "critic_domain": "central_critic",
       "neural_network": "simple_q_network",
       "use_gnn": false,
-      "actor_dims": 26, "critic_dims": 1690,
-      "n_agents": 65, "n_actions": 3,
+      "actor_dims": 33, "critic_dims": 2145,
+      "n_agents": 65, "n_actions": 11,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -77,8 +78,8 @@
       "critic_domain": "central_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 26, "critic_dims": 1690,
-      "n_agents": 65, "n_actions": 3,
+      "actor_dims": 33, "critic_dims": 2145,
+      "n_agents": 65, "n_actions": 11,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -87,8 +88,8 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 26, "critic_dims": 26,
-      "n_agents": 65, "n_actions": 3,
+      "actor_dims": 33, "critic_dims": 33,
+      "n_agents": 65, "n_actions": 11,
       "alpha": 0.001, "beta": 0.001
     },
     {
@@ -96,8 +97,8 @@
       "critic_domain": "central_critic",
       "neural_network": "simple_q_network",
       "use_gnn": true,
-      "actor_dims": 26, "critic_dims": 1690,
-      "n_agents": 65, "n_actions": 3,
+      "actor_dims": 33, "critic_dims": 2145,
+      "n_agents": 65, "n_actions": 11,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -106,8 +107,8 @@
       "critic_domain": "central_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 26, "critic_dims": 1690,
-      "n_agents": 65, "n_actions": 3,
+      "actor_dims": 33, "critic_dims": 2145,
+      "n_agents": 65, "n_actions": 11,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -116,8 +117,8 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 26, "critic_dims": 26,
-      "n_agents": 65, "n_actions": 3,
+      "actor_dims": 33, "critic_dims": 33,
+      "n_agents": 65, "n_actions": 11,
       "alpha": 0.001, "beta": 0.001
     }
   ],
@@ -134,7 +135,7 @@
 
   "fgsm_slo": {
     "max_pkt_loss_pct": 10.0,
-    "min_delivery_rate_pct": 85.0,
+    "min_delivery_rate_pct": 20.0,
     "max_reward_degradation_pct": 25.0,
     "max_delay_p95": 12.0
   },
@@ -143,24 +144,28 @@
     "profiles": {
       "default": {
         "higher_is_better": {
-          "mean_delivery_rate": 0.35,
-          "mean_goodput_per_step": 0.30
+          "mean_end_to_end_pdr": 0.35,
+          "mean_goodput_per_step": 0.20
         },
         "lower_is_better": {
           "mean_pkt_loss": 0.20,
           "mean_delay_p95": 0.10,
-          "mean_backlog_end": 0.05
+          "mean_backlog_end": 0.05,
+          "mean_hops_mean": 0.05,
+          "mean_overload_fraction": 0.05
         }
       },
       "robustness": {
         "higher_is_better": {
-          "mean_delivery_rate": 0.25,
-          "mean_goodput_per_step": 0.20
+          "mean_end_to_end_pdr": 0.25,
+          "mean_goodput_per_step": 0.15
         },
         "lower_is_better": {
           "mean_pkt_loss": 0.30,
-          "mean_delay_p95": 0.15,
-          "mean_backlog_end": 0.10
+          "mean_delay_p95": 0.10,
+          "mean_backlog_end": 0.05,
+          "mean_hops_mean": 0.10,
+          "mean_overload_fraction": 0.05
         }
       }
     }

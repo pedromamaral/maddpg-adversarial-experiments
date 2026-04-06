@@ -82,26 +82,19 @@ class FGSMAttackFramework:
                 if hasattr(agent, 'use_gnn') and agent.use_gnn and hasattr(agent, 'gnn_processor'):
                     gp = agent.gnn_processor
                     if gp is not None and getattr(gp, 'available', False):
-                        if hasattr(gp, 'process_state'):
-                            # Use GNNProcessor's own method — it knows the full 65-node topology
-                            gnn_embedding = gp.process_state(state_tensor[0].detach().cpu().numpy())
-                            current_state = torch.tensor(
-                                np.asarray(gnn_embedding, dtype=np.float32),
-                                device=self.device
-                        ).unsqueeze(0)
-                        # NOTE: gradient now flows only through actor, not GNN — still valid for FGSM
-                        else:
-                            # Fallback: use only bandwidth features (first max_degree=4 features per paper)
-                            num_neighbors = min(4, state_tensor.shape[1])
-                            x_gnn = state_tensor[:, :num_neighbors].reshape(num_neighbors, 1)
-                            edge_indices = []
-                            for i in range(num_neighbors - 1):
-                                edge_indices.extend([[i, i + 1], [i + 1, i]])
-                            edge_index = torch.tensor(
-                                edge_indices, dtype=torch.long, device=self.device
-                            ).t().contiguous()
-                            gnn_out = gp(x_gnn, edge_index)
-                            current_state = gnn_out.mean(dim=0).unsqueeze(0)
+                        # Keep this path differentiable w.r.t. state_tensor.
+                        # The previous numpy-based process_state() detached the graph,
+                        # causing state_tensor.grad to be None for GNN variants.
+                        num_neighbors = min(4, state_tensor.shape[1])
+                        x_gnn = state_tensor[:, :num_neighbors].reshape(num_neighbors, 1)
+                        edge_indices = []
+                        for i in range(num_neighbors - 1):
+                            edge_indices.extend([[i, i + 1], [i + 1, i]])
+                        edge_index = torch.tensor(
+                            edge_indices, dtype=torch.long, device=self.device
+                        ).t().contiguous()
+                        gnn_out = gp(x_gnn, edge_index)
+                        current_state = gnn_out.mean(dim=0).unsqueeze(0)
                 action_probs = agent.actor(current_state)
 
                 if self.attack_type == 'packet_loss':

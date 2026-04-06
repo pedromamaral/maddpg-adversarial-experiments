@@ -15,8 +15,9 @@ import itertools
 
 # ── Reward hyper-parameters ──────────────────────────────────────────────────
 ALPHA = 1.0   # delivery weight
-BETA  = 0.8   # max-utilisation penalty
+BETA  = 2.0   # congestion penalty (only fires above CONGESTION_THRESHOLD)
 GAMMA = 0.4   # utilisation variance penalty (load-balance incentive)
+CONGESTION_THRESHOLD = 0.7  # utilisation below this is not penalised
 
 # ── Packet parameters ─────────────────────────────────────────────────────────
 PACKET_SIZE    = 0.03   # normalised bandwidth cost per packet per hop
@@ -100,6 +101,8 @@ class NetworkTopology:
         self.core_nodes   = core_nodes
         self.dist_nodes   = dist_nodes
         self.access_nodes = access_nodes
+        # Compute topology max degree — used to size the state/action vectors.
+        self.max_degree = max(d for _, d in G.degree())
         return G
 
     def _grid_topology(self) -> nx.Graph:
@@ -111,6 +114,7 @@ class NetworkTopology:
             G[u][v].update(capacity=1.0, utilization=0.0)
         self.core_nodes = self.dist_nodes = []
         self.access_nodes = list(G.nodes())
+        self.max_degree = max(d for _, d in G.degree())
         return G
 
     def _random_topology(self) -> nx.Graph:
@@ -121,7 +125,22 @@ class NetworkTopology:
             G[u][v].update(capacity=random.uniform(1.0, 5.0), utilization=0.0)
         self.core_nodes = self.dist_nodes = []
         self.access_nodes = list(G.nodes())
+        self.max_degree = max(d for _, d in G.degree())
         return G
+
+    # ── path-cache helpers ───────────────────────────────────────────────────
+
+    def refresh_path_cache(self):
+        """Recompute shortest-path cache after topology changes (e.g. link failures).
+        Called by NetworkEngine._inject_failures so the OSPF baseline re-routes
+        correctly rather than following stale pre-failure paths.
+        """
+        self.path_cache.clear()
+        for src, dst in itertools.permutations(self.hosts, 2):
+            try:
+                self.path_cache[(src, dst)] = nx.shortest_path(self.graph, src, dst)
+            except nx.NetworkXNoPath:
+                self.path_cache[(src, dst)] = []
 
     # ── edge helpers ─────────────────────────────────────────────────────────
 
@@ -169,8 +188,12 @@ class NetworkEngine:
             'var_util_penalty': GAMMA,
             'drop_penalty': 0.6,
             'backlog_penalty': 0.05,
+            'congestion_threshold': CONGESTION_THRESHOLD,
         }
         self.reward_cfg = {**base_reward, **(reward_config or {})}
+
+        # Expose topology max degree so calling code can read actor_dims once.
+        self.max_neighbors: int = self.topology.max_degree
 
         # Node-tier lookup — used by Paper-2 attack surface analysis
         self._tier: Dict[str, str] = {}
@@ -197,28 +220,39 @@ class NetworkEngine:
         self._episode_stats = self._blank_stats()
         self._inject_packets(INIT_PACKETS)
 
+    @property
+    def state_dims(self) -> int:
+        """Total state-vector size: max_neighbors + 22 fixed slots."""
+        return self.max_neighbors + 22
+
     def get_state(self, host: str) -> np.ndarray:
         """
-        26-dimensional observation for one agent:
-          [0:4]   available bandwidth to neighbours (up to 4, zero-padded)
-          [4]     normalised queue depth at this node
-          [5]     destination diversity in queue
-          [6]     normalised timestep
-          [7:22]  one-hot: does queue contain a packet for each of
-                  the first 15 hosts?
-          [22]    mean adjacent link utilisation
-          [23]    max adjacent link utilisation
-          [24]    variance of adjacent link utilisation
-          [25]    global mean link utilisation
+        (MAX_NEIGHBORS + 22)-dimensional observation for one agent.
+
+        Slot layout:
+          [0 : MAX_NEIGHBORS]           available bandwidth to each neighbour
+                                        (zero-padded when node has fewer neighbours)
+          [MAX_NEIGHBORS]               normalised queue depth
+          [MAX_NEIGHBORS+1]             destination diversity in queue
+          [MAX_NEIGHBORS+2]             normalised timestep
+          [MAX_NEIGHBORS+3 :
+           MAX_NEIGHBORS+18]            one-hot: packet for each of the first 15 hosts?
+          [MAX_NEIGHBORS+18]            mean adjacent link utilisation
+          [MAX_NEIGHBORS+19]            max adjacent link utilisation
+          [MAX_NEIGHBORS+20]            variance of adjacent link utilisations
+          [MAX_NEIGHBORS+21]            global mean link utilisation
+
+        Total = max_neighbors + 22  (33 for service_provider/65-node/seed=42)
         """
-        nbrs  = self.topology.get_neighbors(host)
+        mn   = self.max_neighbors
+        nbrs = self.topology.get_neighbors(host)
         state = []
 
-        # 4 bandwidth slots
-        for i in range(4):
+        # MAX_NEIGHBORS bandwidth slots (zero-padded)
+        for i in range(mn):
             state.append(self.topology.avail_bw(host, nbrs[i]) if i < len(nbrs) else 0.0)
 
-        # queue summary
+        # queue summary — 3 slots
         q = self.packet_queue[host]
         dsts_in_queue = {p['dst'] for p in q}
         state.append(min(len(q), 20) / 20.0)
@@ -228,8 +262,6 @@ class NetworkEngine:
         # destination indicator — 15 slots
         for h in self.topology.hosts[:15]:
             state.append(1.0 if h in dsts_in_queue else 0.0)
-        while len(state) < 22:
-            state.append(0.0)
 
         # link statistics — 4 slots
         utils = [self.topology.get_util(host, nb) for nb in nbrs]
@@ -239,14 +271,14 @@ class NetworkEngine:
             state.append(float(np.var(utils)) if len(utils) > 1 else 0.0)
         else:
             state.extend([0.0, 0.0, 0.0])
-        global_util = float(np.mean(
-            [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
-        ))
+        edge_utils = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
+        global_util = float(np.mean(edge_utils)) if edge_utils else 0.0
         state.append(global_util)
 
-        # guarantee exactly 26 dims
-        state = state[:26]
-        while len(state) < 26:
+        # guarantee exactly (mn + 22) dims
+        total = mn + 22
+        state = state[:total]
+        while len(state) < total:
             state.append(0.0)
         return np.array(state, dtype=np.float32)
 
@@ -275,6 +307,7 @@ class NetworkEngine:
                 continue
 
             # choose next-hop
+            # action has max_neighbors slots; slice to actual neighbour count.
             probs = np.array(action[:len(nbrs)], dtype=np.float64)
             if probs.sum() > 0:
                 probs /= probs.sum()
@@ -331,7 +364,10 @@ class NetworkEngine:
             mx_util  = max(utils)
             var_util = float(np.var(utils)) if len(utils) > 1 else 0.0
             delivery_term = self.reward_cfg['delivery_weight'] * dr
-            max_util_term = self.reward_cfg['max_util_penalty'] * mx_util
+            # Congestion penalty: only fires above threshold so agents are not
+            # disincentivised from forwarding traffic at normal utilisation levels.
+            threshold = float(self.reward_cfg.get('congestion_threshold', CONGESTION_THRESHOLD))
+            max_util_term = self.reward_cfg['max_util_penalty'] * max(0.0, mx_util - threshold)
             var_util_term = self.reward_cfg['var_util_penalty'] * var_util
             drop_term = self.reward_cfg['drop_penalty'] * drop_ratio
             backlog_term = self.reward_cfg['backlog_penalty'] * backlog_ratio
@@ -394,6 +430,7 @@ class NetworkEngine:
     def get_episode_stats(self) -> Dict:
         s = self._episode_stats
         sent = max(1, s['packets_sent'])
+        injected = max(1, s['injected_count'])
         steps = max(1, s['steps'])
 
         delivered_delay = np.array(s['delivered_delay_samples'], dtype=np.float32)
@@ -405,10 +442,16 @@ class NetworkEngine:
         return {
             'total_reward': s['total_reward'],
             'packets_sent': s['packets_sent'],
+            'packets_injected': s['injected_count'],
             'packets_delivered': s['packets_delivered'],
             'packets_dropped': s['packets_dropped'],
+            # hop_delivery_frac: fraction of *forwarding events* that are deliveries
+            # (kept for transparency but not the primary paper metric)
+            'hop_delivery_frac': s['packets_delivered'] / sent * 100,
+            # end_to_end_pdr: fraction of *injected* packets successfully delivered
+            'end_to_end_pdr': s['packets_delivered'] / injected * 100,
+            # packet_loss_rate: fraction of forwarding events ending in a drop
             'packet_loss_rate': s['packets_dropped'] / sent * 100,
-            'delivery_rate': s['packets_delivered'] / sent * 100,
             'goodput_per_step': s['packets_delivered'] / steps,
             'backlog_end': sum(len(q) for q in self.packet_queue.values()),
             'backlog_avg': s['backlog_sum'] / steps,
@@ -417,9 +460,9 @@ class NetworkEngine:
             'delay_p95': float(np.percentile(delivered_delay, 95)) if delivered_delay.size else 0.0,
             'hops_mean': float(np.mean(delivered_hops)) if delivered_hops.size else 0.0,
             'hops_p95': float(np.percentile(delivered_hops, 95)) if delivered_hops.size else 0.0,
-            'util_mean': float(np.mean(step_mean_utils)) if step_mean_utils.size else 0.0,
-            'util_p95': float(np.percentile(step_mean_utils, 95)) if step_mean_utils.size else 0.0,
-            'util_max': float(np.max(step_max_utils)) if step_max_utils.size else 0.0,
+            'util_mean': float(np.nanmean(step_mean_utils)) if step_mean_utils.size else 0.0,
+            'util_p95': float(np.nanpercentile(step_mean_utils, 95)) if step_mean_utils.size else 0.0,
+            'util_max': float(np.nanmax(step_max_utils)) if step_max_utils.size else 0.0,
             'overload_step_fraction': float(
                 np.mean(step_max_utils >= 0.80)
             ) if step_max_utils.size else 0.0,
@@ -431,8 +474,11 @@ class NetworkEngine:
         }
 
     def get_link_utilization_distribution(self) -> np.ndarray:
+        edges = list(self.topology.graph.edges())
+        if not edges:
+            return np.array([0.0], dtype=np.float32)
         return np.array(
-            [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()],
+            [self.topology.get_util(u, v) for u, v in edges],
             dtype=np.float32
         )
 
@@ -500,12 +546,15 @@ class NetworkEngine:
                 'created_at': self.time_step,
                 'hops': 0,
             })
+        self._episode_stats['injected_count'] += n
 
     @staticmethod
     def _blank_stats() -> Dict:
         return {
             'total_reward': 0.0,
             'packets_sent': 0,
+            'packets_injected': 0,
+            'injected_count': 0,
             'packets_delivered': 0,
             'packets_dropped': 0,
             'steps': 0,

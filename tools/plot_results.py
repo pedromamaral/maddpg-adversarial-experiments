@@ -161,9 +161,11 @@ def plot_phase2_evaluation(results_dict: Dict,
                 _save(fig, output_dir, f"phase2_composite_{scenario}_{profile}")
 
     metrics = [
-        ("mean_delivery_rate", "Delivery Rate"),
+        ("mean_end_to_end_pdr", "End-to-End PDR (%)"),
+        ("mean_hop_delivery_frac", "Per-Hop Delivery Frac (%)"),
         ("mean_pkt_loss", "Packet Loss (%)"),
         ("mean_delay_p95", "Delay P95"),
+        ("mean_hops_mean", "Mean Hops"),
         ("mean_backlog_end", "Backlog End"),
     ]
     for scenario in scenarios:
@@ -207,12 +209,12 @@ def plot_phase2_evaluation(results_dict: Dict,
     row_names = variants + (["OSPF"] if "OSPF" in results_dict else [])
     scenario_matrix = []
     for name in row_names:
-        scenario_matrix.append([_safe_float(results_dict.get(name, {}).get(scenario, {}).get("mean_delivery_rate", 0.0)) for scenario in scenarios])
+        scenario_matrix.append([_safe_float(results_dict.get(name, {}).get(scenario, {}).get("mean_end_to_end_pdr", 0.0)) for scenario in scenarios])
     if scenario_matrix:
         matrix = np.asarray(scenario_matrix, dtype=float)
         fig, ax = plt.subplots(figsize=(7, 5))
         im = ax.imshow(matrix, cmap="GnBu", aspect="auto")
-        ax.set_title("Phase 2 Scenario Delivery Heatmap")
+        ax.set_title("Phase 2 Scenario End-to-End PDR Heatmap")
         ax.set_xticks(range(len(scenarios)))
         ax.set_xticklabels(scenarios)
         ax.set_yticks(range(len(row_names)))
