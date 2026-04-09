@@ -75,6 +75,16 @@ class StandaloneExperimentRunner:
             'max_reward_degradation_pct': 25.0,
             'max_delay_p95': 12.0,
         })
+        cfg.setdefault('load_sweep', {
+            'enabled': False,
+            'offered_loads': [0.75, 1.00, 1.25, 1.50],
+            'include_failures': False,
+        })
+        cfg.setdefault('clean_slo', {
+            'max_pkt_loss_pct': 5.0,
+            'max_delay_p95': 8.0,
+            'min_end_to_end_pdr_pct': 85.0,
+        })
         runtime_cfg = cfg.setdefault('runtime_control', {})
         runtime_cfg.setdefault('profile', 'standard')
         runtime_cfg.setdefault('max_attack_cases_per_variant', -1)
@@ -283,6 +293,18 @@ class StandaloneExperimentRunner:
                     'dual_link_failure': self._run_ospf_episodes(engine, curr_seeds, t_per_ep,
                                                                   n_link_failures=2),
                 }
+                results['OSPF_FULL'] = results['OSPF']
+                results['OSPF_QUEUE'] = {
+                    'normal': self._run_ospf_episodes(
+                        engine, curr_seeds, t_per_ep,
+                        mode='queue_level',
+                    ),
+                    'dual_link_failure': self._run_ospf_episodes(
+                        engine, curr_seeds, t_per_ep,
+                        n_link_failures=2,
+                        mode='queue_level',
+                    ),
+                }
 
             # Build rankings
             ranking = self._build_phase2_rankings(results)
@@ -352,6 +374,18 @@ class StandaloneExperimentRunner:
             'normal': self._run_ospf_episodes(engine, curr_seeds, t_per_ep),
             'dual_link_failure': self._run_ospf_episodes(engine, curr_seeds, t_per_ep, n_link_failures=2),
         }
+        results['OSPF_FULL'] = results['OSPF']
+        results['OSPF_QUEUE'] = {
+            'normal': self._run_ospf_episodes(
+                engine, curr_seeds, t_per_ep,
+                mode='queue_level',
+            ),
+            'dual_link_failure': self._run_ospf_episodes(
+                engine, curr_seeds, t_per_ep,
+                n_link_failures=2,
+                mode='queue_level',
+            ),
+        }
 
         self._save(results, 'phase2_maddpg_results.json')
         ranking = self._build_phase2_rankings(results)
@@ -364,6 +398,13 @@ class StandaloneExperimentRunner:
             'stability_history': convergence_history,
             'top_k_for_stability': top_k,
         }
+
+        load_cfg = self.config.get('load_sweep', {})
+        if bool(load_cfg.get('enabled', False)):
+            logger.info("[P2] Running offered-load sweep for fairness analysis")
+            load_sweep_results = self._run_phase2_load_sweep(training_results, curr_seeds, t_per_ep)
+            self._save(load_sweep_results, 'phase2_load_sweep_results.json')
+            ranking['load_sweep_summary'] = load_sweep_results.get('summary', {})
         
         self._save(ranking, 'phase2_rankings.json')
         self._generate_plots_for_phase(2)
@@ -372,13 +413,15 @@ class StandaloneExperimentRunner:
 
     def _run_eval_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                            n_eps: int, t_per_ep: int,
-                           n_link_failures: int = 0) -> Dict:
+                           n_link_failures: int = 0,
+                           offered_load_factor: float = 1.0) -> Dict:
         ep_rewards, ep_losses, ep_utils = [], [], []
         ep_pdr, ep_hop_frac, ep_goodput = [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
         ep_hops_mean, ep_overload_frac = [], []
         for _ in range(n_eps):
-            states = env.reset()
+            env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+            states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
             if n_link_failures:
                 self._inject_failures(env.engine, n_link_failures)
             ep_r = ep_sent = ep_dropped = 0
@@ -415,27 +458,55 @@ class StandaloneExperimentRunner:
             'mean_util_p95':    float(np.mean(ep_util_p95)),
             'mean_hops_mean':   float(np.mean(ep_hops_mean)),
             'mean_overload_fraction': float(np.mean(ep_overload_frac)),
+            'offered_load_factor': float(offered_load_factor),
         }
 
     def _run_ospf_episodes(self, engine: NetworkEngine,
                            n_eps: int, t_per_ep: int,
-                           n_link_failures: int = 0) -> Dict:
+                           n_link_failures: int = 0,
+                           offered_load_factor: float = 1.0,
+                           mode: str = 'full') -> Dict:
         ep_losses, ep_utils = [], []
+        ep_pdr, ep_hop_frac, ep_goodput = [], [], []
+        ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
+        ep_hops_mean, ep_overload_frac = [], []
         for _ in range(n_eps):
-            engine.reset()
+            engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
             ep_sent = ep_dropped = 0
             for _ in range(t_per_ep):
-                info = engine.ospf_step()
+                if mode == 'queue_level':
+                    info = engine.ospf_queue_level_step()
+                else:
+                    info = engine.ospf_step()
                 ep_sent    += info['packets_sent']
                 ep_dropped += info['packets_dropped']
             ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
             ep_utils.append(float(np.nanmean(engine.get_link_utilization_distribution())))
+            ep_stats = engine.get_episode_stats()
+            ep_pdr.append(float(ep_stats.get('end_to_end_pdr', 0.0)))
+            ep_hop_frac.append(float(ep_stats.get('hop_delivery_frac', 0.0)))
+            ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
+            ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
+            ep_backlog.append(float(ep_stats.get('backlog_end', 0.0)))
+            ep_util_p95.append(float(ep_stats.get('util_p95', 0.0)))
+            ep_hops_mean.append(float(ep_stats.get('hops_mean', 0.0)))
+            ep_overload_frac.append(float(ep_stats.get('overload_step_fraction', 0.0)))
         return {
             'mean_pkt_loss': float(np.mean(ep_losses)),
             'std_pkt_loss':  float(np.std(ep_losses)),
             'mean_util':     float(np.mean(ep_utils)),
+            'mean_end_to_end_pdr':   float(np.mean(ep_pdr)),
+            'mean_hop_delivery_frac': float(np.mean(ep_hop_frac)),
+            'mean_goodput_per_step': float(np.mean(ep_goodput)),
+            'mean_delay_p95':   float(np.mean(ep_delay_p95)),
+            'mean_backlog_end': float(np.mean(ep_backlog)),
+            'mean_util_p95':    float(np.mean(ep_util_p95)),
+            'mean_hops_mean':   float(np.mean(ep_hops_mean)),
+            'mean_overload_fraction': float(np.mean(ep_overload_frac)),
+            'offered_load_factor': float(offered_load_factor),
+            'routing_mode': mode,
         }
 
     @staticmethod
@@ -446,6 +517,125 @@ class StandaloneExperimentRunner:
             if engine.topology.graph.has_edge(u, v):
                 engine.topology.graph.remove_edge(u, v)
         engine.topology.refresh_path_cache()
+
+    def _run_phase2_load_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
+        load_cfg = self.config.get('load_sweep', {})
+        loads = [float(x) for x in load_cfg.get('offered_loads', [1.0])]
+        include_failures = bool(load_cfg.get('include_failures', False))
+
+        out = {
+            'meta': {
+                'loads': loads,
+                'evaluation_episodes': int(n_eps),
+                'timesteps_per_episode': int(t_per_ep),
+                'include_failures': include_failures,
+            },
+            'methods': {},
+            'summary': {},
+        }
+
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                continue
+            logger.info(f"[P2][SWEEP] {name}")
+            maddpg, _, env = self._make_variant(vcfg)
+            maddpg.load_checkpoint()
+            method_payload = {'normal': {}, 'dual_link_failure': {}}
+            for load in loads:
+                key = f"load_{load:.2f}"
+                method_payload['normal'][key] = self._run_eval_episodes(
+                    maddpg, env, n_eps, t_per_ep,
+                    n_link_failures=0,
+                    offered_load_factor=load,
+                )
+                if include_failures:
+                    method_payload['dual_link_failure'][key] = self._run_eval_episodes(
+                        maddpg, env, n_eps, t_per_ep,
+                        n_link_failures=2,
+                        offered_load_factor=load,
+                    )
+            out['methods'][name] = method_payload
+
+        logger.info("[P2][SWEEP] OSPF_FULL")
+        engine = NetworkEngine(
+            topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
+            n_nodes=65,
+        )
+        full_payload = {'normal': {}, 'dual_link_failure': {}}
+        for load in loads:
+            key = f"load_{load:.2f}"
+            full_payload['normal'][key] = self._run_ospf_episodes(
+                engine, n_eps, t_per_ep,
+                n_link_failures=0,
+                offered_load_factor=load,
+                mode='full',
+            )
+            if include_failures:
+                full_payload['dual_link_failure'][key] = self._run_ospf_episodes(
+                    engine, n_eps, t_per_ep,
+                    n_link_failures=2,
+                    offered_load_factor=load,
+                    mode='full',
+                )
+        out['methods']['OSPF_FULL'] = full_payload
+
+        logger.info("[P2][SWEEP] OSPF_QUEUE")
+        engine = NetworkEngine(
+            topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
+            n_nodes=65,
+        )
+        queue_payload = {'normal': {}, 'dual_link_failure': {}}
+        for load in loads:
+            key = f"load_{load:.2f}"
+            queue_payload['normal'][key] = self._run_ospf_episodes(
+                engine, n_eps, t_per_ep,
+                n_link_failures=0,
+                offered_load_factor=load,
+                mode='queue_level',
+            )
+            if include_failures:
+                queue_payload['dual_link_failure'][key] = self._run_ospf_episodes(
+                    engine, n_eps, t_per_ep,
+                    n_link_failures=2,
+                    offered_load_factor=load,
+                    mode='queue_level',
+                )
+        out['methods']['OSPF_QUEUE'] = queue_payload
+
+        for name, payload in out['methods'].items():
+            out['summary'][name] = {
+                'critical_load_normal': self._compute_critical_load(payload.get('normal', {})),
+                'critical_load_failure': self._compute_critical_load(payload.get('dual_link_failure', {}))
+                    if include_failures else None,
+            }
+
+        return out
+
+    def _compute_critical_load(self, scenario_payload: Dict) -> Optional[float]:
+        if not scenario_payload:
+            return None
+
+        clean_slo = self.config.get('clean_slo', {})
+        max_loss = float(clean_slo.get('max_pkt_loss_pct', 5.0))
+        max_delay = float(clean_slo.get('max_delay_p95', 8.0))
+        min_pdr = float(clean_slo.get('min_end_to_end_pdr_pct', 85.0))
+
+        ordered = sorted(
+            scenario_payload.items(),
+            key=lambda kv: float(kv[0].split('_')[-1])
+        )
+        last_ok = None
+        for key, metrics in ordered:
+            load = float(key.split('_')[-1])
+            loss_ok = float(metrics.get('mean_pkt_loss', 1000.0)) <= max_loss
+            delay_ok = float(metrics.get('mean_delay_p95', 1e9)) <= max_delay
+            pdr_ok = float(metrics.get('mean_end_to_end_pdr', 0.0)) >= min_pdr
+            if loss_ok and delay_ok and pdr_ok:
+                last_ok = load
+            else:
+                return last_ok
+        return last_ok
 
     # ═══════════════════════════════════════════════════════════════════════════
     # PHASE 3 — FGSM atttack evaluation
@@ -882,7 +1072,7 @@ class StandaloneExperimentRunner:
         for scenario in ['normal', 'dual_link_failure']:
             items = []
             for name, payload in phase2_results.items():
-                if name == 'OSPF':
+                if str(name).startswith('OSPF'):
                     continue
                 if scenario not in payload:
                     continue

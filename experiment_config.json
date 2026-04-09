@@ -21,6 +21,18 @@
     "link_failure_scenarios": [0, 2]
   },
 
+  "load_sweep": {
+    "enabled": true,
+    "offered_loads": [0.75, 1.0, 1.25, 1.5],
+    "include_failures": false
+  },
+
+  "clean_slo": {
+    "max_pkt_loss_pct": 5.0,
+    "max_delay_p95": 8.0,
+    "min_end_to_end_pdr_pct": 85.0
+  },
+
   "reward": {
     "delivery_weight": 1.0,
     "max_util_penalty": 2.0,
@@ -68,8 +80,8 @@
       "critic_domain": "central_critic",
       "neural_network": "simple_q_network",
       "use_gnn": false,
-      "actor_dims": 33, "critic_dims": 2145,
-      "n_agents": 65, "n_actions": 11,
+      "actor_dims": 61, "critic_dims": 3965,
+      "n_agents": 65, "n_actions": 120,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -78,8 +90,8 @@
       "critic_domain": "central_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 33, "critic_dims": 2145,
-      "n_agents": 65, "n_actions": 11,
+      "actor_dims": 61, "critic_dims": 3965,
+      "n_agents": 65, "n_actions": 120,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -88,8 +100,8 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 33, "critic_dims": 128,
-      "n_agents": 65, "n_actions": 11,
+      "actor_dims": 61, "critic_dims": 61,
+      "n_agents": 65, "n_actions": 120,
       "alpha": 0.001, "beta": 0.001
     },
     {
@@ -97,8 +109,8 @@
       "critic_domain": "central_critic",
       "neural_network": "simple_q_network",
       "use_gnn": true,
-      "actor_dims": 33, "critic_dims": 2145,
-      "n_agents": 65, "n_actions": 11,
+      "actor_dims": 61, "critic_dims": 3965,
+      "n_agents": 65, "n_actions": 120,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -107,8 +119,8 @@
       "critic_domain": "central_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 33, "critic_dims": 2145,
-      "n_agents": 65, "n_actions": 11,
+      "actor_dims": 61, "critic_dims": 3965,
+      "n_agents": 65, "n_actions": 120,
       "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
@@ -117,8 +129,8 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 33, "critic_dims": 128,
-      "n_agents": 65, "n_actions": 11,
+      "actor_dims": 61, "critic_dims": 61,
+      "n_agents": 65, "n_actions": 120,
       "alpha": 0.001, "beta": 0.001
     }
   ],

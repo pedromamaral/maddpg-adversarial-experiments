@@ -131,7 +131,10 @@ def plot_phase2_evaluation(results_dict: Dict,
         warnings.warn("Phase 2 results are empty; skipping Phase 2 plots.")
         return
 
-    variants = sorted(name for name in results_dict.keys() if name != "OSPF")
+    variants = sorted(name for name in results_dict.keys() if not str(name).startswith("OSPF"))
+    baselines = sorted(name for name in results_dict.keys() if str(name).startswith("OSPF"))
+    if "OSPF" in results_dict and "OSPF" not in baselines:
+        baselines.append("OSPF")
     if not variants:
         return
 
@@ -139,7 +142,7 @@ def plot_phase2_evaluation(results_dict: Dict,
         isinstance(results_dict.get(name), dict) and scenario in results_dict.get(name, {})
         for name in results_dict.keys()
     )]
-    colors = _variant_colors(variants + ["OSPF"])
+    colors = _variant_colors(variants + baselines)
 
     if ranking_dict and ranking_dict.get("scenarios"):
         profiles = sorted(ranking_dict.get("profiles", {}).keys())
@@ -169,7 +172,7 @@ def plot_phase2_evaluation(results_dict: Dict,
         ("mean_backlog_end", "Backlog End"),
     ]
     for scenario in scenarios:
-        row_names = variants + (["OSPF"] if "OSPF" in results_dict else [])
+        row_names = variants + baselines
         matrix = []
         for name in row_names:
             payload = results_dict.get(name, {}).get(scenario, {})
@@ -206,7 +209,7 @@ def plot_phase2_evaluation(results_dict: Dict,
             fig.tight_layout()
             _save(fig, output_dir, "phase2_rank_stability")
 
-    row_names = variants + (["OSPF"] if "OSPF" in results_dict else [])
+    row_names = variants + baselines
     scenario_matrix = []
     for name in row_names:
         scenario_matrix.append([_safe_float(results_dict.get(name, {}).get(scenario, {}).get("mean_end_to_end_pdr", 0.0)) for scenario in scenarios])
@@ -225,6 +228,69 @@ def plot_phase2_evaluation(results_dict: Dict,
         fig.colorbar(im, ax=ax)
         fig.tight_layout()
         _save(fig, output_dir, "phase2_delivery_heatmap")
+
+
+def plot_phase2_load_sweep(load_sweep_dict: Dict,
+                           output_dir: Optional[Path] = None):
+    if not load_sweep_dict:
+        return
+
+    methods = load_sweep_dict.get("methods", {})
+    if not methods:
+        return
+
+    scenarios = ["normal"]
+    meta = load_sweep_dict.get("meta", {})
+    if bool(meta.get("include_failures", False)):
+        scenarios.append("dual_link_failure")
+
+    for scenario in scenarios:
+        for metric, title, ylabel in [
+            ("mean_goodput_per_step", "Goodput", "Goodput / step"),
+            ("mean_pkt_loss", "Packet Loss", "Packet Loss (%)"),
+            ("mean_delay_p95", "Delay P95", "Delay P95"),
+        ]:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for method_name, payload in sorted(methods.items()):
+                scenario_rows = payload.get(scenario, {})
+                points = []
+                for load_key, row in scenario_rows.items():
+                    try:
+                        load = float(str(load_key).split("_")[-1])
+                    except (TypeError, ValueError):
+                        continue
+                    points.append((load, _safe_float(row.get(metric, 0.0))))
+                if not points:
+                    continue
+                points.sort(key=lambda x: x[0])
+                ax.plot(
+                    [p[0] for p in points],
+                    [p[1] for p in points],
+                    marker="o",
+                    linewidth=2.0,
+                    label=method_name,
+                )
+            ax.set_title(f"Phase 2 Load Sweep: {title} ({scenario})")
+            ax.set_xlabel("Offered Load Factor")
+            ax.set_ylabel(ylabel)
+            ax.grid(alpha=0.3)
+            ax.legend(fontsize=8, ncol=2)
+            fig.tight_layout()
+            _save(fig, output_dir, f"phase2_load_sweep_{scenario}_{metric}")
+
+    summary = load_sweep_dict.get("summary", {})
+    if summary:
+        names = sorted(summary.keys())
+        values = [_safe_float(summary[n].get("critical_load_normal", 0.0)) for n in names]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.bar(names, values, alpha=0.9)
+        ax.set_title("Phase 2 Critical Load Comparison (Normal)")
+        ax.set_ylabel("Critical Load Factor")
+        ax.set_xticks(range(len(names)))
+        ax.set_xticklabels(names, rotation=25, ha="right")
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        _save(fig, output_dir, "phase2_critical_load_normal")
 
 
 def plot_phase3_fgsm(results_dict: Dict,
@@ -379,11 +445,17 @@ def plot_all_phases(results_dir: Path,
     if 2 in phases:
         phase2_path = results_dir / "phase2_maddpg_results.json"
         phase2_rankings = results_dir / "phase2_rankings.json"
+        phase2_load_sweep = results_dir / "phase2_load_sweep_results.json"
         if phase2_path.exists():
             plot_phase2_evaluation(
                 _load_json(phase2_path),
                 output_dir,
                 _load_json(phase2_rankings) if phase2_rankings.exists() else None,
+            )
+        if phase2_load_sweep.exists():
+            plot_phase2_load_sweep(
+                _load_json(phase2_load_sweep),
+                output_dir,
             )
 
     if 3 in phases:
