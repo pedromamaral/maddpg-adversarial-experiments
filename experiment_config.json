@@ -9,7 +9,7 @@
   },
 
   "training": {
-    "epochs": 200,
+    "epochs": 400,
     "episodes_per_epoch": 5,
     "timesteps_per_episode": 256,
     "batch_size": 256,
@@ -88,7 +88,7 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 33, "critic_dims": 33,
+      "actor_dims": 33, "critic_dims": 128,
       "n_agents": 65, "n_actions": 11,
       "alpha": 0.001, "beta": 0.001
     },
@@ -117,7 +117,7 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
-      "actor_dims": 33, "critic_dims": 33,
+      "actor_dims": 33, "critic_dims": 128,
       "n_agents": 65, "n_actions": 11,
       "alpha": 0.001, "beta": 0.001
     }
