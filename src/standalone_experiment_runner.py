@@ -169,22 +169,62 @@ class StandaloneExperimentRunner:
         epochs     = cfg_t['epochs']
         eps_per_ep = cfg_t['episodes_per_epoch']
         t_per_ep   = cfg_t['timesteps_per_episode']
+        batch_size = cfg_t.get('batch_size', 256)
+        exploration_cfg = cfg_t.get('exploration', {})
+        exploration_enabled = exploration_cfg.get('enabled', False)
+        epsilon_start = float(exploration_cfg.get('epsilon_start', 0.0))
+        epsilon_end = float(exploration_cfg.get('epsilon_end', epsilon_start))
+        epsilon_decay_epochs = max(1, int(exploration_cfg.get('epsilon_decay_epochs', 1)))
+        decision_block_size = int(exploration_cfg.get('decision_block_size', 1))
+        freeze_single_link_nodes = bool(cfg_t.get('freeze_single_link_nodes', False))
+        hosts = engine.get_all_hosts()
+        deterministic_mask = (
+            [engine.get_number_neighbors(host) <= 1 for host in hosts]
+            if freeze_single_link_nodes
+            else [False] * len(hosts)
+        )
 
         all_rewards, all_losses = [], []
 
+        if freeze_single_link_nodes:
+            logger.info(
+                "[TRAIN] %s — freezing %d/%d deterministic nodes",
+                name,
+                sum(deterministic_mask),
+                len(deterministic_mask),
+            )
+
         for epoch in range(epochs):
+            if exploration_enabled:
+                decay_progress = min(epoch, epsilon_decay_epochs) / epsilon_decay_epochs
+                epoch_epsilon = epsilon_start + (epsilon_end - epsilon_start) * decay_progress
+            else:
+                epoch_epsilon = 0.0
+
             ep_rewards, ep_losses = [], []
             for _ in range(eps_per_ep):
                 states = env.reset()
                 ep_r = ep_sent = ep_dropped = 0
                 for t in range(t_per_ep):
-                    actions = maddpg.choose_action(states)
-                    next_states, rewards, info = env.step(actions)
+                    _, executed_actions = maddpg.choose_action(
+                        states,
+                        training=True,
+                        epsilon=epoch_epsilon,
+                        deterministic_mask=deterministic_mask,
+                        decision_block_size=decision_block_size,
+                    )
+                    next_states, rewards, info = env.step(executed_actions)
                     done = [t == t_per_ep - 1] * len(states)
-                    maddpg.store_transition(states, actions, rewards, next_states, done)
+                    maddpg.store_transition(
+                        states, executed_actions, rewards, next_states, done
+                    )
                     freq = 10 if epoch < 20 else 25
                     if t % freq == 0:
-                        maddpg.learn()
+                        maddpg.learn(
+                            batch_size=batch_size,
+                            deterministic_mask=deterministic_mask,
+                            decision_block_size=decision_block_size,
+                        )
                     states = next_states
                     ep_r      += sum(rewards)
                     ep_sent   += info.get('packets_sent', 0)

@@ -13,7 +13,16 @@
     "episodes_per_epoch": 5,
     "timesteps_per_episode": 256,
     "batch_size": 256,
-    "memory_size": 50000
+    "memory_size": 50000,
+    "exploration": {
+      "enabled": true,
+      "epsilon_start": 0.30,
+      "epsilon_end": 0.02,
+      "epsilon_decay_epochs": 300,
+      "decision_block_size": 3,
+      "mode": "epsilon_greedy"
+    },
+    "freeze_single_link_nodes": true
   },
 
   "paper1_eval": {
@@ -82,7 +91,7 @@
       "use_gnn": false,
       "actor_dims": 61, "critic_dims": 3965,
       "n_agents": 65, "n_actions": 120,
-      "fc1": 256, "fc2": 128,
+      "fc1": 512, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
     {
@@ -92,7 +101,7 @@
       "use_gnn": false,
       "actor_dims": 61, "critic_dims": 3965,
       "n_agents": 65, "n_actions": 120,
-      "fc1": 256, "fc2": 128,
+      "fc1": 512, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
     {
@@ -111,7 +120,7 @@
       "use_gnn": true,
       "actor_dims": 61, "critic_dims": 3965,
       "n_agents": 65, "n_actions": 120,
-      "fc1": 256, "fc2": 128,
+      "fc1": 512, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
     {
@@ -121,7 +130,7 @@
       "use_gnn": true,
       "actor_dims": 61, "critic_dims": 3965,
       "n_agents": 65, "n_actions": 120,
-      "fc1": 256, "fc2": 128,
+      "fc1": 512, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     },
     {

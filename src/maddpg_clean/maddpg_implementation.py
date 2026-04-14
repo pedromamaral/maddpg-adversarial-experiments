@@ -101,7 +101,7 @@ class CriticNetwork(nn.Module):
         if network_type == 'duelling_q_network':
             # Duelling streams: value V(s) and advantage A(s, a)
             self.value_stream = nn.Linear(fc2_dims, 1)
-            self.advantage_stream = nn.Linear(fc2_dims, n_actions)
+            self.advantage_stream = nn.Linear(fc2_dims, 1)
         else:  # simple_q_network
             self.q_head = nn.Linear(fc2_dims, 1)
 
@@ -121,15 +121,11 @@ class CriticNetwork(nn.Module):
         x = F.relu(self.fc2(x))
 
         if self.network_type == 'duelling_q_network':
-            # Duelling formula: Q(s,a) = V(s) + A(s,a) - mean_a'(A(s,a'))
-            # Both streams produce scalar/vector from the shared hidden rep.
+            # With the action already concatenated to the input, both duelling
+            # streams should remain scalar for the specific (s, a) pair.
             value = self.value_stream(x)                          # [B, 1]
-            advantage = self.advantage_stream(x)                  # [B, n_actions]
-            # Mean-subtracted advantage for stable training
-            q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
-            # The critic receives a specific joint action, so we sum-reduce
-            # across the action dimension to get a scalar Q-value.
-            return q_values.sum(dim=1, keepdim=True)              # [B, 1]
+            advantage = self.advantage_stream(x)                  # [B, 1]
+            return value + advantage                              # [B, 1]
         else:
             return self.q_head(x)                                  # [B, 1]
 
@@ -264,8 +260,43 @@ class Agent:
         # Hard-copy online weights into targets at init
         self.update_network_parameters(tau=1.0)
 
-    def choose_action(self, observation, topology_info=None):
-        """Return action probability vector for a single observation."""
+    @staticmethod
+    def _build_executed_action(policy_action: np.ndarray, epsilon: float,
+                               decision_block_size: int,
+                               deterministic: bool = False) -> np.ndarray:
+        block_size = max(1, int(decision_block_size))
+        executed_action = np.zeros_like(policy_action, dtype=np.float32)
+
+        for block_start in range(0, len(policy_action), block_size):
+            block_end = min(block_start + block_size, len(policy_action))
+            block = policy_action[block_start:block_end]
+
+            if deterministic:
+                block_choice = 0
+            elif np.random.random() < epsilon:
+                block_choice = np.random.randint(block_end - block_start)
+            else:
+                block_choice = int(np.argmax(block))
+
+            executed_action[block_start + block_choice] = 1.0
+
+        return executed_action
+
+    @staticmethod
+    def _build_fixed_action_tensor(batch_size: int, n_actions: int,
+                                   decision_block_size: int,
+                                   device: torch.device) -> torch.Tensor:
+        block_size = max(1, int(decision_block_size))
+        fixed_actions = torch.zeros((batch_size, n_actions), device=device)
+        for block_start in range(0, n_actions, block_size):
+            fixed_actions[:, block_start] = 1.0
+        return fixed_actions
+
+    def choose_action(self, observation, topology_info=None,
+                      training: bool = False, epsilon: float = 0.0,
+                      decision_block_size: int = 1,
+                      deterministic: bool = False):
+        """Return policy action, and optionally the executed one-hot action."""
         if self.use_gnn and self.gnn_processor is not None:
             observation = self.gnn_processor.process_state(observation, topology_info)
 
@@ -273,8 +304,18 @@ class Agent:
             observation = np.array(observation)
 
         state = torch.tensor(observation, dtype=torch.float).unsqueeze(0).to(self.actor.device)
-        actions = self.actor.forward(state)
-        return actions.detach().cpu().numpy()[0]
+        policy_action = self.actor.forward(state).detach().cpu().numpy()[0]
+
+        if not training:
+            return policy_action
+
+        executed_action = self._build_executed_action(
+            policy_action=policy_action,
+            epsilon=epsilon,
+            decision_block_size=decision_block_size,
+            deterministic=deterministic,
+        )
+        return policy_action, executed_action
 
     @torch.no_grad()
     def update_network_parameters(self, tau: Optional[float] = None):
@@ -402,19 +443,46 @@ class MADDPG:
                              # Mixed-precision scaler (no-op on CPU, ~1.5-2x speedup on GPU)
         self.scaler = GradScaler(enabled=torch.cuda.is_available())
 
-    def choose_action(self, observations, topology_info=None):
-        return [
-            agent.choose_action(
+    def choose_action(self, observations, topology_info=None,
+                      training: bool = False, epsilon: float = 0.0,
+                      deterministic_mask: Optional[List[bool]] = None,
+                      decision_block_size: int = 1):
+        if deterministic_mask is None:
+            deterministic_mask = [False] * self.n_agents
+
+        if not training:
+            return [
+                agent.choose_action(
+                    observations[i] if isinstance(observations[0], (list, np.ndarray)) else observations,
+                    topology_info,
+                )
+                for i, agent in enumerate(self.agents)
+            ]
+
+        policy_actions, executed_actions = [], []
+        for i, agent in enumerate(self.agents):
+            policy_action, executed_action = agent.choose_action(
                 observations[i] if isinstance(observations[0], (list, np.ndarray)) else observations,
                 topology_info,
+                training=True,
+                epsilon=epsilon,
+                decision_block_size=decision_block_size,
+                deterministic=deterministic_mask[i],
             )
-            for i, agent in enumerate(self.agents)
-        ]
+            policy_actions.append(policy_action)
+            executed_actions.append(executed_action)
 
-    def learn(self, batch_size: int = 256):
+        return policy_actions, executed_actions
+
+    def learn(self, batch_size: int = 256,
+              deterministic_mask: Optional[List[bool]] = None,
+              decision_block_size: int = 1):
         """Sample a mini-batch and update all agents."""
         if not self.memory.ready(batch_size):
             return
+
+        if deterministic_mask is None:
+            deterministic_mask = [False] * self.n_agents
 
         states_list, actions, rewards, states_next_list, dones = \
             self.memory.sample_buffer(batch_size)
@@ -436,6 +504,9 @@ class MADDPG:
             all_actions_flat = actions_t.view(batch_size, -1) # [B, n_agents*n_actions]
 
         for i, agent in enumerate(self.agents):
+            if deterministic_mask[i]:
+                continue
+
             agent_reward = rewards_t[:, i]         # [B]
             agent_done = dones_t[:, i]             # [B]
 
@@ -443,8 +514,23 @@ class MADDPG:
                 # ---- Critic update ----
                 if self.critic_type == 'central_critic':
                     with torch.no_grad():
+                        next_action_tensors = []
+                        for j, other_agent in enumerate(self.agents):
+                            if deterministic_mask[j]:
+                                next_action_tensors.append(
+                                    Agent._build_fixed_action_tensor(
+                                        batch_size=batch_size,
+                                        n_actions=self.n_actions,
+                                        decision_block_size=decision_block_size,
+                                        device=device,
+                                    )
+                                )
+                            else:
+                                next_action_tensors.append(
+                                    other_agent.target_actor(states_next_t[j])
+                                )
                         next_actions = torch.cat(
-                            [a.target_actor(states_next_t[j]) for j, a in enumerate(self.agents)],
+                            next_action_tensors,
                             dim=1,
                         )  # [B, n_agents*n_actions]
                         target_q = agent.target_critic(all_states_next, next_actions)
