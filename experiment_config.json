@@ -22,7 +22,26 @@
       "decision_block_size": 3,
       "mode": "epsilon_greedy"
     },
-    "freeze_single_link_nodes": true
+    "freeze_single_link_nodes": true,
+    "learn_action_projection": {
+      "critic_target_mode": "block_argmax_onehot",
+      "actor_mode": "soft"
+    },
+    "best_checkpoint": {
+      "enabled": true,
+      "metric": "mean_pkt_loss",
+      "validation_interval_epochs": 20,
+      "validation_episodes": 2,
+      "min_improvement": 0.001,
+      "warmup_epochs": 20
+    },
+    "early_stopping": {
+      "enabled": true,
+      "metric": "mean_pkt_loss",
+      "patience_checks": 8,
+      "smooth_window_checks": 3,
+      "min_epochs": 120
+    }
   },
 
   "paper1_eval": {

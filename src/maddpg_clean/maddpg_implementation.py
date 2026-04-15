@@ -216,6 +216,12 @@ class Agent:
         self.agent_name = f'agent_{agent_idx}'
 
         os.makedirs(chkpt_dir, exist_ok=True)
+        self.best_checkpoint_files = {
+            'actor': os.path.join(chkpt_dir, f'{self.agent_name}_actor_best.pth'),
+            'critic': os.path.join(chkpt_dir, f'{self.agent_name}_critic_best.pth'),
+            'target_actor': os.path.join(chkpt_dir, f'{self.agent_name}_target_actor_best.pth'),
+            'target_critic': os.path.join(chkpt_dir, f'{self.agent_name}_target_critic_best.pth'),
+        }
 
         # Optional GNN state pre-processor
         self.use_gnn = use_gnn
@@ -339,11 +345,37 @@ class Agent:
         self.target_actor.save_checkpoint()
         self.target_critic.save_checkpoint()
 
+    def save_best_models(self):
+        """Persist best-so-far snapshot separate from final checkpoint."""
+        torch.save(self.actor.state_dict(), self.best_checkpoint_files['actor'])
+        torch.save(self.critic.state_dict(), self.best_checkpoint_files['critic'])
+        torch.save(self.target_actor.state_dict(), self.best_checkpoint_files['target_actor'])
+        torch.save(self.target_critic.state_dict(), self.best_checkpoint_files['target_critic'])
+
     def load_models(self):
         self.actor.load_checkpoint()
         self.critic.load_checkpoint()
         self.target_actor.load_checkpoint()
         self.target_critic.load_checkpoint()
+
+    def load_best_models(self) -> bool:
+        """Load best snapshot when available for all model files."""
+        if not all(os.path.exists(path) for path in self.best_checkpoint_files.values()):
+            return False
+
+        self.actor.load_state_dict(
+            torch.load(self.best_checkpoint_files['actor'], weights_only=True)
+        )
+        self.critic.load_state_dict(
+            torch.load(self.best_checkpoint_files['critic'], weights_only=True)
+        )
+        self.target_actor.load_state_dict(
+            torch.load(self.best_checkpoint_files['target_actor'], weights_only=True)
+        )
+        self.target_critic.load_state_dict(
+            torch.load(self.best_checkpoint_files['target_critic'], weights_only=True)
+        )
+        return True
 
 
 class ReplayBuffer:
@@ -400,11 +432,15 @@ class MADDPG:
                  alpha: float = 0.01, beta: float = 0.01,
                  fc1: int = 64, fc2: int = 64, gamma: float = 0.95,
                  tau: float = 0.01, critic_type: str = 'central_critic',
-                 network_type: str = 'simple_q_network', use_gnn: bool = False):
+                 network_type: str = 'simple_q_network', use_gnn: bool = False,
+                 critic_target_mode: str = 'block_argmax_onehot',
+                 actor_mode: str = 'soft'):
 
         self.n_agents = n_agents
         self.n_actions = n_actions
         self.critic_type = critic_type
+        self.critic_target_mode = critic_target_mode
+        self.actor_mode = actor_mode
 
         actor_dims_list = (
             actor_dims if isinstance(actor_dims, list) else [actor_dims] * n_agents
@@ -442,6 +478,32 @@ class MADDPG:
         )
                              # Mixed-precision scaler (no-op on CPU, ~1.5-2x speedup on GPU)
         self.scaler = GradScaler(enabled=torch.cuda.is_available())
+
+    @staticmethod
+    def _block_argmax_onehot(actions: torch.Tensor, decision_block_size: int) -> torch.Tensor:
+        """Project [B, A] soft actions to one-hot per decision block."""
+        block_size = max(1, int(decision_block_size))
+        onehot = torch.zeros_like(actions)
+        total_actions = actions.shape[1]
+
+        for block_start in range(0, total_actions, block_size):
+            block_end = min(block_start + block_size, total_actions)
+            block = actions[:, block_start:block_end]
+            block_indices = torch.argmax(block, dim=1)
+            row_indices = torch.arange(actions.shape[0], device=actions.device)
+            onehot[row_indices, block_start + block_indices] = 1.0
+
+        return onehot
+
+    def _project_actions(self, actions: torch.Tensor, decision_block_size: int,
+                         mode: str, straight_through: bool = False) -> torch.Tensor:
+        if mode != 'block_argmax_onehot':
+            return actions
+
+        onehot = self._block_argmax_onehot(actions, decision_block_size)
+        if straight_through:
+            return onehot + (actions - actions.detach())
+        return onehot
 
     def choose_action(self, observations, topology_info=None,
                       training: bool = False, epsilon: float = 0.0,
@@ -527,7 +589,12 @@ class MADDPG:
                                 )
                             else:
                                 next_action_tensors.append(
-                                    other_agent.target_actor(states_next_t[j])
+                                    self._project_actions(
+                                        other_agent.target_actor(states_next_t[j]),
+                                        decision_block_size=decision_block_size,
+                                        mode=self.critic_target_mode,
+                                        straight_through=False,
+                                    )
                                 )
                         next_actions = torch.cat(
                             next_action_tensors,
@@ -544,7 +611,12 @@ class MADDPG:
                     agent_actions = actions_t[:, i, :]
     
                     with torch.no_grad():
-                        next_a = agent.target_actor(agent_states_next)
+                        next_a = self._project_actions(
+                            agent.target_actor(agent_states_next),
+                            decision_block_size=decision_block_size,
+                            mode=self.critic_target_mode,
+                            straight_through=False,
+                        )
                         target_q = agent.target_critic(agent_states_next, next_a)
                         target_q[agent_done] = 0.0
                         target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
@@ -559,7 +631,16 @@ class MADDPG:
 
             with autocast(enabled=torch.cuda.is_available()):
                 # ---- Actor update ----
-                predicted_actions = agent.actor(states_t[i])
+                predicted_actions_soft = agent.actor(states_t[i])
+                if self.actor_mode == 'st_onehot':
+                    predicted_actions = self._project_actions(
+                        predicted_actions_soft,
+                        decision_block_size=decision_block_size,
+                        mode='block_argmax_onehot',
+                        straight_through=True,
+                    )
+                else:
+                    predicted_actions = predicted_actions_soft
     
                 if self.critic_type == 'central_critic':
                     actions_for_actor = actions_t.clone()
@@ -585,9 +666,19 @@ class MADDPG:
         for agent in self.agents:
             agent.save_models()
 
+    def save_best_checkpoint(self):
+        for agent in self.agents:
+            agent.save_best_models()
+
     def load_checkpoint(self):
         for agent in self.agents:
             agent.load_models()
+
+    def load_best_checkpoint(self) -> bool:
+        loaded_all = True
+        for agent in self.agents:
+            loaded_all = agent.load_best_models() and loaded_all
+        return loaded_all
 
 
 if __name__ == '__main__':

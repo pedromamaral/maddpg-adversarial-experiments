@@ -14,7 +14,7 @@ import argparse
 import logging
 import warnings
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
@@ -134,6 +134,8 @@ class StandaloneExperimentRunner:
 
     def _make_variant(self, vcfg: Dict) -> Tuple[MADDPG, NetworkEngine, NetworkEnv]:
         reward_cfg = self.config.get('reward', {})
+        training_cfg = self.config.get('training', {})
+        projection_cfg = training_cfg.get('learn_action_projection', {})
         engine = NetworkEngine(
             topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
             n_nodes=vcfg['n_agents'],
@@ -153,8 +155,52 @@ class StandaloneExperimentRunner:
             alpha=vcfg.get('alpha', 0.001),
             beta=vcfg.get('beta', 0.001),
             use_gnn=vcfg.get('use_gnn', False),
+            critic_target_mode=projection_cfg.get('critic_target_mode', 'block_argmax_onehot'),
+            actor_mode=projection_cfg.get('actor_mode', 'soft'),
         )
         return maddpg, engine, env
+
+    def _load_variant_checkpoint(self, maddpg: MADDPG, name: str):
+        if maddpg.load_best_checkpoint():
+            logger.info(f"[CKPT] {name} — loaded best checkpoint")
+        else:
+            maddpg.load_checkpoint()
+            logger.info(f"[CKPT] {name} — loaded final checkpoint (best not found)")
+
+    @staticmethod
+    def _metric_value(metric: str, mean_reward: float, mean_pkt_loss: float) -> float:
+        if metric == 'mean_reward':
+            return mean_reward
+        if metric == 'composite':
+            return mean_reward - mean_pkt_loss
+        return mean_pkt_loss
+
+    @staticmethod
+    def _is_improvement(metric: str, candidate: float, best: Optional[float],
+                        min_improvement: float) -> bool:
+        if best is None:
+            return True
+        if metric in ('mean_reward',):
+            return (candidate - best) > min_improvement
+        return (best - candidate) > min_improvement
+
+    def _validate_variant_inline(self, maddpg: MADDPG, env: NetworkEnv,
+                                 n_eps: int, t_per_ep: int) -> Tuple[float, float]:
+        val_rewards, val_losses = [], []
+        for _ in range(max(1, n_eps)):
+            states = env.reset()
+            ep_r = ep_sent = ep_dropped = 0
+            for _ in range(t_per_ep):
+                actions = maddpg.choose_action(states)
+                next_states, rewards, info = env.step(actions)
+                states = next_states
+                ep_r += sum(rewards)
+                ep_sent += info.get('packets_sent', 0)
+                ep_dropped += info.get('packets_dropped', 0)
+            val_rewards.append(ep_r / len(maddpg.agents))
+            val_losses.append(ep_dropped / max(1, ep_sent) * 100)
+
+        return float(np.mean(val_rewards)), float(np.mean(val_losses))
 
     # ═══════════════════════════════════════════════════════════════════════════
     # PHASE 1 — Training
@@ -171,12 +217,28 @@ class StandaloneExperimentRunner:
         t_per_ep   = cfg_t['timesteps_per_episode']
         batch_size = cfg_t.get('batch_size', 256)
         exploration_cfg = cfg_t.get('exploration', {})
+        best_ckpt_cfg = cfg_t.get('best_checkpoint', {})
+        early_stop_cfg = cfg_t.get('early_stopping', {})
         exploration_enabled = exploration_cfg.get('enabled', False)
         epsilon_start = float(exploration_cfg.get('epsilon_start', 0.0))
         epsilon_end = float(exploration_cfg.get('epsilon_end', epsilon_start))
         epsilon_decay_epochs = max(1, int(exploration_cfg.get('epsilon_decay_epochs', 1)))
         decision_block_size = int(exploration_cfg.get('decision_block_size', 1))
         freeze_single_link_nodes = bool(cfg_t.get('freeze_single_link_nodes', False))
+
+        best_ckpt_enabled = bool(best_ckpt_cfg.get('enabled', False))
+        best_metric_name = str(best_ckpt_cfg.get('metric', 'mean_pkt_loss'))
+        validation_interval_epochs = max(1, int(best_ckpt_cfg.get('validation_interval_epochs', 20)))
+        validation_episodes = max(1, int(best_ckpt_cfg.get('validation_episodes', 2)))
+        min_improvement = float(best_ckpt_cfg.get('min_improvement', 0.0))
+        warmup_epochs = max(0, int(best_ckpt_cfg.get('warmup_epochs', 0)))
+
+        early_stop_enabled = bool(early_stop_cfg.get('enabled', False))
+        early_stop_metric = str(early_stop_cfg.get('metric', best_metric_name))
+        patience_checks = max(1, int(early_stop_cfg.get('patience_checks', 8)))
+        smooth_window_checks = max(1, int(early_stop_cfg.get('smooth_window_checks', 3)))
+        min_epochs = max(1, int(early_stop_cfg.get('min_epochs', validation_interval_epochs)))
+
         hosts = engine.get_all_hosts()
         deterministic_mask = (
             [engine.get_number_neighbors(host) <= 1 for host in hosts]
@@ -185,6 +247,15 @@ class StandaloneExperimentRunner:
         )
 
         all_rewards, all_losses = [], []
+        validation_trace = []
+        best_metric = None
+        best_epoch = -1
+        checks_without_improvement = 0
+        metric_window = deque(maxlen=smooth_window_checks)
+        stop_metric_best = None
+        stop_metric_window = deque(maxlen=smooth_window_checks)
+        early_stopped = False
+        stop_epoch = epochs - 1
 
         if freeze_single_link_nodes:
             logger.info(
@@ -242,6 +313,74 @@ class StandaloneExperimentRunner:
                     f"pkt_loss={np.mean(ep_losses):5.2f}%"
                 )
 
+            should_validate = (
+                (best_ckpt_enabled or early_stop_enabled)
+                and epoch >= warmup_epochs
+                and (epoch % validation_interval_epochs == 0 or epoch == epochs - 1)
+            )
+
+            if should_validate:
+                val_reward, val_pkt_loss = self._validate_variant_inline(
+                    maddpg=maddpg,
+                    env=env,
+                    n_eps=validation_episodes,
+                    t_per_ep=t_per_ep,
+                )
+                raw_metric = self._metric_value(best_metric_name, val_reward, val_pkt_loss)
+                metric_window.append(raw_metric)
+                smoothed_metric = float(np.mean(metric_window))
+                validation_trace.append({
+                    'epoch': int(epoch),
+                    'mean_reward': val_reward,
+                    'mean_pkt_loss': val_pkt_loss,
+                    'metric_raw': raw_metric,
+                    'metric_smoothed': smoothed_metric,
+                })
+
+                improved = best_ckpt_enabled and self._is_improvement(
+                    metric=best_metric_name,
+                    candidate=smoothed_metric,
+                    best=best_metric,
+                    min_improvement=min_improvement,
+                )
+
+                if improved and best_ckpt_enabled:
+                    best_metric = smoothed_metric
+                    best_epoch = epoch
+                    maddpg.save_best_checkpoint()
+                    logger.info(
+                        "[TRAIN] %s — new best checkpoint at epoch %d (%s=%.4f)",
+                        name,
+                        epoch,
+                        best_metric_name,
+                        smoothed_metric,
+                    )
+
+                stop_raw_metric = self._metric_value(early_stop_metric, val_reward, val_pkt_loss)
+                stop_metric_window.append(stop_raw_metric)
+                stop_smoothed_metric = float(np.mean(stop_metric_window))
+                if self._is_improvement(
+                    metric=early_stop_metric,
+                    candidate=stop_smoothed_metric,
+                    best=stop_metric_best,
+                    min_improvement=min_improvement,
+                ):
+                    stop_metric_best = stop_smoothed_metric
+                    checks_without_improvement = 0
+                else:
+                    checks_without_improvement += 1
+
+                if early_stop_enabled and epoch >= min_epochs and checks_without_improvement >= patience_checks:
+                    early_stopped = True
+                    stop_epoch = epoch
+                    logger.info(
+                        "[TRAIN] %s — early stopping at epoch %d after %d checks without improvement",
+                        name,
+                        epoch,
+                        checks_without_improvement,
+                    )
+                    break
+
         maddpg.save_checkpoint()
         logger.info(f"[TRAIN] {name} — done")
         return {
@@ -251,6 +390,13 @@ class StandaloneExperimentRunner:
             'pkt_losses':     all_losses,
             'final_reward':   float(np.mean(all_rewards[-50:])),
             'final_pkt_loss': float(np.mean(all_losses[-50:])),
+            'best_checkpoint_enabled': best_ckpt_enabled,
+            'best_checkpoint_metric_name': best_metric_name,
+            'best_checkpoint_metric': best_metric,
+            'best_checkpoint_epoch': int(best_epoch),
+            'validation_trace': validation_trace,
+            'stopped_early': early_stopped,
+            'stop_epoch': int(stop_epoch),
         }
 
     def run_training(self) -> Dict:
@@ -311,7 +457,7 @@ class StandaloneExperimentRunner:
                 
                 logger.info(f"[P2]   {name}")
                 maddpg, engine, env = self._make_variant(vcfg)
-                maddpg.load_checkpoint()
+                self._load_variant_checkpoint(maddpg, name)
                 
                 # Run evaluation episodes
                 normal   = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep,
@@ -398,7 +544,7 @@ class StandaloneExperimentRunner:
                 continue
             logger.info(f"[P2]   {name}")
             maddpg, engine, env = self._make_variant(vcfg)
-            maddpg.load_checkpoint()
+            self._load_variant_checkpoint(maddpg, name)
             
             normal   = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep)
             failures = self._run_eval_episodes(maddpg, env, curr_seeds, t_per_ep, n_link_failures=2)
@@ -580,7 +726,7 @@ class StandaloneExperimentRunner:
                 continue
             logger.info(f"[P2][SWEEP] {name}")
             maddpg, _, env = self._make_variant(vcfg)
-            maddpg.load_checkpoint()
+            self._load_variant_checkpoint(maddpg, name)
             method_payload = {'normal': {}, 'dual_link_failure': {}}
             for load in loads:
                 key = f"load_{load:.2f}"
@@ -723,7 +869,7 @@ class StandaloneExperimentRunner:
                 continue
             logger.info(f"[P2] Attacking {name}")
             maddpg, engine, env = self._make_variant(vcfg)
-            maddpg.load_checkpoint()
+            self._load_variant_checkpoint(maddpg, name)
             variant_results = {}
             skipped_cases = []
             critical_by_type = {}
