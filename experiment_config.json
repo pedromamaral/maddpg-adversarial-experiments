@@ -25,15 +25,15 @@
     "freeze_single_link_nodes": true,
     "learn_action_projection": {
       "critic_target_mode": "block_argmax_onehot",
-      "actor_mode": "soft"
+      "actor_mode": "st_onehot"
     },
     "best_checkpoint": {
       "enabled": true,
       "metric": "mean_pkt_loss",
       "validation_interval_epochs": 20,
-      "validation_episodes": 2,
+      "validation_episodes": 5,
       "min_improvement": 0.001,
-      "warmup_epochs": 20
+      "warmup_epochs": 40
     },
     "early_stopping": {
       "enabled": true,
