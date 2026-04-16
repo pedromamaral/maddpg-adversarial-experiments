@@ -28,7 +28,8 @@ INJECT_EVERY   = 20     # inject N_INJECT_BATCH new packets every N steps
 N_INJECT_BATCH = 10
 DEST_BUCKETS = ("access", "dist", "core")
 N_DEST_BUCKETS = len(DEST_BUCKETS)
-K_PATHS = 3   # K shortest paths per access-destination for per-packet routing
+K_PATHS = 3          # K shortest paths per access-destination for per-packet routing
+SHAPING_WEIGHT = 0.4  # potential-based hop-progress reward shaping weight
 
 
 class NetworkTopology:
@@ -55,16 +56,39 @@ class NetworkTopology:
 
         # K-shortest-paths cache — used by MADDPG per-destination routing.
         # Only (src, access_dst) pairs: core/dist nodes are not traffic endpoints.
+        # Paths are deduplicated by first hop to maximise action diversity.
         self.kpath_cache: Dict[Tuple[str, str], List[List[str]]] = {}
         for src in self.hosts:
             for dst in self.access_nodes:
                 if src != dst:
-                    try:
-                        self.kpath_cache[(src, dst)] = list(itertools.islice(
-                            nx.shortest_simple_paths(self.graph, src, dst), K_PATHS
-                        ))
-                    except (nx.NetworkXNoPath, nx.NodeNotFound):
-                        self.kpath_cache[(src, dst)] = []
+                    self.kpath_cache[(src, dst)] = self._build_distinct_kpaths(
+                        self.graph, src, dst, K_PATHS
+                    )
+
+    @staticmethod
+    def _build_distinct_kpaths(graph, src: str, dst: str, k: int) -> List[List[str]]:
+        """Return up to k paths with distinct first hops, shortest first.
+
+        Oversamples by 4× to find distinct first-hop alternatives; pads
+        with the shortest path if fewer than k distinct first hops exist.
+        """
+        try:
+            seen_fh: set = set()
+            distinct: List[List[str]] = []
+            for p in itertools.islice(
+                nx.shortest_simple_paths(graph, src, dst), k * 4
+            ):
+                fh = p[1] if len(p) >= 2 else None
+                if fh is not None and fh not in seen_fh:
+                    seen_fh.add(fh)
+                    distinct.append(p)
+                    if len(distinct) == k:
+                        break
+            while distinct and len(distinct) < k:
+                distinct.append(distinct[0])
+            return distinct
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return []
 
     # ── topology builders ────────────────────────────────────────────────────
 
@@ -161,12 +185,9 @@ class NetworkTopology:
         for src in self.hosts:
             for dst in self.access_nodes:
                 if src != dst:
-                    try:
-                        self.kpath_cache[(src, dst)] = list(itertools.islice(
-                            nx.shortest_simple_paths(self.graph, src, dst), K_PATHS
-                        ))
-                    except (nx.NetworkXNoPath, nx.NodeNotFound):
-                        self.kpath_cache[(src, dst)] = []
+                    self.kpath_cache[(src, dst)] = self._build_distinct_kpaths(
+                        self.graph, src, dst, K_PATHS
+                    )
 
     # ── edge helpers ─────────────────────────────────────────────────────────
 
@@ -216,6 +237,7 @@ class NetworkEngine:
             'drop_penalty': 0.6,
             'backlog_penalty': 0.05,
             'congestion_threshold': CONGESTION_THRESHOLD,
+            'progress_shaping_weight': SHAPING_WEIGHT,
         }
         self.reward_cfg = {**base_reward, **(reward_config or {})}
 
@@ -239,6 +261,15 @@ class NetworkEngine:
     def get_tier(self, host: str) -> str:
         """Return 'core' | 'dist' | 'access' — used by attack-surface analysis."""
         return self._tier.get(host, 'access')
+
+    def get_adjacency_indices(self) -> List[List[int]]:
+        """Return per-agent neighbor indices into the get_all_hosts() ordering."""
+        hosts = self.topology.hosts
+        host_idx = {h: idx for idx, h in enumerate(hosts)}
+        return [
+            [host_idx[nb] for nb in self.topology.get_neighbors(host) if nb in host_idx]
+            for host in hosts
+        ]
 
     def reset(self):
         self.topology.reset_utils()
@@ -343,6 +374,7 @@ class NetworkEngine:
             'var_util_term': 0.0,
             'drop_term': 0.0,
             'backlog_term': 0.0,
+            'shaping_term': 0.0,
         }
 
         for i, host in enumerate(hosts):
@@ -359,6 +391,7 @@ class NetworkEngine:
 
             # forward packets
             delivered = dropped = 0
+            progress_sum = 0.0
             for pkt in q:
                 pkt_hops = int(pkt.get('hops', 0))
                 pkt_created = int(pkt.get('created_at', 0))
@@ -379,6 +412,11 @@ class NetworkEngine:
                     )
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
+                # Hop-progress shaping: reward movement toward destination
+                d_before = len(self.topology.path_cache.get((host, dst), [])) - 1
+                d_after = len(self.topology.path_cache.get((chosen, dst), [])) - 1
+                if d_before > 0:
+                    progress_sum += (d_before - d_after) / d_before
                 cur = self.topology.get_util(host, chosen)
                 self.topology.set_util(host, chosen, cur + PACKET_SIZE)
 
@@ -421,15 +459,18 @@ class NetworkEngine:
             var_util_term = self.reward_cfg['var_util_penalty'] * var_util
             drop_term = self.reward_cfg['drop_penalty'] * drop_ratio
             backlog_term = self.reward_cfg['backlog_penalty'] * backlog_ratio
+            shaping_weight = float(self.reward_cfg.get('progress_shaping_weight', 0.0))
+            shaping_term = shaping_weight * progress_sum / max(1, total)
 
             rewards.append(
-                delivery_term - max_util_term - var_util_term - drop_term - backlog_term
+                delivery_term - max_util_term - var_util_term - drop_term - backlog_term + shaping_term
             )
             reward_components['delivery_term'] += delivery_term
             reward_components['max_util_term'] += max_util_term
             reward_components['var_util_term'] += var_util_term
             reward_components['drop_term'] += drop_term
             reward_components['backlog_term'] += backlog_term
+            reward_components['shaping_term'] += shaping_term
 
         # bookkeeping
         self.topology.decay_utils()
@@ -473,6 +514,7 @@ class NetworkEngine:
                 'var_util_term': reward_components['var_util_term'],
                 'drop_term': reward_components['drop_term'],
                 'backlog_term': reward_components['backlog_term'],
+                'shaping_term': reward_components['shaping_term'],
             },
         }
         return next_states, rewards, info
@@ -731,6 +773,7 @@ class NetworkEngine:
                 'var_util_term': 0.0,
                 'drop_term': 0.0,
                 'backlog_term': 0.0,
+                'shaping_term': 0.0,
             },
         }
 

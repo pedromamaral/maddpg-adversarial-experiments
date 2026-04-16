@@ -67,7 +67,8 @@
     "congestion_threshold": 0.7,
     "var_util_penalty": 0.4,
     "drop_penalty": 0.6,
-    "backlog_penalty": 0.05
+    "backlog_penalty": 0.05,
+    "progress_shaping_weight": 0.4
   },
 
   "runtime_control": {
@@ -159,6 +160,26 @@
       "use_gnn": true,
       "actor_dims": 61, "critic_dims": 61,
       "n_agents": 65, "n_actions": 120,
+      "alpha": 0.001, "beta": 0.001
+    },
+    {
+      "name": "NC-Simple",
+      "critic_domain": "neighborhood_critic",
+      "neural_network": "simple_q_network",
+      "use_gnn": false,
+      "actor_dims": 61, "critic_dims": 0,
+      "n_agents": 65, "n_actions": 120,
+      "fc1": 256, "fc2": 128,
+      "alpha": 0.001, "beta": 0.001
+    },
+    {
+      "name": "NC-Duelling",
+      "critic_domain": "neighborhood_critic",
+      "neural_network": "duelling_q_network",
+      "use_gnn": false,
+      "actor_dims": 61, "critic_dims": 0,
+      "n_agents": 65, "n_actions": 120,
+      "fc1": 256, "fc2": 128,
       "alpha": 0.001, "beta": 0.001
     }
   ],

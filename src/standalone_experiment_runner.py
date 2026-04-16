@@ -142,13 +142,28 @@ class StandaloneExperimentRunner:
             reward_config=reward_cfg,
         )
         env = NetworkEnv(engine)
+
+        critic_domain = vcfg['critic_domain']
+        actor_dims = vcfg['actor_dims']
+
+        # Neighborhood critic: critic dims and adjacency are topology-derived
+        if critic_domain == 'neighborhood_critic':
+            adjacency = engine.get_adjacency_indices()
+            critic_dims = [
+                actor_dims * (1 + len(adjacency[i]))
+                for i in range(vcfg['n_agents'])
+            ]
+        else:
+            adjacency = None
+            critic_dims = vcfg['critic_dims']
+
         maddpg = MADDPG(
-            actor_dims=vcfg['actor_dims'],
-            critic_dims=vcfg['critic_dims'],
+            actor_dims=actor_dims,
+            critic_dims=critic_dims,
             n_agents=vcfg['n_agents'],
             n_actions=vcfg['n_actions'],
             chkpt_dir=f"{self.results_dir}/models/{vcfg['name']}",
-            critic_type=vcfg['critic_domain'],
+            critic_type=critic_domain,
             network_type=vcfg['neural_network'],
             fc1=vcfg.get('fc1', 256),
             fc2=vcfg.get('fc2', 128),
@@ -157,6 +172,7 @@ class StandaloneExperimentRunner:
             use_gnn=vcfg.get('use_gnn', False),
             critic_target_mode=projection_cfg.get('critic_target_mode', 'block_argmax_onehot'),
             actor_mode=projection_cfg.get('actor_mode', 'soft'),
+            adjacency=adjacency,
         )
         return maddpg, engine, env
 

@@ -207,7 +207,8 @@ class Agent:
                  alpha: float = 0.01, beta: float = 0.01,
                  fc1: int = 64, fc2: int = 64, gamma: float = 0.95,
                  tau: float = 0.01, critic_type: str = 'central_critic',
-                 network_type: str = 'simple_q_network', use_gnn: bool = False):
+                 network_type: str = 'simple_q_network', use_gnn: bool = False,
+                 neighborhood_action_dims: Optional[int] = None):
 
         self.gamma = gamma
         self.tau = tau
@@ -229,9 +230,14 @@ class Agent:
             GNNProcessor(input_dim=1, hidden_dim=16, output_dim=actor_dims)
             if use_gnn else None
         )
-        critic_action_dims = (
-            n_agents * n_actions if critic_type == 'central_critic' else n_actions
-        )
+        if critic_type == 'central_critic':
+            critic_action_dims = n_agents * n_actions
+        elif critic_type == 'neighborhood_critic':
+            critic_action_dims = (
+                neighborhood_action_dims if neighborhood_action_dims is not None else n_actions
+            )
+        else:
+            critic_action_dims = n_actions
 
         # Online networks
         self.actor = ActorNetwork(
@@ -434,13 +440,15 @@ class MADDPG:
                  tau: float = 0.01, critic_type: str = 'central_critic',
                  network_type: str = 'simple_q_network', use_gnn: bool = False,
                  critic_target_mode: str = 'block_argmax_onehot',
-                 actor_mode: str = 'soft'):
+                 actor_mode: str = 'soft',
+                 adjacency: Optional[List[List[int]]] = None):
 
         self.n_agents = n_agents
         self.n_actions = n_actions
         self.critic_type = critic_type
         self.critic_target_mode = critic_target_mode
         self.actor_mode = actor_mode
+        self.adjacency = adjacency
 
         actor_dims_list = (
             actor_dims if isinstance(actor_dims, list) else [actor_dims] * n_agents
@@ -466,6 +474,11 @@ class MADDPG:
                 critic_type=critic_type,
                 network_type=network_type,
                 use_gnn=use_gnn,
+                neighborhood_action_dims=(
+                    (1 + len(adjacency[i])) * n_actions
+                    if critic_type == 'neighborhood_critic' and adjacency is not None
+                    else None
+                ),
             )
             for i in range(n_agents)
         ]
@@ -605,11 +618,54 @@ class MADDPG:
                         target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
     
                     current_q = agent.critic(all_states, all_actions_flat)
+                elif self.critic_type == 'neighborhood_critic':
+                    nbr_idxs = self.adjacency[i] if self.adjacency else []
+                    nc_states = torch.cat(
+                        [states_t[i]] + [states_t[j] for j in nbr_idxs], dim=1
+                    )
+                    nc_states_next = torch.cat(
+                        [states_next_t[i]] + [states_next_t[j] for j in nbr_idxs], dim=1
+                    )
+                    nc_actions = torch.cat(
+                        [actions_t[:, i, :]] + [actions_t[:, j, :] for j in nbr_idxs], dim=1
+                    )
+                    with torch.no_grad():
+                        next_self_a = self._project_actions(
+                            agent.target_actor(states_next_t[i]),
+                            decision_block_size=decision_block_size,
+                            mode=self.critic_target_mode,
+                            straight_through=False,
+                        )
+                        next_nbr_actions = [next_self_a]
+                        for j in nbr_idxs:
+                            if deterministic_mask[j]:
+                                next_nbr_actions.append(
+                                    Agent._build_fixed_action_tensor(
+                                        batch_size=batch_size,
+                                        n_actions=self.n_actions,
+                                        decision_block_size=decision_block_size,
+                                        device=device,
+                                    )
+                                )
+                            else:
+                                next_nbr_actions.append(
+                                    self._project_actions(
+                                        self.agents[j].target_actor(states_next_t[j]),
+                                        decision_block_size=decision_block_size,
+                                        mode=self.critic_target_mode,
+                                        straight_through=False,
+                                    )
+                                )
+                        next_nc_actions = torch.cat(next_nbr_actions, dim=1)
+                        target_q = agent.target_critic(nc_states_next, next_nc_actions)
+                        target_q[agent_done] = 0.0
+                        target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
+                    current_q = agent.critic(nc_states, nc_actions)
                 else:  # local critic
                     agent_states = states_t[i]
                     agent_states_next = states_next_t[i]
                     agent_actions = actions_t[:, i, :]
-    
+
                     with torch.no_grad():
                         next_a = self._project_actions(
                             agent.target_actor(agent_states_next),
@@ -620,9 +676,9 @@ class MADDPG:
                         target_q = agent.target_critic(agent_states_next, next_a)
                         target_q[agent_done] = 0.0
                         target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
-    
+
                     current_q = agent.critic(agent_states, agent_actions)
-    
+
                 critic_loss = F.mse_loss(current_q, target_q)
             agent.critic_optimizer.zero_grad()
             self.scaler.scale(critic_loss).backward()
@@ -648,6 +704,15 @@ class MADDPG:
                     actor_loss = -agent.critic(
                         all_states, actions_for_actor.view(batch_size, -1)
                     ).mean()
+                elif self.critic_type == 'neighborhood_critic':
+                    nbr_idxs = self.adjacency[i] if self.adjacency else []
+                    nc_act_states = torch.cat(
+                        [states_t[i]] + [states_t[j] for j in nbr_idxs], dim=1
+                    )
+                    nc_act_actions = torch.cat(
+                        [predicted_actions] + [actions_t[:, j, :] for j in nbr_idxs], dim=1
+                    )
+                    actor_loss = -agent.critic(nc_act_states, nc_act_actions).mean()
                 else:
                     actor_loss = -agent.critic(states_t[i], predicted_actions).mean()
     
