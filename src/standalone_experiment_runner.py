@@ -19,6 +19,7 @@ from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
 import numpy as np
+import multiprocessing as mp
 
 try:
     from scipy.stats import kendalltau
@@ -46,6 +47,99 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+
+def _episode_worker(args):
+    """
+    Collect one episode in a subprocess and return all transitions.
+
+    Must be a module-level function for multiprocessing pickling.
+    Workers run actors on CPU only; all gradient updates stay on the main process.
+    """
+    (actor_weights_cpu, all_actor_params, n_agents, deterministic_mask,
+     topology_type, n_nodes, topo_seed, reward_cfg,
+     epsilon, decision_block_size, t_per_ep, worker_seed) = args
+
+    import os
+    import sys
+    import random
+    import numpy as np
+    import torch
+
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
+    # Ensure project modules are importable in forked/spawned workers
+    _src = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'maddpg_clean')
+    _src_root = os.path.dirname(os.path.abspath(__file__))
+    for _p in [_src, _src_root]:
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+    from maddpg_implementation import ActorNetwork, Agent
+    from network_environment import NetworkEngine, NetworkEnv
+
+    # Reconstruct actor networks on CPU (explicit device='cpu' avoids CUDA in workers)
+    actors: dict = {}
+    for i, (actor_dim, fc1, fc2, n_actions) in enumerate(all_actor_params):
+        if not deterministic_mask[i]:
+            actor = ActorNetwork(
+                input_dims=actor_dim, fc1_dims=fc1, fc2_dims=fc2,
+                n_actions=n_actions, name=f'w_{i}', chkpt_dir='/tmp',
+                device='cpu',
+            )
+            sd = {k: torch.tensor(v, dtype=torch.float) for k, v in actor_weights_cpu[i].items()}
+            actor.load_state_dict(sd)
+            actor.eval()
+            actors[i] = actor
+
+    # Recreate environment — topology is deterministic because topo_seed is fixed
+    engine = NetworkEngine(
+        topology_type=topology_type, n_nodes=n_nodes, seed=topo_seed,
+        reward_config=reward_cfg,
+    )
+    env = NetworkEnv(engine)
+
+    n_actions = all_actor_params[0][3]
+
+    def _choose(idx: int, obs) -> np.ndarray:
+        if deterministic_mask[idx]:
+            policy = np.zeros(n_actions, dtype=np.float32)
+        else:
+            obs_t = torch.tensor(obs, dtype=torch.float).unsqueeze(0)
+            with torch.no_grad():
+                policy = actors[idx](obs_t).squeeze(0).numpy()
+        return Agent._build_executed_action(
+            policy_action=policy,
+            epsilon=epsilon,
+            decision_block_size=decision_block_size,
+            deterministic=deterministic_mask[idx],
+        )
+
+    transitions = []
+    states = env.reset()
+    ep_r = 0.0
+    ep_sent = 0
+    ep_dropped = 0
+
+    for t in range(t_per_ep):
+        executed_actions = [_choose(i, states[i]) for i in range(n_agents)]
+        next_states, rewards, info = env.step(executed_actions)
+        done = [t == t_per_ep - 1] * n_agents
+        transitions.append((
+            [np.array(s, dtype=np.float32) for s in states],
+            [np.array(a, dtype=np.float32) for a in executed_actions],
+            list(rewards),
+            [np.array(s, dtype=np.float32) for s in next_states],
+            list(done),
+        ))
+        states = next_states
+        ep_r += sum(rewards) / n_agents
+        ep_sent += info.get('packets_sent', 0)
+        ep_dropped += info.get('packets_dropped', 0)
+
+    return transitions, ep_r, ep_sent, ep_dropped
 
 
 class StandaloneExperimentRunner:
@@ -218,6 +312,36 @@ class StandaloneExperimentRunner:
 
         return float(np.mean(val_rewards)), float(np.mean(val_losses))
 
+    def _collect_episodes_parallel(
+        self, pool, maddpg: MADDPG, engine,
+        n_episodes: int, t_per_ep: int, epsilon: float,
+        deterministic_mask: List[bool], decision_block_size: int,
+        epoch: int, base_seed: int = 42,
+    ) -> Tuple[List[float], List[float]]:
+        """Collect n_episodes in parallel workers; push transitions to replay buffer."""
+        actor_weights_cpu = maddpg.get_actor_weights_cpu()
+        all_actor_params = [
+            (a.actor.input_dims, a.actor.fc1_dims, a.actor.fc2_dims, a.actor.n_actions)
+            for a in maddpg.agents
+        ]
+        worker_args = [
+            (
+                actor_weights_cpu, all_actor_params, maddpg.n_agents, deterministic_mask,
+                engine.topology_type, engine.n_nodes, engine.topo_seed, engine.reward_cfg,
+                epsilon, decision_block_size, t_per_ep,
+                base_seed + epoch * 10_000 + ep_idx,
+            )
+            for ep_idx in range(n_episodes)
+        ]
+        results = pool.map(_episode_worker, worker_args)
+        ep_rewards, ep_losses = [], []
+        for transitions, ep_r, ep_sent, ep_dropped in results:
+            for step in transitions:
+                maddpg.store_transition(*step)
+            ep_rewards.append(ep_r)
+            ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+        return ep_rewards, ep_losses
+
     # ═══════════════════════════════════════════════════════════════════════════
     # PHASE 1 — Training
     # ═══════════════════════════════════════════════════════════════════════════
@@ -281,6 +405,16 @@ class StandaloneExperimentRunner:
                 len(deterministic_mask),
             )
 
+        # Parallel episode collection: workers collect on CPU; main process learns on GPU
+        n_workers_cfg = cfg_t.get('parallel_workers', 0)
+        n_workers = n_workers_cfg if n_workers_cfg > 0 else min(eps_per_ep, max(1, mp.cpu_count() - 1))
+        # fork inherits sys.path and avoids spawn pickling issues; workers use CPU only
+        _mp_start = 'fork' if hasattr(os, 'fork') else 'spawn'
+        _mp_ctx = mp.get_context(_mp_start)
+        worker_pool = _mp_ctx.Pool(processes=n_workers)
+        logger.info("[TRAIN] %s — using %d parallel episode workers (start=%s)",
+                    name, n_workers, _mp_start)
+
         for epoch in range(epochs):
             if exploration_enabled:
                 decay_progress = min(epoch, epsilon_decay_epochs) / epsilon_decay_epochs
@@ -288,36 +422,22 @@ class StandaloneExperimentRunner:
             else:
                 epoch_epsilon = 0.0
 
-            ep_rewards, ep_losses = [], []
-            for _ in range(eps_per_ep):
-                states = env.reset()
-                ep_r = ep_sent = ep_dropped = 0
-                for t in range(t_per_ep):
-                    _, executed_actions = maddpg.choose_action(
-                        states,
-                        training=True,
-                        epsilon=epoch_epsilon,
-                        deterministic_mask=deterministic_mask,
-                        decision_block_size=decision_block_size,
-                    )
-                    next_states, rewards, info = env.step(executed_actions)
-                    done = [t == t_per_ep - 1] * len(states)
-                    maddpg.store_transition(
-                        states, executed_actions, rewards, next_states, done
-                    )
-                    freq = 10 if epoch < 20 else 25
-                    if t % freq == 0:
-                        maddpg.learn(
-                            batch_size=batch_size,
-                            deterministic_mask=deterministic_mask,
-                            decision_block_size=decision_block_size,
-                        )
-                    states = next_states
-                    ep_r      += sum(rewards)
-                    ep_sent   += info.get('packets_sent', 0)
-                    ep_dropped += info.get('packets_dropped', 0)
-                ep_rewards.append(ep_r / len(maddpg.agents))
-                ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+            # Collect all episodes in parallel, then do equivalent gradient updates
+            ep_rewards, ep_losses = self._collect_episodes_parallel(
+                pool=worker_pool, maddpg=maddpg, engine=engine,
+                n_episodes=eps_per_ep, t_per_ep=t_per_ep,
+                epsilon=epoch_epsilon, deterministic_mask=deterministic_mask,
+                decision_block_size=decision_block_size,
+                epoch=epoch, base_seed=42,
+            )
+            freq = 10 if epoch < 20 else 25
+            n_learns = (t_per_ep // freq) * eps_per_ep
+            for _ in range(n_learns):
+                maddpg.learn(
+                    batch_size=batch_size,
+                    deterministic_mask=deterministic_mask,
+                    decision_block_size=decision_block_size,
+                )
 
             all_rewards.extend(ep_rewards)
             all_losses.extend(ep_losses)
@@ -396,6 +516,9 @@ class StandaloneExperimentRunner:
                         checks_without_improvement,
                     )
                     break
+
+        worker_pool.close()
+        worker_pool.join()
 
         maddpg.save_checkpoint()
         logger.info(f"[TRAIN] {name} — done")

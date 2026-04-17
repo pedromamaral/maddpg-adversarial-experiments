@@ -22,6 +22,7 @@
       "decision_block_size": 3,
       "mode": "epsilon_greedy"
     },
+    "parallel_workers": 0,
     "freeze_single_link_nodes": true,
     "learn_action_projection": {
       "critic_target_mode": "block_argmax_onehot",

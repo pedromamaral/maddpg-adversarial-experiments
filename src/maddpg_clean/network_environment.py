@@ -225,6 +225,9 @@ class NetworkEngine:
     def __init__(self, topology_type: str = "service_provider",
                  n_nodes: int = 65, seed: int = 42,
                  reward_config: Optional[Dict[str, float]] = None):
+        self.topology_type = topology_type
+        self.n_nodes = n_nodes
+        self.topo_seed = seed
         self.topology = NetworkTopology(topology_type, n_nodes, seed)
         self.time_step = 0
         self.offered_load_factor = 1.0

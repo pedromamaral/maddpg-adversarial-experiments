@@ -34,7 +34,8 @@ class ActorNetwork(nn.Module):
     """Clean Actor Network implementation."""
 
     def __init__(self, input_dims: int, fc1_dims: int, fc2_dims: int,
-                 n_actions: int, name: str, chkpt_dir: str):
+                 n_actions: int, name: str, chkpt_dir: str,
+                 device: Optional[str] = None):
         super(ActorNetwork, self).__init__()
 
         self.input_dims = input_dims
@@ -51,7 +52,10 @@ class ActorNetwork(nn.Module):
 
         self.init_weights()
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = (
+            torch.device(device) if device is not None
+            else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        )
         self.to(self.device)
 
     def init_weights(self):
@@ -744,6 +748,13 @@ class MADDPG:
         for agent in self.agents:
             loaded_all = agent.load_best_models() and loaded_all
         return loaded_all
+
+    def get_actor_weights_cpu(self) -> List[Dict[str, 'np.ndarray']]:
+        """Serialise actor state dicts to CPU numpy arrays for worker-process IPC."""
+        return [
+            {k: v.detach().cpu().numpy() for k, v in agent.actor.state_dict().items()}
+            for agent in self.agents
+        ]
 
 
 if __name__ == '__main__':
