@@ -349,11 +349,24 @@ class StandaloneExperimentRunner:
     def train_variant(self, vcfg: Dict) -> Dict:
         name = vcfg['name']
         logger.info(f"[TRAIN] {name} — start")
+
+        # Create worker pool BEFORE _make_variant so fork() happens before any
+        # CUDA context is initialised in the parent.  Forking after CUDA init
+        # causes the children to inherit an invalid CUDA state and deadlock on
+        # the first pool.map() call.
+        cfg_t      = self.config['training']
+        eps_per_ep = cfg_t['episodes_per_epoch']
+        n_workers_cfg = cfg_t.get('parallel_workers', 0)
+        n_workers = n_workers_cfg if n_workers_cfg > 0 else min(eps_per_ep, max(1, mp.cpu_count() - 1))
+        _mp_start = 'fork' if hasattr(os, 'fork') else 'spawn'
+        _mp_ctx = mp.get_context(_mp_start)
+        worker_pool = _mp_ctx.Pool(processes=n_workers)
+        logger.info("[TRAIN] %s — using %d parallel episode workers (start=%s)",
+                    name, n_workers, _mp_start)
+
         maddpg, engine, env = self._make_variant(vcfg)
 
-        cfg_t      = self.config['training']
         epochs     = cfg_t['epochs']
-        eps_per_ep = cfg_t['episodes_per_epoch']
         t_per_ep   = cfg_t['timesteps_per_episode']
         batch_size = cfg_t.get('batch_size', 256)
         exploration_cfg = cfg_t.get('exploration', {})
@@ -404,16 +417,6 @@ class StandaloneExperimentRunner:
                 sum(deterministic_mask),
                 len(deterministic_mask),
             )
-
-        # Parallel episode collection: workers collect on CPU; main process learns on GPU
-        n_workers_cfg = cfg_t.get('parallel_workers', 0)
-        n_workers = n_workers_cfg if n_workers_cfg > 0 else min(eps_per_ep, max(1, mp.cpu_count() - 1))
-        # fork inherits sys.path and avoids spawn pickling issues; workers use CPU only
-        _mp_start = 'fork' if hasattr(os, 'fork') else 'spawn'
-        _mp_ctx = mp.get_context(_mp_start)
-        worker_pool = _mp_ctx.Pool(processes=n_workers)
-        logger.info("[TRAIN] %s — using %d parallel episode workers (start=%s)",
-                    name, n_workers, _mp_start)
 
         for epoch in range(epochs):
             if exploration_enabled:
