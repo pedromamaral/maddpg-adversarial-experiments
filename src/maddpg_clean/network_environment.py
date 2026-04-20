@@ -197,6 +197,9 @@ class NetworkTopology:
     def get_util(self, u: str, v: str) -> float:
         return self.graph[u][v]['utilization'] if self.graph.has_edge(u, v) else 0.0
 
+    def get_capacity(self, u: str, v: str) -> float:
+        return self.graph[u][v].get('capacity', 1.0) if self.graph.has_edge(u, v) else 1.0
+
     def set_util(self, u: str, v: str, val: float):
         if self.graph.has_edge(u, v):
             self.graph[u][v]['utilization'] = float(np.clip(val, 0.0, 1.0))
@@ -423,7 +426,8 @@ class NetworkEngine:
                 if d_before > 0:
                     progress_sum += (d_before - d_after) / d_before
                 cur = self.topology.get_util(host, chosen)
-                self.topology.set_util(host, chosen, cur + PACKET_SIZE)
+                cap = self.topology.get_capacity(host, chosen)
+                self.topology.set_util(host, chosen, cur + PACKET_SIZE / cap)
 
                 if chosen == pkt['dst']:
                     delivered += 1
