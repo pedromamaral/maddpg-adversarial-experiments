@@ -66,6 +66,9 @@ def _episode_worker(args):
     import numpy as np
     import torch
 
+    # Block GPU access in worker — all actor inference is CPU-only
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
     random.seed(worker_seed)
     np.random.seed(worker_seed)
     torch.manual_seed(worker_seed)
@@ -350,19 +353,20 @@ class StandaloneExperimentRunner:
         name = vcfg['name']
         logger.info(f"[TRAIN] {name} — start")
 
-        # Create worker pool BEFORE _make_variant so fork() happens before any
-        # CUDA context is initialised in the parent.  Forking after CUDA init
-        # causes the children to inherit an invalid CUDA state and deadlock on
-        # the first pool.map() call.
+        # Always use 'spawn' for the worker pool.  'fork' after CUDA has been
+        # initialised in the parent (which happens after the first variant
+        # completes) corrupts the CUDA context in every child and causes
+        # pool.map() to deadlock permanently.  'spawn' starts fresh Python
+        # interpreters that have no CUDA state; workers also explicitly set
+        # CUDA_VISIBLE_DEVICES='' as an extra guard.
         cfg_t      = self.config['training']
         eps_per_ep = cfg_t['episodes_per_epoch']
         n_workers_cfg = cfg_t.get('parallel_workers', 0)
         n_workers = n_workers_cfg if n_workers_cfg > 0 else min(eps_per_ep, max(1, mp.cpu_count() - 1))
-        _mp_start = 'fork' if hasattr(os, 'fork') else 'spawn'
-        _mp_ctx = mp.get_context(_mp_start)
+        _mp_ctx = mp.get_context('spawn')
         worker_pool = _mp_ctx.Pool(processes=n_workers)
-        logger.info("[TRAIN] %s — using %d parallel episode workers (start=%s)",
-                    name, n_workers, _mp_start)
+        logger.info("[TRAIN] %s — using %d parallel episode workers (start=spawn)",
+                    name, n_workers)
 
         maddpg, engine, env = self._make_variant(vcfg)
 
