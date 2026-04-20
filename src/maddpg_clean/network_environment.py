@@ -372,12 +372,10 @@ class NetworkEngine:
         step_sent = step_delivered = step_dropped = 0
         rewards = []
         reward_components = {
-            'delivery_term': 0.0,
-            'max_util_term': 0.0,
-            'var_util_term': 0.0,
-            'drop_term': 0.0,
-            'backlog_term': 0.0,
+            'fwd_success_term': 0.0,
             'shaping_term': 0.0,
+            'chosen_util_term': 0.0,
+            'extreme_cong_term': 0.0,
         }
 
         for i, host in enumerate(hosts):
@@ -395,6 +393,7 @@ class NetworkEngine:
             # forward packets
             delivered = dropped = 0
             progress_sum = 0.0
+            chosen_util_sum = 0.0   # sum of chosen-link utilisation before sending
             for pkt in q:
                 pkt_hops = int(pkt.get('hops', 0))
                 pkt_created = int(pkt.get('created_at', 0))
@@ -406,6 +405,9 @@ class NetworkEngine:
                     # Non-access destination: fall back to shortest-path next hop
                     _sp = self.topology.path_cache.get((host, dst), [])
                     chosen = _sp[1] if len(_sp) >= 2 and _sp[1] in nbrs else nbrs[0]
+
+                # Record chosen-link utilisation before sending (used in reward regardless of drop).
+                chosen_util_sum += self.topology.get_util(host, chosen)
 
                 if self.topology.avail_bw(host, chosen) < PACKET_SIZE:
                     dropped += 1
@@ -447,33 +449,39 @@ class NetworkEngine:
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
             # per-agent reward
-            total    = len(q)
-            dr       = delivered / total
+            # ---------------------------------------------------------------
+            # Forward-success term: (1 - drop_ratio) gives transit nodes a
+            # positive signal — they get full credit when no packets are dropped,
+            # regardless of whether they are the final destination.  This fixes
+            # the zero-reward problem for core/distribution nodes.
+            total      = len(q)
             drop_ratio = dropped / total
-            backlog_ratio = min(len(q), 20) / 20.0
-            utils    = [self.topology.get_util(host, nb) for nb in nbrs]
-            mx_util  = max(utils)
-            var_util = float(np.var(utils)) if len(utils) > 1 else 0.0
-            delivery_term = self.reward_cfg['delivery_weight'] * dr
-            # Congestion penalty: only fires above threshold so agents are not
-            # disincentivised from forwarding traffic at normal utilisation levels.
-            threshold = float(self.reward_cfg.get('congestion_threshold', CONGESTION_THRESHOLD))
-            max_util_term = self.reward_cfg['max_util_penalty'] * max(0.0, mx_util - threshold)
-            var_util_term = self.reward_cfg['var_util_penalty'] * var_util
-            drop_term = self.reward_cfg['drop_penalty'] * drop_ratio
-            backlog_term = self.reward_cfg['backlog_penalty'] * backlog_ratio
+            fwd_ratio  = 1.0 - drop_ratio
+
+            # Hop-progress shaping: rewards choosing paths that make progress
+            # toward the destination.  Differentiates K-path alternatives.
             shaping_weight = float(self.reward_cfg.get('progress_shaping_weight', 0.0))
-            shaping_term = shaping_weight * progress_sum / max(1, total)
+            shaping_term   = shaping_weight * progress_sum / total
+
+            # Chosen-link utilisation penalty: recorded before sending so the
+            # agent learns to *prefer* less-congested paths at decision time.
+            mean_chosen_util = chosen_util_sum / total
+            chosen_util_term = self.reward_cfg['max_util_penalty'] * mean_chosen_util
+
+            # Extra steep penalty for extreme utilisation (above threshold).
+            threshold        = float(self.reward_cfg.get('congestion_threshold', CONGESTION_THRESHOLD))
+            extreme_cong     = max(0.0, mean_chosen_util - threshold)
+            extreme_cong_term = self.reward_cfg['var_util_penalty'] * extreme_cong
+
+            fwd_success_term = self.reward_cfg['delivery_weight'] * fwd_ratio
 
             rewards.append(
-                delivery_term - max_util_term - var_util_term - drop_term - backlog_term + shaping_term
+                fwd_success_term + shaping_term - chosen_util_term - extreme_cong_term
             )
-            reward_components['delivery_term'] += delivery_term
-            reward_components['max_util_term'] += max_util_term
-            reward_components['var_util_term'] += var_util_term
-            reward_components['drop_term'] += drop_term
-            reward_components['backlog_term'] += backlog_term
-            reward_components['shaping_term'] += shaping_term
+            reward_components['fwd_success_term']  += fwd_success_term
+            reward_components['shaping_term']      += shaping_term
+            reward_components['chosen_util_term']  += chosen_util_term
+            reward_components['extreme_cong_term'] += extreme_cong_term
 
         # bookkeeping
         self.topology.decay_utils()
@@ -512,12 +520,10 @@ class NetworkEngine:
             'max_link_utilization': max_util,
             'backlog_packets': current_backlog,
             'reward_components': {
-                'delivery_term': reward_components['delivery_term'],
-                'max_util_term': reward_components['max_util_term'],
-                'var_util_term': reward_components['var_util_term'],
-                'drop_term': reward_components['drop_term'],
-                'backlog_term': reward_components['backlog_term'],
-                'shaping_term': reward_components['shaping_term'],
+                'fwd_success_term':  reward_components['fwd_success_term'],
+                'shaping_term':      reward_components['shaping_term'],
+                'chosen_util_term':  reward_components['chosen_util_term'],
+                'extreme_cong_term': reward_components['extreme_cong_term'],
             },
         }
         return next_states, rewards, info
@@ -771,12 +777,10 @@ class NetworkEngine:
             'step_mean_utils': [],
             'step_max_utils': [],
             'reward_component_sums': {
-                'delivery_term': 0.0,
-                'max_util_term': 0.0,
-                'var_util_term': 0.0,
-                'drop_term': 0.0,
-                'backlog_term': 0.0,
-                'shaping_term': 0.0,
+                'fwd_success_term':  0.0,
+                'shaping_term':      0.0,
+                'chosen_util_term':  0.0,
+                'extreme_cong_term': 0.0,
             },
         }
 

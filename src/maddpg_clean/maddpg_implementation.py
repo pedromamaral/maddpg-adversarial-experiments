@@ -723,10 +723,13 @@ class MADDPG:
             agent.actor_optimizer.zero_grad()
             self.scaler.scale(actor_loss).backward()
             self.scaler.step(agent.actor_optimizer)
-            self.scaler.update()
             logger.debug("Agent %d actor loss:  %.6f", i, actor_loss.item())
 
             agent.update_network_parameters()
+
+        # GradScaler must be updated once per full optimiser cycle, not once per
+        # agent — calling it 65x per learn() causes premature scale reduction.
+        self.scaler.update()
 
     def store_transition(self, obs, action, reward, obs_, done):
         self.memory.store_transition(obs, action, reward, obs_, done)
