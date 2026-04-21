@@ -9,7 +9,7 @@
   },
 
   "training": {
-    "epochs": 400,
+    "epochs": 150,
     "episodes_per_epoch": 5,
     "timesteps_per_episode": 256,
     "batch_size": 256,
@@ -30,18 +30,18 @@
     },
     "best_checkpoint": {
       "enabled": true,
-      "metric": "mean_pkt_loss",
-      "validation_interval_epochs": 20,
+      "metric": "mean_reward",
+      "validation_interval_epochs": 10,
       "validation_episodes": 5,
       "min_improvement": 0.001,
-      "warmup_epochs": 40
+      "warmup_epochs": 20
     },
     "early_stopping": {
       "enabled": true,
-      "metric": "mean_pkt_loss",
-      "patience_checks": 8,
+      "metric": "mean_reward",
+      "patience_checks": 4,
       "smooth_window_checks": 3,
-      "min_epochs": 120
+      "min_epochs": 60
     }
   },
 

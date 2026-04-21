@@ -437,7 +437,7 @@ class StandaloneExperimentRunner:
                 decision_block_size=decision_block_size,
                 epoch=epoch, base_seed=42,
             )
-            freq = 10 if epoch < 20 else 25
+            freq = 25
             n_learns = (t_per_ep // freq) * eps_per_ep
             for _ in range(n_learns):
                 maddpg.learn(

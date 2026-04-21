@@ -374,6 +374,7 @@ class NetworkEngine:
         next_queue: Dict[str, List[Dict]] = defaultdict(list)
         step_sent = step_delivered = step_dropped = 0
         rewards = []
+        _agent_active = []  # True for agents that processed packets this step
         reward_components = {
             'fwd_success_term': 0.0,
             'shaping_term': 0.0,
@@ -388,6 +389,7 @@ class NetworkEngine:
 
             if not nbrs or not q:
                 rewards.append(0.0)
+                _agent_active.append(False)
                 continue
 
             # choose next-hop per destination (K-shortest-paths, per-packet)
@@ -454,16 +456,9 @@ class NetworkEngine:
 
             # per-agent reward
             # ---------------------------------------------------------------
-            # Forward-success term: (1 - drop_ratio) gives transit nodes a
-            # positive signal — they get full credit when no packets are dropped,
-            # regardless of whether they are the final destination.  This fixes
-            # the zero-reward problem for core/distribution nodes.
-            total      = len(q)
-            drop_ratio = dropped / total
-            fwd_ratio  = 1.0 - drop_ratio
-
             # Hop-progress shaping: rewards choosing paths that make progress
             # toward the destination.  Differentiates K-path alternatives.
+            total          = len(q)
             shaping_weight = float(self.reward_cfg.get('progress_shaping_weight', 0.0))
             shaping_term   = shaping_weight * progress_sum / total
 
@@ -473,19 +468,27 @@ class NetworkEngine:
             chosen_util_term = self.reward_cfg['max_util_penalty'] * mean_chosen_util
 
             # Extra steep penalty for extreme utilisation (above threshold).
-            threshold        = float(self.reward_cfg.get('congestion_threshold', CONGESTION_THRESHOLD))
-            extreme_cong     = max(0.0, mean_chosen_util - threshold)
+            threshold         = float(self.reward_cfg.get('congestion_threshold', CONGESTION_THRESHOLD))
+            extreme_cong      = max(0.0, mean_chosen_util - threshold)
             extreme_cong_term = self.reward_cfg['var_util_penalty'] * extreme_cong
 
-            fwd_success_term = self.reward_cfg['delivery_weight'] * fwd_ratio
-
-            rewards.append(
-                fwd_success_term + shaping_term - chosen_util_term - extreme_cong_term
-            )
-            reward_components['fwd_success_term']  += fwd_success_term
+            # E2e delivery term is deferred until after the loop (requires
+            # step_sent and step_delivered totals across all agents).
+            rewards.append(shaping_term - chosen_util_term - extreme_cong_term)
+            _agent_active.append(True)
             reward_components['shaping_term']      += shaping_term
             reward_components['chosen_util_term']  += chosen_util_term
             reward_components['extreme_cong_term'] += extreme_cong_term
+
+        # End-to-end delivery term: global step delivery ratio applied uniformly
+        # to every agent that processed packets.  Replaces per-agent fwd_success
+        # which was blind to TTL expiry on downstream hops.
+        e2e_ratio = step_delivered / step_sent if step_sent > 0 else 1.0
+        e2e_delivery_term = self.reward_cfg['delivery_weight'] * e2e_ratio
+        for idx, active in enumerate(_agent_active):
+            if active:
+                rewards[idx] += e2e_delivery_term
+        reward_components['fwd_success_term'] = e2e_delivery_term * sum(_agent_active)
 
         # bookkeeping
         self.topology.decay_utils()
