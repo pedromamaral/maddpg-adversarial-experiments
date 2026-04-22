@@ -63,10 +63,10 @@
   },
 
   "reward": {
-    "_comment": "Per-packet causal reward: +delivery_weight per delivered packet, -drop_penalty per dropped packet (BW overflow or TTL), +progress_shaping_weight*progress/total for hop progress. No utilisation penalty — congestion is penalised indirectly via drops.",
-    "delivery_weight": 4.0,
-    "drop_penalty": 2.0,
-    "progress_shaping_weight": 1.0,
+    "_comment": "Per-packet causal reward. delivery_weight is small because core nodes (the key learners) never see deliveries — their primary signals are drop_penalty (congestion) and progress_shaping_weight (hop geometry). Both shaping and drop reach every learner every step; delivery only reaches last-mile dist nodes.",
+    "delivery_weight": 0.5,
+    "drop_penalty": 3.0,
+    "progress_shaping_weight": 2.5,
     "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,
     "var_util_penalty": 0.0,
