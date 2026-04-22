@@ -398,7 +398,8 @@ class NetworkEngine:
             # forward packets
             delivered = dropped = 0
             progress_sum = 0.0
-            chosen_util_sum = 0.0   # sum of chosen-link utilisation before sending
+            pkt_delivered_count = 0   # packets delivered by this agent this step
+            pkt_drop_count = 0        # packets dropped by this agent this step
             for pkt in q:
                 pkt_hops = int(pkt.get('hops', 0))
                 pkt_created = int(pkt.get('created_at', 0))
@@ -411,12 +412,10 @@ class NetworkEngine:
                     _sp = self.topology.path_cache.get((host, dst), [])
                     chosen = _sp[1] if len(_sp) >= 2 and _sp[1] in nbrs else nbrs[0]
 
-                # Record chosen-link utilisation before sending (used in reward regardless of drop).
-                chosen_util_sum += self.topology.get_util(host, chosen)
-
                 if self.topology.avail_bw(host, chosen) < PACKET_SIZE:
                     dropped += 1
                     step_dropped += 1
+                    pkt_drop_count += 1
                     self._episode_stats['dropped_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
                     )
@@ -434,6 +433,7 @@ class NetworkEngine:
                 if chosen == pkt['dst']:
                     delivered += 1
                     step_delivered += 1
+                    pkt_delivered_count += 1
                     final_hops = pkt_hops + 1
                     self._episode_stats['delivered_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
@@ -449,6 +449,7 @@ class NetworkEngine:
                 else:
                     dropped += 1
                     step_dropped += 1   # TTL expired
+                    pkt_drop_count += 1
                     self._episode_stats['dropped_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
                     )
@@ -456,39 +457,28 @@ class NetworkEngine:
 
             # per-agent reward
             # ---------------------------------------------------------------
-            # Hop-progress shaping: rewards choosing paths that make progress
-            # toward the destination.  Differentiates K-path alternatives.
-            total          = len(q)
-            shaping_weight = float(self.reward_cfg.get('progress_shaping_weight', 0.0))
-            shaping_term   = shaping_weight * progress_sum / total
+            # Per-packet causal reward:
+            #   +delivery_weight  for each packet delivered this step
+            #   -drop_penalty     for each packet dropped (BW overflow or TTL)
+            #   +shaping_weight * progress/total  hop-progress toward destination
+            #
+            # No utilisation penalty: congestion is already penalised via drops.
+            # No global e2e ratio: that was too noisy for individual credit.
+            total             = len(q)
+            delivery_weight   = float(self.reward_cfg.get('delivery_weight', 1.0))
+            drop_penalty      = float(self.reward_cfg.get('drop_penalty', 0.0))
+            shaping_weight    = float(self.reward_cfg.get('progress_shaping_weight', 0.0))
 
-            # Chosen-link utilisation penalty: recorded before sending so the
-            # agent learns to *prefer* less-congested paths at decision time.
-            mean_chosen_util = chosen_util_sum / total
-            chosen_util_term = self.reward_cfg['max_util_penalty'] * mean_chosen_util
+            delivery_term = delivery_weight * pkt_delivered_count / total
+            drop_term     = drop_penalty    * pkt_drop_count      / total
+            shaping_term  = shaping_weight  * progress_sum        / total
 
-            # Extra steep penalty for extreme utilisation (above threshold).
-            threshold         = float(self.reward_cfg.get('congestion_threshold', CONGESTION_THRESHOLD))
-            extreme_cong      = max(0.0, mean_chosen_util - threshold)
-            extreme_cong_term = self.reward_cfg['var_util_penalty'] * extreme_cong
-
-            # E2e delivery term is deferred until after the loop (requires
-            # step_sent and step_delivered totals across all agents).
-            rewards.append(shaping_term - chosen_util_term - extreme_cong_term)
+            rewards.append(delivery_term - drop_term + shaping_term)
             _agent_active.append(True)
-            reward_components['shaping_term']      += shaping_term
-            reward_components['chosen_util_term']  += chosen_util_term
-            reward_components['extreme_cong_term'] += extreme_cong_term
-
-        # End-to-end delivery term: global step delivery ratio applied uniformly
-        # to every agent that processed packets.  Replaces per-agent fwd_success
-        # which was blind to TTL expiry on downstream hops.
-        e2e_ratio = step_delivered / step_sent if step_sent > 0 else 1.0
-        e2e_delivery_term = self.reward_cfg['delivery_weight'] * e2e_ratio
-        for idx, active in enumerate(_agent_active):
-            if active:
-                rewards[idx] += e2e_delivery_term
-        reward_components['fwd_success_term'] = e2e_delivery_term * sum(_agent_active)
+            reward_components['fwd_success_term'] += delivery_term
+            reward_components['shaping_term']     += shaping_term
+            reward_components['chosen_util_term'] += drop_term   # repurposed for drop penalty
+            reward_components['extreme_cong_term'] = 0.0
 
         # bookkeeping
         self.topology.decay_utils()

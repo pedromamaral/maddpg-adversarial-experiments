@@ -63,14 +63,14 @@
   },
 
   "reward": {
-    "_comment": "Redesigned reward: fwd-success + hop-progress - chosen-link-util - extreme-cong. delivery_weight=fwd_success_weight, max_util_penalty=chosen_link_util_weight (proportional), var_util_penalty=extreme_cong_weight (above threshold), drop_penalty/backlog_penalty unused (set 0).",
+    "_comment": "Per-packet causal reward: +delivery_weight per delivered packet, -drop_penalty per dropped packet (BW overflow or TTL), +progress_shaping_weight*progress/total for hop progress. No utilisation penalty — congestion is penalised indirectly via drops.",
     "delivery_weight": 4.0,
-    "max_util_penalty": 1.0,
+    "drop_penalty": 2.0,
+    "progress_shaping_weight": 1.0,
+    "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,
-    "var_util_penalty": 1.5,
-    "drop_penalty": 0.0,
-    "backlog_penalty": 0.0,
-    "progress_shaping_weight": 2.0
+    "var_util_penalty": 0.0,
+    "backlog_penalty": 0.0
   },
 
   "runtime_control": {
