@@ -57,7 +57,7 @@ def _episode_worker(args):
     Workers run actors on CPU only; all gradient updates stay on the main process.
     """
     (actor_weights_cpu, all_actor_params, n_agents, deterministic_mask,
-     topology_type, n_nodes, topo_seed, reward_cfg,
+        topology_type, n_nodes, topo_seed, reward_cfg, topology_cfg,
      epsilon, decision_block_size, t_per_ep, worker_seed) = args
 
     import os
@@ -101,6 +101,7 @@ def _episode_worker(args):
     engine = NetworkEngine(
         topology_type=topology_type, n_nodes=n_nodes, seed=topo_seed,
         reward_config=reward_cfg,
+        topology_config=topology_cfg,
     )
     env = NetworkEnv(engine)
 
@@ -232,33 +233,40 @@ class StandaloneExperimentRunner:
     def _make_variant(self, vcfg: Dict) -> Tuple[MADDPG, NetworkEngine, NetworkEnv]:
         reward_cfg = self.config.get('reward', {})
         training_cfg = self.config.get('training', {})
+        topology_cfg = self.config.get('topology', {})
         projection_cfg = training_cfg.get('learn_action_projection', {})
         engine = NetworkEngine(
-            topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
-            n_nodes=vcfg['n_agents'],
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', vcfg.get('n_agents', 65))),
             reward_config=reward_cfg,
+            topology_config=topology_cfg,
         )
         env = NetworkEnv(engine)
 
         critic_domain = vcfg['critic_domain']
-        actor_dims = vcfg['actor_dims']
+        n_agents = len(engine.get_all_hosts())
+        actor_dims = engine.state_dims
+        n_actions = engine.n_actions
 
         # Neighborhood critic: critic dims and adjacency are topology-derived
         if critic_domain == 'neighborhood_critic':
             adjacency = engine.get_adjacency_indices()
             critic_dims = [
                 actor_dims * (1 + len(adjacency[i]))
-                for i in range(vcfg['n_agents'])
+                for i in range(n_agents)
             ]
+        elif critic_domain == 'local_critic':
+            adjacency = None
+            critic_dims = actor_dims
         else:
             adjacency = None
-            critic_dims = vcfg['critic_dims']
+            critic_dims = actor_dims * n_agents
 
         maddpg = MADDPG(
             actor_dims=actor_dims,
             critic_dims=critic_dims,
-            n_agents=vcfg['n_agents'],
-            n_actions=vcfg['n_actions'],
+            n_agents=n_agents,
+            n_actions=n_actions,
             chkpt_dir=f"{self.results_dir}/models/{vcfg['name']}",
             critic_type=critic_domain,
             network_type=vcfg['neural_network'],
@@ -331,6 +339,7 @@ class StandaloneExperimentRunner:
             (
                 actor_weights_cpu, all_actor_params, maddpg.n_agents, deterministic_mask,
                 engine.topology_type, engine.n_nodes, engine.topo_seed, engine.reward_cfg,
+                self.config.get('topology', {}),
                 epsilon, decision_block_size, t_per_ep,
                 base_seed + epoch * 10_000 + ep_idx,
             )

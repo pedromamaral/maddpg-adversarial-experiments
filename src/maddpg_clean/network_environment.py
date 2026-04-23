@@ -12,6 +12,8 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 import random
 import itertools
+from pathlib import Path
+import re
 
 # ── Reward hyper-parameters ──────────────────────────────────────────────────
 ALPHA = 1.0   # delivery weight
@@ -31,15 +33,131 @@ N_DEST_BUCKETS = len(DEST_BUCKETS)
 K_PATHS = 3          # K shortest paths per access-destination for per-packet routing
 SHAPING_WEIGHT = 0.4  # potential-based hop-progress reward shaping weight
 
+REAL_SERVICE_PROVIDER_TOPOLOGY = """BS1 S8 1000 1 0
+BS2 S13 1000 1 0
+BS3 S22 1000 1 0
+BS4 S31 1000 1 0
+BS5 S39 1000 1 0
+BS6 S48 1000 1 0
+BS7 S57 1000 1 0
+MECS1 S8 1000 1 0
+MECS2 S13 1000 1 0
+MECS3 S22 1000 1 0
+MECS4 S31 1000 1 0
+MECS5 S39 1000 1 0
+MECS6 S48 1000 1 0
+MECS7 S57 1000 1 0
+CS1 S12 1000 1 0
+CS2 S21 1000 1 0
+CS3 S30 1000 1 0
+CS4 S38 1000 1 0
+CS5 S47 1000 1 0
+CS6 S56 1000 1 0
+CS7 S65 1000 1 0
+S1 S2 500 1 0
+S1 S3 500 1 0
+S1 S8 300 1 0
+S2 S4 500 1 0
+S3 S4 500 1 0
+S4 S5 500 1 0
+S4 S6 500 1 0
+S5 S7 500 1 0
+S6 S7 500 1 0
+S7 S12 700 1 0
+S8 S13 300 1 0
+S8 S22 300 1 0
+S9 S10 500 1 0
+S9 S14 500 1 0
+S10 S11 500 1 0
+S11 S20 500 1 0
+S12 S21 700 1 0
+S12 S30 700 1 0
+S13 S14 300 1 0
+S13 S31 300 1 0
+S14 S15 500 1 0
+S14 S16 500 1 0
+S15 S17 500 1 0
+S16 S17 500 1 0
+S17 S18 500 1 0
+S17 S19 500 1 0
+S18 S20 500 1 0
+S19 S20 500 1 0
+S20 S21 700 1 0
+S21 S38 700 1 0
+S22 S23 300 1 0
+S22 S39 300 1 0
+S23 S24 500 1 0
+S23 S25 500 1 0
+S24 S26 500 1 0
+S25 S26 500 1 0
+S26 S27 500 1 0
+S26 S28 500 1 0
+S27 S29 500 1 0
+S28 S29 500 1 0
+S29 S30 700 1 0
+S30 S47 700 1 0
+S31 S32 300 1 0
+S31 S48 300 1 0
+S32 S33 500 1 0
+S33 S34 500 1 0
+S34 S35 500 1 0
+S35 S36 500 1 0
+S36 S37 500 1 0
+S37 S38 700 1 0
+S38 S56 700 1 0
+S39 S40 300 1 0
+S39 S48 300 1 0
+S40 S41 500 1 0
+S40 S42 500 1 0
+S41 S43 500 1 0
+S42 S43 500 1 0
+S43 S44 500 1 0
+S43 S45 500 1 0
+S44 S46 500 1 0
+S45 S46 500 1 0
+S46 S47 700 1 0
+S47 S56 700 1 0
+S48 S49 300 1 0
+S48 S57 300 1 0
+S49 S50 500 1 0
+S49 S51 500 1 0
+S50 S52 500 1 0
+S51 S52 500 1 0
+S52 S53 500 1 0
+S52 S54 500 1 0
+S53 S55 500 1 0
+S54 S55 500 1 0
+S55 S56 700 1 0
+S56 S65 700 1 0
+S57 S58 300 1 0
+S58 S59 500 1 0
+S58 S60 500 1 0
+S59 S61 500 1 0
+S60 S61 500 1 0
+S61 S62 500 1 0
+S61 S63 500 1 0
+S62 S64 500 1 0
+S63 S64 500 1 0
+S64 S65 700 1 0"""
+
+
+def _natural_key(name: str) -> Tuple[str, int]:
+    match = re.match(r'^([A-Za-z]+)(\d+)$', name)
+    if match:
+        return match.group(1), int(match.group(2))
+    return name, -1
+
 
 class NetworkTopology:
     """Hierarchical service-provider topology (65 nodes, 3 tiers)."""
 
     def __init__(self, topology_type: str = "service_provider",
-                 n_nodes: int = 65, seed: int = 42):
+                 n_nodes: int = 65, seed: int = 42,
+                 topology_config: Optional[Dict] = None):
         self.topology_type = topology_type
         self.n_nodes = n_nodes
         self._seed = seed
+        self.topology_config = topology_config or {}
         random.seed(seed)
         np.random.seed(seed)
 
@@ -95,6 +213,7 @@ class NetworkTopology:
     def _build(self) -> nx.Graph:
         builders = {
             "service_provider": self._sp_topology,
+            "service_provider_real": self._real_service_provider_topology,
             "grid":             self._grid_topology,
             "random":           self._random_topology,
         }
@@ -144,6 +263,67 @@ class NetworkTopology:
         # Compute topology max degree — used to size the state/action vectors.
         self.max_degree = max(d for _, d in G.degree())
         return G
+
+    def _real_service_provider_topology(self) -> nx.Graph:
+        G = nx.Graph()
+        topology_text = self._load_real_topology_text()
+        switch_nodes = set()
+        endpoint_nodes = set()
+        edge_rows: List[Tuple[str, str, float]] = []
+
+        for raw_line in topology_text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            left, right = parts[0], parts[1]
+            capacity = float(parts[2])
+            edge_rows.append((left, right, capacity))
+            for node in (left, right):
+                if node.startswith('S'):
+                    switch_nodes.add(node)
+                else:
+                    endpoint_nodes.add(node)
+
+        ordered_switches = sorted(switch_nodes, key=_natural_key)
+        ordered_endpoints = sorted(endpoint_nodes, key=_natural_key)
+        for node in ordered_switches + ordered_endpoints:
+            G.add_node(node)
+
+        max_capacity = max((cap for _, _, cap in edge_rows), default=1.0)
+        for left, right, raw_capacity in edge_rows:
+            G.add_edge(
+                left,
+                right,
+                capacity=raw_capacity,
+                capacity_scale=max(raw_capacity / max_capacity, 1e-6),
+                utilization=0.0,
+            )
+
+        access_nodes = ordered_endpoints
+        dist_nodes = sorted(
+            {nb for access in access_nodes for nb in G.neighbors(access) if nb in switch_nodes},
+            key=_natural_key,
+        )
+        dist_set = set(dist_nodes)
+        core_nodes = [node for node in ordered_switches if node not in dist_set]
+
+        self.core_nodes = core_nodes
+        self.dist_nodes = dist_nodes
+        self.access_nodes = access_nodes
+        self.max_degree = max(d for _, d in G.degree()) if G.number_of_nodes() else 0
+        return G
+
+    def _load_real_topology_text(self) -> str:
+        candidate = self.topology_config.get('file') or self.topology_config.get('path')
+        if candidate:
+            path = Path(candidate)
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            return path.read_text(encoding='utf-8')
+        return REAL_SERVICE_PROVIDER_TOPOLOGY
 
     def _grid_topology(self) -> nx.Graph:
         side = int(np.sqrt(self.n_nodes))
@@ -200,6 +380,9 @@ class NetworkTopology:
     def get_capacity(self, u: str, v: str) -> float:
         return self.graph[u][v].get('capacity', 1.0) if self.graph.has_edge(u, v) else 1.0
 
+    def get_capacity_scale(self, u: str, v: str) -> float:
+        return self.graph[u][v].get('capacity_scale', 1.0) if self.graph.has_edge(u, v) else 1.0
+
     def set_util(self, u: str, v: str, val: float):
         if self.graph.has_edge(u, v):
             self.graph[u][v]['utilization'] = float(np.clip(val, 0.0, 1.0))
@@ -227,11 +410,18 @@ class NetworkEngine:
 
     def __init__(self, topology_type: str = "service_provider",
                  n_nodes: int = 65, seed: int = 42,
-                 reward_config: Optional[Dict[str, float]] = None):
+                 reward_config: Optional[Dict[str, float]] = None,
+                 topology_config: Optional[Dict] = None):
         self.topology_type = topology_type
         self.n_nodes = n_nodes
         self.topo_seed = seed
-        self.topology = NetworkTopology(topology_type, n_nodes, seed)
+        self.topology = NetworkTopology(
+            topology_type,
+            n_nodes,
+            seed,
+            topology_config=topology_config,
+        )
+        self.n_nodes = len(self.topology.hosts)
         self.time_step = 0
         self.offered_load_factor = 1.0
         self.packet_queue: Dict[str, List[Dict]] = defaultdict(list)
@@ -249,6 +439,8 @@ class NetworkEngine:
 
         # Expose topology max degree so calling code can read actor_dims once.
         self.max_neighbors: int = self.topology.max_degree
+        self.n_destinations: int = len(self.topology.access_nodes)
+        self.n_actions: int = self.n_destinations * K_PATHS
 
         # Node-tier lookup — used by Paper-2 attack surface analysis
         self._tier: Dict[str, str] = {}
@@ -296,12 +488,12 @@ class NetworkEngine:
 
     @property
     def state_dims(self) -> int:
-        """Total state-vector size: max_neighbors + 50 fixed slots."""
-        return self.max_neighbors + 50
+        """Total state-vector size: max_neighbors + destination slots + 10 fixed slots."""
+        return self.max_neighbors + self.n_destinations + 10
 
     def get_state(self, host: str) -> np.ndarray:
         """
-        (MAX_NEIGHBORS + 50)-dimensional observation for one agent.
+        Observation for one agent.
 
         Slot layout:
           [0 : MAX_NEIGHBORS]           available bandwidth to each neighbour
@@ -310,16 +502,14 @@ class NetworkEngine:
           [MAX_NEIGHBORS+1]             destination diversity in queue
           [MAX_NEIGHBORS+2]             normalised timestep
           [MAX_NEIGHBORS+3 :
-           MAX_NEIGHBORS+43]            one-hot presence flag per access node (40 slots)
-                                        1.0 if that access node appears in local queue
-          [MAX_NEIGHBORS+43 :
-           MAX_NEIGHBORS+46]            queue share by destination bucket (access, dist, core)
-          [MAX_NEIGHBORS+46]            mean adjacent link utilisation
-          [MAX_NEIGHBORS+47]            max adjacent link utilisation
-          [MAX_NEIGHBORS+48]            variance of adjacent link utilisations
-          [MAX_NEIGHBORS+49]            global mean link utilisation
+           MAX_NEIGHBORS+3+N_DEST]      one-hot presence flag per endpoint destination
+          [.. + 3]                      queue share by destination bucket (access, dist, core)
+          [.. + 4]                      mean adjacent link utilisation
+          [.. + 5]                      max adjacent link utilisation
+          [.. + 6]                      variance of adjacent link utilisations
+          [.. + 7]                      global mean link utilisation
 
-          Total = max_neighbors + 50  (61 for service_provider/65-node/seed=42)
+          Total = max_neighbors + n_destinations + 10
         """
         mn   = self.max_neighbors
         nbrs = self.topology.get_neighbors(host)
@@ -333,7 +523,7 @@ class NetworkEngine:
         q = self.packet_queue[host]
         dsts_in_queue = {p['dst'] for p in q}
         state.append(min(len(q), 20) / 20.0)
-        state.append(len(dsts_in_queue) / 65.0)
+        state.append(len(dsts_in_queue) / max(1, len(self.topology.hosts)))
         state.append(self.time_step / 256.0)
 
         # destination indicator — 40 slots (access nodes only; traffic endpoints in SP network)
@@ -361,7 +551,7 @@ class NetworkEngine:
         state.append(global_util)
 
         # guarantee exactly (mn + 50) dims
-        total = mn + 50
+        total = self.state_dims
         state = state[:total]
         while len(state) < total:
             state.append(0.0)
@@ -412,7 +602,8 @@ class NetworkEngine:
                     _sp = self.topology.path_cache.get((host, dst), [])
                     chosen = _sp[1] if len(_sp) >= 2 and _sp[1] in nbrs else nbrs[0]
 
-                if self.topology.avail_bw(host, chosen) < PACKET_SIZE:
+                required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, chosen), 1e-6)
+                if self.topology.avail_bw(host, chosen) < required_bw:
                     dropped += 1
                     step_dropped += 1
                     pkt_drop_count += 1
@@ -427,8 +618,8 @@ class NetworkEngine:
                 if d_before > 0:
                     progress_sum += (d_before - d_after) / d_before
                 cur = self.topology.get_util(host, chosen)
-                cap = self.topology.get_capacity(host, chosen)
-                self.topology.set_util(host, chosen, cur + PACKET_SIZE / cap)
+                cap_scale = self.topology.get_capacity_scale(host, chosen)
+                self.topology.set_util(host, chosen, cur + PACKET_SIZE / max(cap_scale, 1e-6))
 
                 if chosen == pkt['dst']:
                     delivered += 1
@@ -529,7 +720,7 @@ class NetworkEngine:
         """Select next-hop per access destination using K-shortest-path action vector.
 
         Action layout: [dst0_path0, dst0_path1, dst0_path2, dst1_path0, ...]
-        Length = 40 access_nodes × K_PATHS = 120
+        Length = len(access_nodes) × K_PATHS
 
         Returns: dict mapping each access destination → chosen next-hop neighbor.
         """
@@ -640,11 +831,13 @@ class NetworkEngine:
                     dropped += 1
                     continue
                 nxt = path[1]
-                if self.topology.avail_bw(host, nxt) < PACKET_SIZE:
+                required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, nxt), 1e-6)
+                if self.topology.avail_bw(host, nxt) < required_bw:
                     dropped += 1
                     continue
                 cur = self.topology.get_util(host, nxt)
-                self.topology.set_util(host, nxt, cur + PACKET_SIZE)
+                cap_scale = self.topology.get_capacity_scale(host, nxt)
+                self.topology.set_util(host, nxt, cur + PACKET_SIZE / max(cap_scale, 1e-6))
                 if nxt == pkt['dst']:
                     delivered += 1
                 elif pkt['ttl'] > 0:
@@ -692,11 +885,13 @@ class NetworkEngine:
                 pkt_hops = int(pkt.get('hops', 0))
                 pkt_created = int(pkt.get('created_at', 0))
                 sent += 1
-                if self.topology.avail_bw(host, chosen) < PACKET_SIZE:
+                required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, chosen), 1e-6)
+                if self.topology.avail_bw(host, chosen) < required_bw:
                     dropped += 1
                     continue
                 cur = self.topology.get_util(host, chosen)
-                self.topology.set_util(host, chosen, cur + PACKET_SIZE)
+                cap_scale = self.topology.get_capacity_scale(host, chosen)
+                self.topology.set_util(host, chosen, cur + PACKET_SIZE / max(cap_scale, 1e-6))
                 if chosen == pkt['dst']:
                     delivered += 1
                 elif pkt['ttl'] > 0:
@@ -725,7 +920,7 @@ class NetworkEngine:
 
     def _inject_packets(self, n: int):
         srcs = self.topology.access_nodes or self.topology.hosts
-        dsts = (self.topology.access_nodes + self.topology.dist_nodes) or self.topology.hosts
+        dsts = self.topology.access_nodes or self.topology.hosts
         for _ in range(n):
             src = random.choice(srcs)
             dst = random.choice([h for h in dsts if h != src])

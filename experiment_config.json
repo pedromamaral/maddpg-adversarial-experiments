@@ -3,8 +3,8 @@
   "description": "Hop-by-hop MADDPG variants — architecture comparison (Paper 1) and adversarial attack study (Paper 2)",
 
   "topology": {
-    "type": "service_provider",
-    "nodes": 65,
+    "type": "service_provider_real",
+    "nodes": 86,
     "max_links": 11
   },
 
@@ -63,14 +63,14 @@
   },
 
   "reward": {
-    "_comment": "Per-packet causal reward. delivery_weight is small because core nodes (the key learners) never see deliveries — their primary signals are drop_penalty (congestion) and progress_shaping_weight (hop geometry). Both shaping and drop reach every learner every step; delivery only reaches last-mile dist nodes.",
+    "_comment": "Per-packet causal reward. delivery_weight reaches last-mile access nodes; drop_penalty and progress_shaping_weight reach every agent every step. progress_shaping_weight reduced (2.5→1.0) to stop agents chasing hop progress into congested links; drop_penalty raised (3.0→5.0) to enforce congestion avoidance; backlog_penalty (0.0→0.10) penalises build-up so agents cannot defer congestion to future steps.",
     "delivery_weight": 0.5,
-    "drop_penalty": 3.0,
-    "progress_shaping_weight": 2.5,
+    "drop_penalty": 5.0,
+    "progress_shaping_weight": 1.0,
     "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,
     "var_util_penalty": 0.0,
-    "backlog_penalty": 0.0
+    "backlog_penalty": 0.10
   },
 
   "runtime_control": {
