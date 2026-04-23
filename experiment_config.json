@@ -18,10 +18,12 @@
       "enabled": true,
       "epsilon_start": 0.30,
       "epsilon_end": 0.02,
-      "epsilon_decay_epochs": 300,
+      "epsilon_decay_epochs": 150,
       "decision_block_size": 3,
       "mode": "epsilon_greedy"
     },
+    "gamma": 0.95,
+    "tau": 0.01,
     "parallel_workers": 0,
     "freeze_single_link_nodes": true,
     "learn_action_projection": {
@@ -39,7 +41,7 @@
     "early_stopping": {
       "enabled": true,
       "metric": "mean_reward",
-      "patience_checks": 4,
+      "patience_checks": 6,
       "smooth_window_checks": 3,
       "min_epochs": 60
     }

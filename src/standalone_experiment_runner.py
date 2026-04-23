@@ -274,6 +274,8 @@ class StandaloneExperimentRunner:
             fc2=vcfg.get('fc2', 128),
             alpha=vcfg.get('alpha', 0.001),
             beta=vcfg.get('beta', 0.001),
+            gamma=vcfg.get('gamma', training_cfg.get('gamma', 0.95)),
+            tau=vcfg.get('tau', training_cfg.get('tau', 0.01)),
             use_gnn=vcfg.get('use_gnn', False),
             critic_target_mode=projection_cfg.get('critic_target_mode', 'block_argmax_onehot'),
             actor_mode=projection_cfg.get('actor_mode', 'soft'),
