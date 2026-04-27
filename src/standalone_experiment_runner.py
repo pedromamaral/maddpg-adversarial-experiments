@@ -55,10 +55,16 @@ def _episode_worker(args):
 
     Must be a module-level function for multiprocessing pickling.
     Workers run actors on CPU only; all gradient updates stay on the main process.
+
+    When trainable_indices is not None the MADDPG agent count (n_agents) is a
+    subset of the full topology (n_total_hosts).  The worker expands trainable
+    actions to a full n_total_hosts-length list before calling env.step(), but
+    only stores the trainable-agent slices in the returned transitions.
     """
     (actor_weights_cpu, all_actor_params, n_agents, deterministic_mask,
         topology_type, n_nodes, topo_seed, reward_cfg, topology_cfg,
-     epsilon, decision_block_size, t_per_ep, worker_seed) = args
+     epsilon, decision_block_size, t_per_ep, worker_seed,
+     trainable_indices, n_total_hosts) = args
 
     import os
     import sys
@@ -106,19 +112,25 @@ def _episode_worker(args):
     env = NetworkEnv(engine)
 
     n_actions = all_actor_params[0][3]
+    # If the trainable-host filter is active, env has more nodes than MADDPG agents.
+    filtered = trainable_indices is not None and n_total_hosts != n_agents
+    if filtered:
+        trainable_set_idx = set(trainable_indices)
+        # Map topology index → MADDPG agent index for action lookup
+        topo_to_maddpg = {topo_idx: ti for ti, topo_idx in enumerate(trainable_indices)}
 
-    def _choose(idx: int, obs) -> np.ndarray:
-        if deterministic_mask[idx]:
+    def _choose(agent_idx: int, obs) -> np.ndarray:
+        if deterministic_mask[agent_idx]:
             policy = np.zeros(n_actions, dtype=np.float32)
         else:
             obs_t = torch.tensor(obs, dtype=torch.float).unsqueeze(0)
             with torch.no_grad():
-                policy = actors[idx](obs_t).squeeze(0).numpy()
+                policy = actors[agent_idx](obs_t).squeeze(0).numpy()
         return Agent._build_executed_action(
             policy_action=policy,
             epsilon=epsilon,
             decision_block_size=decision_block_size,
-            deterministic=deterministic_mask[idx],
+            deterministic=deterministic_mask[agent_idx],
         )
 
     transitions = []
@@ -128,18 +140,42 @@ def _episode_worker(args):
     ep_dropped = 0
 
     for t in range(t_per_ep):
-        executed_actions = [_choose(i, states[i]) for i in range(n_agents)]
-        next_states, rewards, info = env.step(executed_actions)
-        done = [t == t_per_ep - 1] * n_agents
-        transitions.append((
-            [np.array(s, dtype=np.float32) for s in states],
-            [np.array(a, dtype=np.float32) for a in executed_actions],
-            list(rewards),
-            [np.array(s, dtype=np.float32) for s in next_states],
-            list(done),
-        ))
+        if filtered:
+            # Build full n_total_hosts-length action array: trainable agents get
+            # their chosen action; non-trainable nodes get a zero vector so the
+            # environment falls back to deterministic shortest-path routing.
+            full_executed = [np.zeros(n_actions, dtype=np.float32)
+                             for _ in range(n_total_hosts)]
+            maddpg_actions = []
+            for topo_idx in range(n_total_hosts):
+                if topo_idx in trainable_set_idx:
+                    ti = topo_to_maddpg[topo_idx]
+                    action = _choose(ti, states[topo_idx])
+                    full_executed[topo_idx] = action
+                    maddpg_actions.append(action)
+            next_states, rewards, info = env.step(full_executed,
+                                                   obs_indices=trainable_indices)
+            done = [t == t_per_ep - 1] * n_agents
+            # Store only the trainable-agent slices — MADDPG expects exactly
+            # n_agents items in each list passed to store_transition.
+            t_states = [np.array(states[i], dtype=np.float32) for i in trainable_indices]
+            t_next   = [np.array(next_states[i], dtype=np.float32) for i in trainable_indices]
+            t_rewards = [rewards[i] for i in trainable_indices]
+            transitions.append((t_states, maddpg_actions, t_rewards, t_next, done))
+            ep_r += sum(t_rewards) / n_agents
+        else:
+            executed_actions = [_choose(i, states[i]) for i in range(n_agents)]
+            next_states, rewards, info = env.step(executed_actions)
+            done = [t == t_per_ep - 1] * n_agents
+            transitions.append((
+                [np.array(s, dtype=np.float32) for s in states],
+                [np.array(a, dtype=np.float32) for a in executed_actions],
+                list(rewards),
+                [np.array(s, dtype=np.float32) for s in next_states],
+                list(done),
+            ))
+            ep_r += sum(rewards) / n_agents
         states = next_states
-        ep_r += sum(rewards) / n_agents
         ep_sent += info.get('packets_sent', 0)
         ep_dropped += info.get('packets_dropped', 0)
 
@@ -243,14 +279,34 @@ class StandaloneExperimentRunner:
         )
         env = NetworkEnv(engine)
 
+        # ── Trainable-host filter ─────────────────────────────────────────────
+        # Reduces the RL agent set from all topology nodes to a meaningful subset
+        # (e.g. only switches with degree ≥ 3) to shrink critic dimensions and
+        # speed up training without losing routing expressiveness.
+        filter_mode = self.config.get('training', {}).get('trainable_host_filter', 'all')
+        trainable_hosts = engine.get_trainable_hosts(filter_mode)
+        all_hosts = engine.get_all_hosts()
+        host_to_idx = {h: i for i, h in enumerate(all_hosts)}
+        trainable_indices = [host_to_idx[h] for h in trainable_hosts]
+        # Attach to engine so training/eval helpers can access without re-computing
+        engine.trainable_host_indices = trainable_indices
+        engine.n_total_hosts = len(all_hosts)
+
         critic_domain = vcfg['critic_domain']
-        n_agents = len(engine.get_all_hosts())
+        n_agents = len(trainable_hosts)
         actor_dims = engine.state_dims
         n_actions = engine.n_actions
 
-        # Neighborhood critic: critic dims and adjacency are topology-derived
+        # Neighborhood critic: adjacency built within the trainable sub-graph
         if critic_domain == 'neighborhood_critic':
-            adjacency = engine.get_adjacency_indices()
+            trainable_set = set(trainable_hosts)
+            trainable_idx_map = {h: i for i, h in enumerate(trainable_hosts)}
+            adjacency = [
+                [trainable_idx_map[nb]
+                 for nb in engine.topology.get_neighbors(h)
+                 if nb in trainable_set]
+                for h in trainable_hosts
+            ]
             critic_dims = [
                 actor_dims * (1 + len(adjacency[i]))
                 for i in range(n_agents)
@@ -291,6 +347,24 @@ class StandaloneExperimentRunner:
             logger.info(f"[CKPT] {name} — loaded final checkpoint (best not found)")
 
     @staticmethod
+    def _build_full_actions(
+        maddpg_actions: List[np.ndarray],
+        n_total_hosts: int,
+        trainable_indices: List[int],
+        n_actions: int,
+    ) -> List[np.ndarray]:
+        """Expand 32 trainable-agent actions to a full 86-length action list.
+
+        Non-trainable nodes receive a zero vector (deterministic pass-through
+        behaviour: their packets follow the shortest-path next-hop already
+        baked into the environment's step logic via kpath_cache fallbacks).
+        """
+        full = [np.zeros(n_actions, dtype=np.float32) for _ in range(n_total_hosts)]
+        for ti, topo_idx in enumerate(trainable_indices):
+            full[topo_idx] = np.asarray(maddpg_actions[ti], dtype=np.float32)
+        return full
+
+    @staticmethod
     def _metric_value(metric: str, mean_reward: float, mean_pkt_loss: float) -> float:
         if metric == 'mean_reward':
             return mean_reward
@@ -308,13 +382,23 @@ class StandaloneExperimentRunner:
         return (best - candidate) > min_improvement
 
     def _validate_variant_inline(self, maddpg: MADDPG, env: NetworkEnv,
-                                 n_eps: int, t_per_ep: int) -> Tuple[float, float]:
+                                 n_eps: int, t_per_ep: int,
+                                 engine=None) -> Tuple[float, float]:
         val_rewards, val_losses = [], []
+        trainable_indices = getattr(engine, 'trainable_host_indices', None)
+        n_total_hosts = getattr(engine, 'n_total_hosts', maddpg.n_agents)
+        n_actions = maddpg.n_actions
         for _ in range(max(1, n_eps)):
             states = env.reset()
             ep_r = ep_sent = ep_dropped = 0
             for _ in range(t_per_ep):
-                actions = maddpg.choose_action(states)
+                if trainable_indices is not None:
+                    t_states = [states[i] for i in trainable_indices]
+                    t_actions = maddpg.choose_action(t_states)
+                    actions = self._build_full_actions(t_actions, n_total_hosts,
+                                                      trainable_indices, n_actions)
+                else:
+                    actions = maddpg.choose_action(states)
                 next_states, rewards, info = env.step(actions)
                 states = next_states
                 ep_r += sum(rewards)
@@ -337,6 +421,8 @@ class StandaloneExperimentRunner:
             (a.actor.input_dims, a.actor.fc1_dims, a.actor.fc2_dims, a.actor.n_actions)
             for a in maddpg.agents
         ]
+        trainable_indices = getattr(engine, 'trainable_host_indices', None)
+        n_total_hosts = getattr(engine, 'n_total_hosts', maddpg.n_agents)
         worker_args = [
             (
                 actor_weights_cpu, all_actor_params, maddpg.n_agents, deterministic_mask,
@@ -344,6 +430,7 @@ class StandaloneExperimentRunner:
                 self.config.get('topology', {}),
                 epsilon, decision_block_size, t_per_ep,
                 base_seed + epoch * 10_000 + ep_idx,
+                trainable_indices, n_total_hosts,
             )
             for ep_idx in range(n_episodes)
         ]
@@ -408,11 +495,21 @@ class StandaloneExperimentRunner:
         min_epochs = max(1, int(early_stop_cfg.get('min_epochs', validation_interval_epochs)))
 
         hosts = engine.get_all_hosts()
-        deterministic_mask = (
-            [engine.get_number_neighbors(host) <= 1 for host in hosts]
-            if freeze_single_link_nodes
-            else [False] * len(hosts)
-        )
+        trainable_indices = getattr(engine, 'trainable_host_indices', None)
+        if trainable_indices is not None:
+            # deterministic_mask is scoped to the n_trainable MADDPG agents only
+            trainable_hosts_list = [hosts[i] for i in trainable_indices]
+            deterministic_mask = (
+                [engine.get_number_neighbors(h) <= 1 for h in trainable_hosts_list]
+                if freeze_single_link_nodes
+                else [False] * len(trainable_indices)
+            )
+        else:
+            deterministic_mask = (
+                [engine.get_number_neighbors(host) <= 1 for host in hosts]
+                if freeze_single_link_nodes
+                else [False] * len(hosts)
+            )
 
         all_rewards, all_losses = [], []
         validation_trace = []
@@ -448,7 +545,7 @@ class StandaloneExperimentRunner:
                 decision_block_size=decision_block_size,
                 epoch=epoch, base_seed=42,
             )
-            freq = 25
+            freq = int(cfg_t.get('learn_freq', 25))
             n_learns = (t_per_ep // freq) * eps_per_ep
             for _ in range(n_learns):
                 maddpg.learn(
@@ -479,6 +576,7 @@ class StandaloneExperimentRunner:
                     env=env,
                     n_eps=validation_episodes,
                     t_per_ep=t_per_ep,
+                    engine=engine,
                 )
                 raw_metric = self._metric_value(best_metric_name, val_reward, val_pkt_loss)
                 metric_window.append(raw_metric)
@@ -762,6 +860,9 @@ class StandaloneExperimentRunner:
         ep_pdr, ep_hop_frac, ep_goodput = [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
         ep_hops_mean, ep_overload_frac = [], []
+        trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
+        n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
+        n_actions = maddpg.n_actions
         for _ in range(n_eps):
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
@@ -769,7 +870,13 @@ class StandaloneExperimentRunner:
                 self._inject_failures(env.engine, n_link_failures)
             ep_r = ep_sent = ep_dropped = 0
             for t in range(t_per_ep):
-                actions = maddpg.choose_action(states)
+                if trainable_indices is not None:
+                    t_states = [states[i] for i in trainable_indices]
+                    t_actions = maddpg.choose_action(t_states)
+                    actions = self._build_full_actions(t_actions, n_total_hosts,
+                                                      trainable_indices, n_actions)
+                else:
+                    actions = maddpg.choose_action(states)
                 next_states, rewards, info = env.step(actions)
                 states = next_states
                 ep_r      += sum(rewards)
@@ -1145,6 +1252,15 @@ class StandaloneExperimentRunner:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         hosts = env.engine.get_all_hosts()
+        trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
+        n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
+        n_actions = maddpg.n_actions
+        if trainable_indices is not None:
+            trainable_set_idx = set(trainable_indices)
+            topo_to_maddpg = {topo_idx: ti for ti, topo_idx in enumerate(trainable_indices)}
+        else:
+            trainable_set_idx = None
+            topo_to_maddpg = None
 
         if attack:
             self.attack_framework.epsilon = float(epsilon)
@@ -1156,18 +1272,28 @@ class StandaloneExperimentRunner:
             for _ in range(t_per_ep):
                 if attack:
                     adv = []
-                    for idx, (host, s) in enumerate(zip(hosts, states)):
-                        if targeted_tiers and env.engine.get_tier(host) not in targeted_tiers:
+                    for topo_idx, (host, s) in enumerate(zip(hosts, states)):
+                        # Only attack trainable agents; non-trainable nodes have no actor
+                        if trainable_set_idx is not None and topo_idx not in trainable_set_idx:
+                            adv.append(s)
+                        elif targeted_tiers and env.engine.get_tier(host) not in targeted_tiers:
                             adv.append(s)
                         else:
+                            agent_idx = topo_to_maddpg[topo_idx] if topo_to_maddpg else topo_idx
                             adv.append(self.attack_framework.generate_adversarial_state(
                                 state=s,
-                                agent_network=maddpg.agents[idx],
+                                agent_network=maddpg.agents[agent_idx],
                                 network_engine=env.engine,
-                                agent_index=idx,
+                                agent_index=agent_idx,
                             ))
                     states = adv
-                actions = maddpg.choose_action(states)
+                if trainable_indices is not None:
+                    t_states = [states[i] for i in trainable_indices]
+                    t_actions = maddpg.choose_action(t_states)
+                    actions = self._build_full_actions(t_actions, n_total_hosts,
+                                                      trainable_indices, n_actions)
+                else:
+                    actions = maddpg.choose_action(states)
                 next_states, rewards, info = env.step(actions)
                 states = next_states
                 ep_r      += sum(rewards)

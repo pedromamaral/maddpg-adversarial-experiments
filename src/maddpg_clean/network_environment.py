@@ -448,10 +448,45 @@ class NetworkEngine:
         for n in self.topology.dist_nodes:   self._tier[n] = 'dist'
         for n in self.topology.access_nodes: self._tier[n] = 'access'
 
+        # ── Performance caches ───────────────────────────────────────────────
+        # Cached global mean link utilisation — updated once per step() call
+        # and read by every get_state() call, avoiding 86x redundant edge sweeps.
+        self._step_mean_util: float = 0.0
+
+        # Preallocated zero-state returned for non-observed hosts so get_state()
+        # is only called for the trainable subset when obs_indices is supplied.
+        self._empty_state: np.ndarray = np.zeros(self.state_dims, dtype=np.float32)
+
+        # Indices (into topology.hosts) of pure-sink endpoint nodes — these nodes
+        # only receive traffic and never forward; skip the forwarding loop for them.
+        _sink_set = set(self.topology.access_nodes)
+        self._sink_host_indices: set = {
+            i for i, h in enumerate(self.topology.hosts) if h in _sink_set
+        }
+
     # ── public API ───────────────────────────────────────────────────────────
 
     def get_all_hosts(self) -> List[str]:
         return self.topology.hosts
+
+    def get_trainable_hosts(self, filter_mode: str = 'all') -> List[str]:
+        """Return the subset of hosts that should be active RL agents.
+
+        filter_mode:
+          'all'           – all topology nodes (default, legacy behaviour)
+          'switches_only' – only switch nodes (S-prefixed)
+          'degree_ge_3'   – only switches with degree ≥ 3 (true branching points)
+        """
+        all_hosts = self.topology.hosts
+        if filter_mode == 'all':
+            return all_hosts
+        switch_hosts = [h for h in all_hosts if h.startswith('S')]
+        if filter_mode == 'switches_only':
+            return switch_hosts
+        if filter_mode == 'degree_ge_3':
+            return [h for h in switch_hosts
+                    if len(self.topology.get_neighbors(h)) >= 3]
+        raise ValueError(f"Unknown trainable_host_filter: {filter_mode!r}")
 
     def get_number_neighbors(self, host: str) -> int:
         return len(self.topology.get_neighbors(host))
@@ -474,6 +509,7 @@ class NetworkEngine:
         self.packet_queue = defaultdict(list)
         self.time_step = 0
         self.offered_load_factor = 1.0
+        self._step_mean_util = 0.0
         self._episode_stats = self._blank_stats()
         self._inject_packets(int(max(1, round(INIT_PACKETS * self.offered_load_factor))))
 
@@ -483,6 +519,7 @@ class NetworkEngine:
         self.packet_queue = defaultdict(list)
         self.time_step = 0
         self.offered_load_factor = float(max(0.1, offered_load_factor))
+        self._step_mean_util = 0.0
         self._episode_stats = self._blank_stats()
         self._inject_packets(int(max(1, round(INIT_PACKETS * self.offered_load_factor))))
 
@@ -546,9 +583,9 @@ class NetworkEngine:
             state.append(float(np.var(utils)) if len(utils) > 1 else 0.0)
         else:
             state.extend([0.0, 0.0, 0.0])
-        edge_utils = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
-        global_util = float(np.mean(edge_utils)) if edge_utils else 0.0
-        state.append(global_util)
+        # Global mean utilisation: cached once per step() call rather than
+        # recomputed for every agent (was O(86 × |edges|) per timestep).
+        state.append(self._step_mean_util)
 
         # guarantee exactly (mn + 50) dims
         total = self.state_dims
@@ -557,13 +594,22 @@ class NetworkEngine:
             state.append(0.0)
         return np.array(state, dtype=np.float32)
 
-    def step(self, actions: List[np.ndarray]) -> Tuple[List[np.ndarray], List[float], Dict]:
-        """Execute one hop for every agent simultaneously."""
+    def step(self, actions: List[np.ndarray],
+             obs_indices=None) -> Tuple[List[np.ndarray], List[float], Dict]:
+        """Execute one hop for every agent simultaneously.
+
+        obs_indices: optional list of topology host indices for which
+        get_state() should be called.  Non-listed indices receive a
+        pre-allocated zero vector, avoiding wasted state computation for
+        nodes that are not MADDPG agents (e.g. degree-1 endpoints and
+        degree-2 pass-through switches when filter_mode='degree_ge_3').
+        """
         self.time_step += 1
         hosts = self.topology.hosts
         next_queue: Dict[str, List[Dict]] = defaultdict(list)
         step_sent = step_delivered = step_dropped = 0
         rewards = []
+        _agent_drop_stats = []  # (pkt_drop_count, total) per active agent; None if inactive
         _agent_active = []  # True for agents that processed packets this step
         reward_components = {
             'fwd_success_term': 0.0,
@@ -573,12 +619,19 @@ class NetworkEngine:
         }
 
         for i, host in enumerate(hosts):
+            # Endpoint (sink) nodes only receive traffic; they never forward
+            # packets. Skip them early to avoid neighbor/queue lookups.
+            if i in self._sink_host_indices:
+                _agent_drop_stats.append(None)
+                _agent_active.append(False)
+                continue
+
             action = actions[i] if i < len(actions) else np.array([1.0, 0.0, 0.0])
             nbrs   = self.topology.get_neighbors(host)
             q      = self.packet_queue[host]
 
             if not nbrs or not q:
-                rewards.append(0.0)
+                _agent_drop_stats.append(None)
                 _agent_active.append(False)
                 continue
 
@@ -587,7 +640,6 @@ class NetworkEngine:
 
             # forward packets
             delivered = dropped = 0
-            progress_sum = 0.0
             pkt_delivered_count = 0   # packets delivered by this agent this step
             pkt_drop_count = 0        # packets dropped by this agent this step
             for pkt in q:
@@ -612,11 +664,6 @@ class NetworkEngine:
                     )
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
-                # Hop-progress shaping: reward movement toward destination
-                d_before = len(self.topology.path_cache.get((host, dst), [])) - 1
-                d_after = len(self.topology.path_cache.get((chosen, dst), [])) - 1
-                if d_before > 0:
-                    progress_sum += (d_before - d_after) / d_before
                 cur = self.topology.get_util(host, chosen)
                 cap_scale = self.topology.get_capacity_scale(host, chosen)
                 self.topology.set_util(host, chosen, cur + PACKET_SIZE / max(cap_scale, 1e-6))
@@ -646,30 +693,34 @@ class NetworkEngine:
                     )
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
-            # per-agent reward
-            # ---------------------------------------------------------------
-            # Per-packet causal reward:
-            #   +delivery_weight  for each packet delivered this step
-            #   -drop_penalty     for each packet dropped (BW overflow or TTL)
-            #   +shaping_weight * progress/total  hop-progress toward destination
-            #
-            # No utilisation penalty: congestion is already penalised via drops.
-            # No global e2e ratio: that was too noisy for individual credit.
-            total             = len(q)
-            delivery_weight   = float(self.reward_cfg.get('delivery_weight', 1.0))
-            drop_penalty      = float(self.reward_cfg.get('drop_penalty', 0.0))
-            shaping_weight    = float(self.reward_cfg.get('progress_shaping_weight', 0.0))
-
-            delivery_term = delivery_weight * pkt_delivered_count / total
-            drop_term     = drop_penalty    * pkt_drop_count      / total
-            shaping_term  = shaping_weight  * progress_sum        / total
-
-            rewards.append(delivery_term - drop_term + shaping_term)
+            # collect per-agent drop stats for deferred global reward computation
+            _agent_drop_stats.append((pkt_drop_count, len(q)))
             _agent_active.append(True)
-            reward_components['fwd_success_term'] += delivery_term
-            reward_components['shaping_term']     += shaping_term
-            reward_components['chosen_util_term'] += drop_term   # repurposed for drop penalty
-            reward_components['extreme_cong_term'] = 0.0
+
+        # ---------------------------------------------------------------
+        # Global end-to-end delivery reward
+        # ---------------------------------------------------------------
+        # All active agents share the same global delivery rate signal so that
+        # intermediate nodes receive the same credit as the last-hop agent.
+        # This solves the credit-assignment problem of the old per-agent
+        # delivery_weight which only fired for the agent one hop from the
+        # destination.
+        # Drop penalty remains local: each agent is penalised only for drops
+        # it caused (bandwidth overflow or TTL expiry on its own queue).
+        delivery_weight      = float(self.reward_cfg.get('delivery_weight', 1.0))
+        drop_penalty         = float(self.reward_cfg.get('drop_penalty', 0.0))
+        global_delivery_rate = step_delivered / max(1, step_sent)
+
+        for stats in _agent_drop_stats:
+            if stats is None:
+                rewards.append(0.0)
+            else:
+                drop_count, total = stats
+                drop_term = drop_penalty * drop_count / max(1, total)
+                r = delivery_weight * global_delivery_rate - drop_term
+                rewards.append(r)
+                reward_components['fwd_success_term'] += delivery_weight * global_delivery_rate
+                reward_components['chosen_util_term'] += drop_term
 
         # bookkeeping
         self.topology.decay_utils()
@@ -694,10 +745,22 @@ class NetworkEngine:
         util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
         mean_util = float(np.mean(util_values)) if util_values else 0.0
         max_util = float(np.max(util_values)) if util_values else 0.0
+        # Cache for get_state() — avoids 86× redundant edge sweeps per timestep.
+        self._step_mean_util = mean_util
         self._episode_stats['step_mean_utils'].append(mean_util)
         self._episode_stats['step_max_utils'].append(max_util)
 
-        next_states = [self.get_state(h) for h in hosts]
+        # Build next-state observations.  When obs_indices is provided only
+        # compute states for those hosts; the rest get the preallocated empty
+        # vector (they are never read by the MADDPG training loop).
+        if obs_indices is not None:
+            _obs_set = set(obs_indices)
+            next_states = [
+                self.get_state(hosts[i]) if i in _obs_set else self._empty_state
+                for i in range(len(hosts))
+            ]
+        else:
+            next_states = [self.get_state(h) for h in hosts]
         info = {
             'packets_sent':      step_sent,
             'packets_delivered': step_delivered,
@@ -987,8 +1050,8 @@ class NetworkEnv:
         self.engine.reset()
         return [self.engine.get_state(h) for h in self.engine.get_all_hosts()]
 
-    def step(self, actions: List[np.ndarray]):
-        return self.engine.step(actions)
+    def step(self, actions: List[np.ndarray], obs_indices=None):
+        return self.engine.step(actions, obs_indices=obs_indices)
 
     def get_stats(self) -> Dict:
         return self.engine.get_episode_stats()

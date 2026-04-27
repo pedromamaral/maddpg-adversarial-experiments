@@ -9,21 +9,23 @@
   },
 
   "training": {
-    "epochs": 150,
+    "epochs": 200,
     "episodes_per_epoch": 5,
     "timesteps_per_episode": 256,
-    "batch_size": 256,
-    "memory_size": 50000,
+    "batch_size": 512,
+    "memory_size": 100000,
+    "learn_freq": 10,
+    "trainable_host_filter": "degree_ge_3",
     "exploration": {
       "enabled": true,
-      "epsilon_start": 0.30,
-      "epsilon_end": 0.02,
-      "epsilon_decay_epochs": 150,
+      "epsilon_start": 1.0,
+      "epsilon_end": 0.05,
+      "epsilon_decay_epochs": 80,
       "decision_block_size": 3,
       "mode": "epsilon_greedy"
     },
     "gamma": 0.95,
-    "tau": 0.01,
+    "tau": 0.005,
     "parallel_workers": 0,
     "freeze_single_link_nodes": true,
     "learn_action_projection": {
@@ -36,14 +38,14 @@
       "validation_interval_epochs": 10,
       "validation_episodes": 5,
       "min_improvement": 0.001,
-      "warmup_epochs": 20
+      "warmup_epochs": 30
     },
     "early_stopping": {
       "enabled": true,
       "metric": "mean_reward",
-      "patience_checks": 6,
+      "patience_checks": 12,
       "smooth_window_checks": 3,
-      "min_epochs": 60
+      "min_epochs": 80
     }
   },
 
@@ -65,14 +67,14 @@
   },
 
   "reward": {
-    "_comment": "Per-packet causal reward. delivery_weight reaches last-mile access nodes; drop_penalty and progress_shaping_weight reach every agent every step. progress_shaping_weight reduced (2.5→1.0) to stop agents chasing hop progress into congested links; drop_penalty raised (3.0→5.0) to enforce congestion avoidance; backlog_penalty (0.0→0.10) penalises build-up so agents cannot defer congestion to future steps.",
-    "delivery_weight": 0.5,
-    "drop_penalty": 5.0,
-    "progress_shaping_weight": 1.0,
+    "_comment": "Global end-to-end delivery reward. delivery_weight scales the global step delivery rate (step_delivered/step_sent) shared by ALL active agents — solving credit assignment for intermediate nodes. drop_penalty is local per-agent (drops/total on that agent's queue). progress_shaping_weight is no longer used (removed from reward computation).",
+    "delivery_weight": 2.0,
+    "drop_penalty": 1.0,
+    "progress_shaping_weight": 0.0,
     "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,
     "var_util_penalty": 0.0,
-    "backlog_penalty": 0.10
+    "backlog_penalty": 0.0
   },
 
   "runtime_control": {
@@ -109,82 +111,26 @@
 
   "variants": [
     {
+      "_comment": "CC critic dims dynamically computed as actor_dims*n_trainable_agents = 37*32 = 1184 (state) + 32*63 = 2016 (action) = 3200 FC1 input; fc1/fc2 sized for this reduced footprint.",
       "name": "CC-Simple",
       "critic_domain": "central_critic",
       "neural_network": "simple_q_network",
       "use_gnn": false,
-      "actor_dims": 61, "critic_dims": 3965,
-      "n_agents": 65, "n_actions": 120,
-      "fc1": 512, "fc2": 128,
-      "alpha": 0.001, "beta": 0.001
+      "actor_dims": 37, "critic_dims": 1184,
+      "n_agents": 32, "n_actions": 63,
+      "fc1": 256, "fc2": 128,
+      "alpha": 0.0003, "beta": 0.0003
     },
     {
-      "name": "CC-Duelling",
-      "critic_domain": "central_critic",
-      "neural_network": "duelling_q_network",
-      "use_gnn": false,
-      "actor_dims": 61, "critic_dims": 3965,
-      "n_agents": 65, "n_actions": 120,
-      "fc1": 512, "fc2": 128,
-      "alpha": 0.001, "beta": 0.001
-    },
-    {
+      "_comment": "Local critic uses only local state (actor_dims=37); independent of n_trainable_agents count.",
       "name": "LC-Duelling",
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": false,
-      "actor_dims": 61, "critic_dims": 61,
-      "n_agents": 65, "n_actions": 120,
-      "alpha": 0.001, "beta": 0.001
-    },
-    {
-      "name": "CC-Simple-GNN",
-      "critic_domain": "central_critic",
-      "neural_network": "simple_q_network",
-      "use_gnn": true,
-      "actor_dims": 61, "critic_dims": 3965,
-      "n_agents": 65, "n_actions": 120,
-      "fc1": 512, "fc2": 128,
-      "alpha": 0.001, "beta": 0.001
-    },
-    {
-      "name": "CC-Duelling-GNN",
-      "critic_domain": "central_critic",
-      "neural_network": "duelling_q_network",
-      "use_gnn": true,
-      "actor_dims": 61, "critic_dims": 3965,
-      "n_agents": 65, "n_actions": 120,
-      "fc1": 512, "fc2": 128,
-      "alpha": 0.001, "beta": 0.001
-    },
-    {
-      "name": "LC-Duelling-GNN",
-      "critic_domain": "local_critic",
-      "neural_network": "duelling_q_network",
-      "use_gnn": true,
-      "actor_dims": 61, "critic_dims": 61,
-      "n_agents": 65, "n_actions": 120,
-      "alpha": 0.001, "beta": 0.001
-    },
-    {
-      "name": "NC-Simple",
-      "critic_domain": "neighborhood_critic",
-      "neural_network": "simple_q_network",
-      "use_gnn": false,
-      "actor_dims": 61, "critic_dims": 0,
-      "n_agents": 65, "n_actions": 120,
+      "actor_dims": 37, "critic_dims": 37,
+      "n_agents": 32, "n_actions": 63,
       "fc1": 256, "fc2": 128,
-      "alpha": 0.001, "beta": 0.001
-    },
-    {
-      "name": "NC-Duelling",
-      "critic_domain": "neighborhood_critic",
-      "neural_network": "duelling_q_network",
-      "use_gnn": false,
-      "actor_dims": 61, "critic_dims": 0,
-      "n_agents": 65, "n_actions": 120,
-      "fc1": 256, "fc2": 128,
-      "alpha": 0.001, "beta": 0.001
+      "alpha": 0.0003, "beta": 0.0003
     }
   ],
 
