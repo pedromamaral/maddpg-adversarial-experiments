@@ -67,7 +67,7 @@ class ActorNetwork(nn.Module):
     def forward(self, state):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        return torch.softmax(self.action_out(x), dim=1)
+        return torch.sigmoid(self.action_out(x))
 
     def save_checkpoint(self):
         torch.save(self.state_dict(), self.checkpoint_file)
