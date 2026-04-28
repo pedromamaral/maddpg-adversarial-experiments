@@ -48,6 +48,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Per-worker-process cache: topology construction (path_cache + kpath_cache) is
+# expensive (~2400 nx.shortest_simple_paths calls per NetworkEngine build).  Worker
+# Pool processes are persistent across epochs, so we build the engine once per
+# unique topology key and reuse it via reset() on subsequent episode calls.
+_WORKER_ENV_CACHE: dict = {}
+
 
 def _episode_worker(args):
     """
@@ -103,12 +109,22 @@ def _episode_worker(args):
             actor.eval()
             actors[i] = actor
 
-    # Recreate environment — topology is deterministic because topo_seed is fixed
-    engine = NetworkEngine(
-        topology_type=topology_type, n_nodes=n_nodes, seed=topo_seed,
-        reward_config=reward_cfg,
-        topology_config=topology_cfg,
-    )
+    # Build or reuse a cached NetworkEngine — topology is fully deterministic for
+    # fixed (topology_type, n_nodes, topo_seed) so it never needs rebuilding.
+    # NetworkTopology.__init__ runs ~2400 nx.shortest_simple_paths calls; caching
+    # this once per worker process eliminates the reconstruction cost every epoch.
+    _topo_key = (topology_type, n_nodes, topo_seed)
+    if _topo_key not in _WORKER_ENV_CACHE:
+        engine = NetworkEngine(
+            topology_type=topology_type, n_nodes=n_nodes, seed=topo_seed,
+            reward_config=reward_cfg,
+            topology_config=topology_cfg,
+        )
+        _WORKER_ENV_CACHE[_topo_key] = engine
+    else:
+        engine = _WORKER_ENV_CACHE[_topo_key]
+        # Refresh reward config in case it differs between variants
+        engine.reward_cfg = {**engine.reward_cfg, **reward_cfg}
     env = NetworkEnv(engine)
 
     n_actions = all_actor_params[0][3]

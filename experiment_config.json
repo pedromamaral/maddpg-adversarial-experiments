@@ -11,7 +11,7 @@
   "training": {
     "epochs": 200,
     "episodes_per_epoch": 5,
-    "timesteps_per_episode": 256,
+    "timesteps_per_episode": 128,
     "batch_size": 512,
     "memory_size": 100000,
     "learn_freq": 10,

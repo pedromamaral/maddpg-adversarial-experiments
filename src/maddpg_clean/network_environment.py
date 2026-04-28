@@ -463,6 +463,11 @@ class NetworkEngine:
         self._sink_host_indices: set = {
             i for i, h in enumerate(self.topology.hosts) if h in _sink_set
         }
+        # Non-sink hosts that can forward packets — precomputed so _inject_packets
+        # never recomputes this list on every call.
+        self._non_sink_hosts: list = [
+            h for h in self.topology.hosts if h not in _sink_set
+        ]
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -982,7 +987,9 @@ class NetworkEngine:
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _inject_packets(self, n: int):
-        srcs = self.topology.access_nodes or self.topology.hosts
+        # Inject at non-sink switch nodes — access endpoints are _sink_host_indices
+        # and are skipped by step(), so packets injected there are silently discarded.
+        srcs = self._non_sink_hosts or self.topology.hosts
         dsts = self.topology.access_nodes or self.topology.hosts
         for _ in range(n):
             src = random.choice(srcs)
