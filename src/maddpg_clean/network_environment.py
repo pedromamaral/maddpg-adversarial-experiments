@@ -440,7 +440,7 @@ class NetworkEngine:
         # Expose topology max degree so calling code can read actor_dims once.
         self.max_neighbors: int = self.topology.max_degree
         self.n_destinations: int = len(self.topology.access_nodes)
-        self.n_actions: int = self.n_destinations * K_PATHS
+        self.n_actions: int = K_PATHS  # single path-index choice ∈ {0,…,K-1} per timestep
 
         # Node-tier lookup — used by Paper-2 attack surface analysis
         self._tier: Dict[str, str] = {}
@@ -787,8 +787,10 @@ class NetworkEngine:
     def _select_kpath_next_hops(self, action: np.ndarray, host: str, nbrs: List[str]) -> Dict[str, str]:
         """Select next-hop per access destination using K-shortest-path action vector.
 
-        Action layout: [dst0_path0, dst0_path1, dst0_path2, dst1_path0, ...]
-        Length = len(access_nodes) × K_PATHS
+        Action layout: [path0_pref, path1_pref, path2_pref]  (length = K_PATHS)
+        A single path index = argmax(action) is selected and applied uniformly
+        to ALL destinations at this timestep, matching the paper definition
+        A_i ∈ {0, …, K-1}.
 
         Returns: dict mapping each access destination → chosen next-hop neighbor.
         """
@@ -796,14 +798,10 @@ class NetworkEngine:
         if not nbrs:
             return result
 
-        for i, dst in enumerate(self.topology.access_nodes):
-            start = i * K_PATHS
-            if len(action) >= start + K_PATHS:
-                logits = action[start:start + K_PATHS]
-            else:
-                logits = np.ones(K_PATHS, dtype=np.float64)
-            path_idx = int(np.argmax(logits))
+        # One path-index choice for the entire timestep (paper: A_i ∈ {0,…,K-1})
+        path_idx = int(np.argmax(action)) if len(action) >= K_PATHS else 0
 
+        for dst in self.topology.access_nodes:
             paths = self.topology.kpath_cache.get((host, dst), [])
 
             # Try chosen path first, then alternatives, then path_cache fallback
