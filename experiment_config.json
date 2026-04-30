@@ -81,9 +81,9 @@
     "profile": "standard",
     "max_attack_cases_per_variant": -1,
     "max_attack_variants": -1,
-    "phase3_enable_slo_pruning": true,
+    "phase3_enable_slo_pruning": false,
     "phase3_consecutive_fail_limit": 2,
-    "phase3_skip_after_critical_epsilon": true,
+    "phase3_skip_after_critical_epsilon": false,
     "seed_expansion": {
       "enable_adaptive": true,
       "initial_seeds": 10,
@@ -135,20 +135,24 @@
   ],
 
   "attack_configs": [
-    {"attack_type": "packet_loss",     "epsilon": 0.01, "evaluation_episodes": 30},
-    {"attack_type": "packet_loss",     "epsilon": 0.05, "evaluation_episodes": 30},
-    {"attack_type": "packet_loss",     "epsilon": 0.10, "evaluation_episodes": 30},
-    {"attack_type": "packet_loss",     "epsilon": 0.15, "evaluation_episodes": 30},
-    {"attack_type": "packet_loss",     "epsilon": 0.20, "evaluation_episodes": 30},
-    {"attack_type": "reward_minimize", "epsilon": 0.05, "evaluation_episodes": 30},
-    {"attack_type": "confusion",       "epsilon": 0.05, "evaluation_episodes": 30}
+    {"attack_type": "packet_loss",     "epsilon": 0.05, "evaluation_episodes": 50},
+    {"attack_type": "packet_loss",     "epsilon": 0.10, "evaluation_episodes": 50},
+    {"attack_type": "packet_loss",     "epsilon": 0.15, "evaluation_episodes": 50},
+    {"attack_type": "packet_loss",     "epsilon": 0.20, "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize", "epsilon": 0.05, "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize", "epsilon": 0.10, "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize", "epsilon": 0.15, "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize", "epsilon": 0.20, "evaluation_episodes": 50},
+    {"attack_type": "confusion",       "epsilon": 0.05, "evaluation_episodes": 50},
+    {"attack_type": "confusion",       "epsilon": 0.10, "evaluation_episodes": 50},
+    {"attack_type": "confusion",       "epsilon": 0.15, "evaluation_episodes": 50}
   ],
 
   "fgsm_slo": {
-    "max_pkt_loss_pct": 10.0,
-    "min_delivery_rate_pct": 20.0,
+    "max_pkt_loss_pct": 12.0,
+    "min_delivery_rate_pct": 30.0,
     "max_reward_degradation_pct": 25.0,
-    "max_delay_p95": 12.0
+    "max_delay_p95": 18.0
   },
 
   "scoring": {

@@ -103,10 +103,12 @@ class FGSMAttackFramework:
                     )
                 elif self.attack_type == 'reward_minimize':
                     loss = self._reward_minimize_objective(
-                        state_tensor, action_probs, network_engine
+                        state_tensor, action_probs, network_engine, agent_index
                     )
                 elif self.attack_type == 'confusion':
-                    loss = self._confusion_objective(action_probs)
+                    loss = self._confusion_objective(
+                        state_tensor, action_probs, network_engine, agent_index
+                    )
                 else:
                     raise ValueError(f'Unknown attack type: {self.attack_type}')
 
@@ -173,15 +175,59 @@ class FGSMAttackFramework:
         state: torch.Tensor,
         action_probs: torch.Tensor,
         network_engine,
+        agent_index: int,
     ) -> torch.Tensor:
-        """Minimise expected reward by penalising all actions uniformly."""
-        penalty_weights = torch.ones_like(action_probs)
-        return torch.sum(action_probs * penalty_weights)
+        """Minimise expected routing quality by pushing toward low-bandwidth action choices.
 
-    def _confusion_objective(self, action_probs: torch.Tensor) -> torch.Tensor:
-        """Maximise action entropy to induce uncertain/random behaviour."""
-        entropy = -torch.sum(action_probs * torch.log(action_probs + 1e-8))
-        return -entropy # minimise negative entropy ↔ maximise entropy
+        Uses the same bandwidth-aware setup as _packet_loss_objective but minimises the
+        expected bandwidth utility directly (a differentiable reward proxy), rather than
+        using uniform weights whose gradient is identically zero.
+        """
+        num_neighbors = network_engine.get_number_neighbors(
+            network_engine.get_all_hosts()[agent_index]
+        )
+        if num_neighbors == 0:
+            return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
+
+        num_actions = action_probs.shape[-1]
+        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
+        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
+        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
+
+        # Expected bandwidth under the current policy — minimising this degrades routing quality.
+        expected_bw = torch.sum(action_probs * per_action_bw)
+        return expected_bw  # gradient pushes agent away from high-bandwidth (good) paths
+
+    def _confusion_objective(
+        self,
+        state: torch.Tensor,
+        action_probs: torch.Tensor,
+        network_engine,
+        agent_index: int,
+    ) -> torch.Tensor:
+        """Targeted misrouting: cross-entropy toward the most-congested (worst) action.
+
+        Unlike entropy maximisation — which can inadvertently produce load-balancing and
+        improve performance — this forces the agent to assign maximum probability to the
+        single action that routes traffic through the most congested link.
+        """
+        num_neighbors = network_engine.get_number_neighbors(
+            network_engine.get_all_hosts()[agent_index]
+        )
+        if num_neighbors == 0:
+            return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
+
+        num_actions = action_probs.shape[-1]
+        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
+        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
+        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
+
+        # Most-congested action = lowest bandwidth among first-hop links.
+        worst_action = per_action_bw.argmin(dim=-1).detach()  # shape: (1,)
+        worst_prob = action_probs.gather(1, worst_action.unsqueeze(1))  # shape: (1, 1)
+
+        # Maximise probability of worst action (minimise negative log-likelihood).
+        return -torch.log(worst_prob + 1e-8).mean()
 
     # ------------------------------------------------------------------
     # Domain constraints
