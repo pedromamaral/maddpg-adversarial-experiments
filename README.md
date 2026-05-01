@@ -1,346 +1,299 @@
 # MADDPG Adversarial Robustness Framework
 
-This repository trains hop-by-hop MADDPG routing variants, compares them under clean operating conditions, and then stress-tests them with FGSM attacks. The workflow is organized into three phases plus post-run result inspection.
+This repository accompanies the paper(s) on adversarial robustness of multi-agent deep reinforcement learning for network routing. It trains six hop-by-hop MADDPG routing variants on a real service-provider topology, evaluates them under clean operating conditions (Phase 2), and then stress-tests them with FGSM adversarial attacks (Phase 3).
 
-Plots are generated automatically at the end of each phase and saved into the active results directory under `figures/`.
+All results, figures, and ranking artefacts used in the papers are produced by the three-phase pipeline below and can be fully reproduced from source using Docker.
+
+## Architecture Variants
+
+Six MADDPG variants are trained and evaluated, crossing three orthogonal design axes — critic scope, Q-network architecture, and use of a GNN encoder:
+
+| Variant | Critic scope | Q-network | GNN encoder |
+|---|---|---|---|
+| CC-Simple | Centralised | Simple DQN | No |
+| CC-Duelling | Centralised | Duelling DQN | No |
+| CC-Simple-GNN | Centralised | Simple DQN | Yes |
+| CC-Duelling-GNN | Centralised | Duelling DQN | Yes |
+| LC-Duelling | Local | Duelling DQN | No |
+| LC-Duelling-GNN | Local | Duelling DQN | Yes |
+
+**Topology**: 86-node real service-provider network with 32 trainable routing agents and 63 possible next-hop actions per agent.
 
 ## Pipeline Overview
 
-| Phase | Purpose | Main JSON outputs | Main figures | Typical runtime |
-|---|---|---|---|---|
-| Phase 1 | Train all MADDPG variants | `phase1_training_results.json` | reward curves, packet-loss curves, final reward ranking | 8-12 h on GPU |
-| Phase 2 | Clean evaluation and ranking | `phase2_maddpg_results.json`, `phase2_rankings.json` | composite rankings, KPI heatmaps, scenario heatmap, rank-stability curve | 1-2 h |
-| Phase 3 | FGSM robustness evaluation | `phase3_fgsm_results.json`, `phase3_rankings.json` | epsilon curves, degradation curves, critical-epsilon plot, attack-surface plot | 4-6 h |
-| Summary | Consolidated ranking view | `experiment_summary_rankings.json` | derived from ranking artifacts | included in full run |
+| Phase | Purpose | Main outputs | Typical runtime (GPU) |
+|---|---|---|---|
+| Phase 1 | Train all six variants | `phase1_training_results.json`, model checkpoints | 8–12 h |
+| Phase 2 | Clean evaluation & ranking | `phase2_maddpg_results.json`, `phase2_rankings.json` | 1–2 h |
+| Phase 3 | FGSM adversarial evaluation | `phase3_fgsm_results.json`, `phase3_rankings.json` | 4–6 h |
+
+FGSM attacks evaluated: **packet-loss maximisation**, **reward minimisation**, and **policy confusion**, each swept over ε ∈ {0.05, 0.1, 0.15, 0.2}.
+
+Plots are generated automatically at the end of each phase and saved to `host_data/results/main_run/figures/`.
 
 ## Prerequisites
 
-- Docker
-- NVIDIA Container Toolkit if you want GPU acceleration
+- Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) for GPU support
+- A CUDA-capable GPU (tested on RTX 2080 Ti and above)
 - Git
-- Python 3 with `numpy` and `matplotlib` if you want to replot locally outside Docker
 
-## Quick Start
+Optional, for regenerating plots locally outside Docker:
 
-Build the image:
+- Python 3 with `numpy` and `matplotlib`
+
+## Reproducing the Paper Results
+
+### 1. Clone and build
 
 ```bash
+git clone https://github.com/pedromamaral/maddpg-adversarial-experiments.git
+cd maddpg-adversarial-experiments
 docker build -t maddpg-exp:latest .
 ```
 
-Run the smoke test first:
+The image packages PyTorch 2.1.0, CUDA 11.8, and PyTorch Geometric. The first build takes 15–30 minutes depending on your connection.
+
+### 2. Smoke test (optional but recommended)
+
+Runs a shortened version of all three phases to verify your environment before the multi-hour main run:
 
 ```bash
 ./test_quick.sh
-./check_progress_quick.sh
+./check_progress_quick.sh   # stream logs; Ctrl-C to detach
 ```
 
-If the smoke test passes, continue with the standard workflow.
+Results land in `host_data/results/quick_test/`. A passing smoke test confirms GPU access, model initialisation, and plotting are all working.
 
-## Standard Workflow
-
-### 1. Train Models
+### 3. Phase 1 — Train all variants
 
 ```bash
 ./run_training.sh
 ./check_progress_training.sh
 ```
 
-Outputs:
+Trains all six variants for up to 200 epochs with early stopping. Best checkpoints are saved throughout training.
 
-- `host_data/results/main_run/phase1_training_results.json`
-- `host_data/models/<variant-name>/`
-- `host_data/results/main_run/figures/phase1_*.png`
-- `host_data/results/main_run/figures/phase1_*.pdf`
+Outputs in `host_data/results/main_run/`:
 
-### 2. Run Clean Evaluation
+```
+phase1_training_results.json
+models/<variant-name>/          ← model checkpoints
+figures/phase1_*.{png,pdf}
+```
+
+> Model weights are not stored in this repository (they total ~2 GB). They are produced by Phase 1 and consumed in-place by Phases 2 and 3. To move them between machines see the `save_weights.sh` / `load_weights.sh` scripts below.
+
+### 4. Phase 2 — Clean evaluation
 
 ```bash
 ./run_maddpg_eval.sh
 ./check_progress_maddpg.sh
 ```
 
-This evaluates all trained variants plus OSPF under:
-
-- normal traffic
-- dual-link failure
+Evaluates all trained variants against OSPF across normal-traffic and dual-link-failure scenarios (30 episodes each). Produces composite rankings across multiple KPI scoring profiles.
 
 Outputs:
 
-- `host_data/results/main_run/phase2_maddpg_results.json`
-- `host_data/results/main_run/phase2_rankings.json`
-- `host_data/results/main_run/figures/phase2_*.png`
-- `host_data/results/main_run/figures/phase2_*.pdf`
+```
+phase2_maddpg_results.json
+phase2_rankings.json
+figures/phase2_*.{png,pdf}
+```
 
-### 3. Run FGSM Evaluation
+### 5. Phase 3 — Adversarial evaluation
 
 ```bash
 ./run_fgsm_eval.sh
 ./check_progress_fgsm.sh
 ```
 
-This evaluates:
-
-- configured FGSM epsilon sweeps
-- SLO-based critical epsilon
-- attack-surface sensitivity for core, distribution, and access tiers
-- GNN embedding attacks for GNN variants
+Evaluates all variants under FGSM perturbations: three attack objectives × four epsilon values, SLO-based critical epsilon detection, and tier-level attack-surface sensitivity (core / distribution / access).
 
 Outputs:
 
-- `host_data/results/main_run/phase3_fgsm_results.json`
-- `host_data/results/main_run/phase3_rankings.json`
-- `host_data/results/main_run/figures/phase3_*.png`
-- `host_data/results/main_run/figures/phase3_*.pdf`
+```
+phase3_fgsm_results.json
+phase3_rankings.json
+figures/phase3_*.{png,pdf}
+```
 
-### 4. Run Everything End-to-End
-
-Run phases sequentially with the provided scripts:
+### Running all phases sequentially
 
 ```bash
 ./run_training.sh
+# wait for Phase 1 to finish, then:
 ./run_maddpg_eval.sh
+# wait for Phase 2 to finish, then:
 ./run_fgsm_eval.sh
 ```
 
+Each script launches a detached Docker container and returns immediately. Monitor progress with the corresponding `check_progress_*.sh` script, then trigger the next phase once the container exits.
+
 ## Output Layout
 
-```text
+```
 host_data/
-	models/
-		<variant-name>/
-	results/
-		main_run/
-			phase1_training_results.json
-			phase2_maddpg_results.json
-			phase2_rankings.json
-			phase3_fgsm_results.json
-			phase3_rankings.json
-			experiment_summary_rankings.json
-			figures/
-				phase1_*.png
-				phase1_*.pdf
-				phase2_*.png
-				phase2_*.pdf
-				phase3_*.png
-				phase3_*.pdf
-host_logs/
+  results/
+    main_run/
+      phase1_training_results.json
+      phase2_maddpg_results.json
+      phase2_rankings.json
+      phase3_fgsm_results.json
+      phase3_rankings.json
+      experiment_summary_rankings.json
+      models/
+        <variant-name>/         ← .pth checkpoints, one directory per variant
+      figures/
+        phase1_*.{png,pdf}
+        phase2_*.{png,pdf}
+        phase3_*.{png,pdf}
+host_logs/                      ← container stdout/stderr
 ```
 
-## How To Read The JSON Outputs
+## Understanding the JSON Outputs
 
 ### `phase1_training_results.json`
 
-Per variant:
-
-- `rewards`: training reward trajectory
-- `pkt_losses`: training packet-loss trajectory
-- `final_reward`: final reward summary
-- `final_pkt_loss`: final packet-loss summary
+Per variant: `rewards` and `pkt_losses` (full training trajectories), `final_reward`, `final_pkt_loss`.
 
 ### `phase2_maddpg_results.json`
 
-Per variant and scenario:
-
-- `mean_reward`
-- `mean_pkt_loss`
-- `mean_delivery_rate`
-- `mean_goodput_per_step`
-- `mean_delay_p95`
-- `mean_backlog_end`
-- `mean_util_p95`
+Per variant × scenario: `mean_reward`, `mean_pkt_loss`, `mean_delivery_rate`, `mean_goodput_per_step`, `mean_delay_p95`, `mean_backlog_end`, `mean_util_p95`.
 
 ### `phase2_rankings.json`
 
-Contains composite rankings by scenario and scoring profile, plus `seed_convergence` telemetry for adaptive ranking stability.
+Composite rankings by scenario and scoring profile. Includes `seed_convergence` telemetry for adaptive rank-stability tracking.
 
 ### `phase3_fgsm_results.json`
 
-Per variant and attack case:
-
-- `clean`
-- `attacked`
-- `metrics`
-- `slo`
-- `run_config`
-- `attack_summary`
-- `surface`
+Per variant × attack case: `clean`, `attacked`, `metrics`, `slo`, `run_config`, `attack_summary`, `surface` (tier-level sensitivity breakdown).
 
 ### `phase3_rankings.json`
 
-Contains overall robustness ranking and per-attack-type ranking.
+Overall robustness ranking and per-attack-type breakdown.
 
 ## Plot Generation
 
-Plots are generated automatically at the end of each phase.
-
-### Phase 1 plots
-
-- reward evolution curves
-- packet-loss evolution curves
-- final reward ranking
-
-### Phase 2 plots
-
-- composite score bars by scenario and profile
-- KPI heatmaps
-- delivery heatmap across scenarios
-- rank-stability curve when adaptive seed expansion is active
-
-### Phase 3 plots
-
-- packet loss vs epsilon by attack type
-- degradation curves
-- critical epsilon plot
-- attack-surface sensitivity plot
-- overall robustness ranking bars
-
-### Re-generate plots manually
+Plots are produced automatically at the end of each phase. To regenerate them manually from existing result files:
 
 ```bash
+# All phases
 python tools/plot_results.py --results-dir host_data/results/main_run
-```
 
-Selected phases only:
-
-```bash
+# Selected phases only
 python tools/plot_results.py --results-dir host_data/results/main_run --phases 1 2
 ```
 
-## Can Plots Be Updated Every Epoch?
+This works both inside and outside Docker as long as `numpy` and `matplotlib` are available.
 
-Yes, but that is intentionally not the default because it adds extra rendering and file I/O inside the longest-running loops.
+**Phase 1**: reward/packet-loss curves per variant, final reward ranking.  
+**Phase 2**: composite score bars by scenario and profile, KPI heatmaps, delivery heatmap, rank-stability curve.  
+**Phase 3**: packet-loss vs ε, degradation curves, critical-ε plot, attack-surface sensitivity, overall robustness ranking.
 
-Current implementation:
+## Pulling Results from a Remote Server
 
-- generates plots once per completed phase
-- keeps overhead negligible
-- preserves one stable figure set per run
-
-If you later want live monitoring, a safer compromise is checkpoint plotting every 10 or 20 epochs during training, not every epoch and not every evaluation episode.
-
-## Running With Different Budgets
-
-### Smoke test
-
-```bash
-./test_quick.sh
-```
-
-### Custom results directory
-
-```bash
-python src/standalone_experiment_runner.py --config experiment_config.json --phase train --results-dir data/results/custom_run
-python src/standalone_experiment_runner.py --config experiment_config.json --phase paper1 --results-dir data/results/custom_run
-python src/standalone_experiment_runner.py --config experiment_config.json --phase paper2 --results-dir data/results/custom_run
-```
-
-### Quick CLI run
-
-```bash
-python src/standalone_experiment_runner.py --config experiment_config.json --phase all --quick --results-dir data/results/quick_run
-```
-
-## Important Configuration Knobs
-
-All runtime behavior is controlled by `experiment_config.json`.
-
-### Training
-
-- `training.epochs`
-- `training.episodes_per_epoch`
-- `training.timesteps_per_episode`
-
-### Clean evaluation
-
-- `paper1_eval.evaluation_episodes`
-
-### Reward shaping
-
-- `reward.delivery_weight`
-- `reward.max_util_penalty`
-- `reward.var_util_penalty`
-- `reward.drop_penalty`
-- `reward.backlog_penalty`
-
-### FGSM evaluation
-
-- `attack_configs`
-- `fgsm_slo.max_pkt_loss_pct`
-- `fgsm_slo.min_delivery_rate_pct`
-- `fgsm_slo.max_reward_degradation_pct`
-- `fgsm_slo.max_delay_p95`
-
-### Runtime control and pruning
-
-- `runtime_control.max_attack_cases_per_variant`
-- `runtime_control.max_attack_variants`
-- `runtime_control.phase3_enable_slo_pruning`
-- `runtime_control.phase3_consecutive_fail_limit`
-- `runtime_control.phase3_skip_after_critical_epsilon`
-
-### Adaptive seed expansion
-
-- `runtime_control.seed_expansion.enable_adaptive`
-- `runtime_control.seed_expansion.initial_seeds`
-- `runtime_control.seed_expansion.max_seeds_for_ranking`
-- `runtime_control.seed_expansion.rank_stability_check_interval`
-- `runtime_control.seed_expansion.top_k_for_stability`
-- `runtime_control.seed_expansion.stability_threshold`
-
-## Troubleshooting
-
-### No plots were generated
-
-Likely causes:
-
-- `tools/plot_results.py` is not present in the container (older image build)
-- `matplotlib` is unavailable in the runtime environment
-- the phase failed before writing its JSON files
-
-Check the phase logs first. If you see "Plotting utilities unavailable", rebuild the image with no cache:
-
-```bash
-docker build --no-cache -t maddpg-exp:latest .
-```
-
-Then re-run the phase, or re-run plotting manually.
-
-### Phase 2 or Phase 3 says no trained model
-
-Run Phase 1 first, or keep the same `--results-dir` across phases so checkpoints and results stay together.
-
-### GPU not detected
-
-Verify Docker GPU support and confirm `nvidia-smi` works inside containers.
-
-### Rankings look unstable
-
-Increase:
-
-- `paper1_eval.evaluation_episodes`
-- `runtime_control.seed_expansion.max_seeds_for_ranking`
-
-or reduce Phase 3 pruning aggressiveness.
-
-## Scripts Reference
-
-| Script | Purpose |
-|---|---|
-| `test_quick.sh` | detached smoke test |
-| `check_progress_quick.sh` | tail smoke-test logs |
-| `run_training.sh` | run Phase 1 |
-| `check_progress_training.sh` | tail Phase 1 logs |
-| `run_maddpg_eval.sh` | run Phase 2 |
-| `check_progress_maddpg.sh` | tail Phase 2 logs |
-| `run_fgsm_eval.sh` | run Phase 3 |
-| `check_progress_fgsm.sh` | tail Phase 3 logs |
-| `reset_results.sh` | delete results only |
-| `reset.sh` | delete results and models |
-
-## Local Result Inspection
+If you ran the experiments on a remote GPU server:
 
 ```bash
 scp -r user@server:/path/to/maddpg-adversarial-experiments/host_data/results/main_run ./main_run
 python tools/plot_results.py --results-dir ./main_run
 ```
+
+## Configuration Reference
+
+All runtime behaviour is controlled by `experiment_config.json`. Key knobs:
+
+### Training
+
+| Key | Description | Default |
+|---|---|---|
+| `training.epochs` | Maximum training epochs | 200 |
+| `training.episodes_per_epoch` | Episodes per epoch | 5 |
+| `training.timesteps_per_episode` | Steps per episode | 128 |
+| `training.early_stopping.patience_checks` | Early-stopping patience | 12 |
+| `training.best_checkpoint.validation_interval_epochs` | Checkpoint validation frequency | 10 |
+
+### Clean evaluation
+
+| Key | Description | Default |
+|---|---|---|
+| `paper1_eval.evaluation_episodes` | Episodes per scenario | 30 |
+| `paper1_eval.link_failure_scenarios` | Link-failure counts to test | [0, 2] |
+
+### Reward shaping
+
+`reward.delivery_weight`, `reward.max_util_penalty`, `reward.var_util_penalty`, `reward.drop_penalty`, `reward.backlog_penalty`
+
+### FGSM evaluation
+
+| Key | Description |
+|---|---|
+| `attack_configs` | List of `{attack_type, epsilon}` cases to run |
+| `fgsm_slo.*` | SLO thresholds for critical-epsilon detection |
+| `runtime_control.phase3_enable_slo_pruning` | Skip epsilon values past SLO breach |
+| `runtime_control.phase3_skip_after_critical_epsilon` | Stop a variant once critical ε is found |
+| `runtime_control.phase3_consecutive_fail_limit` | Consecutive SLO failures before skipping |
+
+### Adaptive seed expansion (Phase 2 rank stability)
+
+| Key | Description |
+|---|---|
+| `runtime_control.seed_expansion.enable_adaptive` | Enable adaptive seed expansion |
+| `runtime_control.seed_expansion.initial_seeds` | Starting number of evaluation seeds |
+| `runtime_control.seed_expansion.max_seeds_for_ranking` | Maximum seeds before forcing a decision |
+| `runtime_control.seed_expansion.stability_threshold` | Rank-stability coefficient threshold |
+
+## Scripts Reference
+
+| Script | Purpose |
+|---|---|
+| `test_quick.sh` | Smoke test — all phases, reduced budget |
+| `check_progress_quick.sh` | Stream smoke-test container logs |
+| `run_training.sh` | Phase 1 — train all variants |
+| `check_progress_training.sh` | Stream Phase 1 logs |
+| `run_maddpg_eval.sh` | Phase 2 — clean evaluation |
+| `check_progress_maddpg.sh` | Stream Phase 2 logs |
+| `run_fgsm_eval.sh` | Phase 3 — FGSM adversarial evaluation |
+| `check_progress_fgsm.sh` | Stream Phase 3 logs |
+| `reset_results.sh` | Wipe results only; preserve model weights |
+| `reset.sh` | Full reset — wipe results and model weights |
+| `save_weights.sh` | Rsync model weights from this machine to a remote server |
+| `load_weights.sh` | Rsync model weights from a remote server to this machine |
+
+### Transferring weights between machines
+
+Model weights are not tracked in Git. Use the helper scripts to move them between servers:
+
+```bash
+# Push weights from local → remote
+bash save_weights.sh user@remote-server
+
+# Pull weights from remote → local
+bash load_weights.sh user@remote-server
+```
+
+Both scripts transfer `host_data/results/main_run/models/` and `phase1_training_results.json`, which is all Phases 2 and 3 need.
+
+## Troubleshooting
+
+### No plots were generated
+
+- Check the phase logs first: `./check_progress_fgsm.sh`
+- If you see "Plotting utilities unavailable", rebuild the image: `docker build --no-cache -t maddpg-exp:latest .`
+- Regenerate manually: `python tools/plot_results.py --results-dir host_data/results/main_run`
+
+### Phase 2 or Phase 3 cannot find trained models
+
+Phase 1 must complete first and all phases must use the same `--results-dir` (default: `data/results/main_run`).
+
+### GPU not detected inside Docker
+
+Verify NVIDIA Container Toolkit is installed:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+```
+
+### Rankings look unstable between runs
+
+Increase `paper1_eval.evaluation_episodes` and/or `runtime_control.seed_expansion.max_seeds_for_ranking`, or reduce Phase 3 SLO pruning aggressiveness.
