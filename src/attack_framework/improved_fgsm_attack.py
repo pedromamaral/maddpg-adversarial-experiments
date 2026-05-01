@@ -194,9 +194,10 @@ class FGSMAttackFramework:
         neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
         per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
 
-        # Expected bandwidth under the current policy — minimising this degrades routing quality.
+        # Negate expected bandwidth so FGSM (gradient ascent) minimises it —
+        # this deceives the agent into believing low-BW (bad) paths are attractive.
         expected_bw = torch.sum(action_probs * per_action_bw)
-        return expected_bw  # gradient pushes agent away from high-bandwidth (good) paths
+        return -expected_bw  # gradient pushes agent toward low-bandwidth (bad) paths
 
     def _confusion_objective(
         self,
