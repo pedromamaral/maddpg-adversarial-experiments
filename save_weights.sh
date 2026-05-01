@@ -23,7 +23,7 @@ if [[ ! -f "$SRC/phase1_training_results.json" ]]; then
 fi
 
 echo "Syncing models → $DEST:~/maddpg-adversarial-experiments/host_data/results/main_run/"
-rsync -av --info=progress2 \
+rsync -av --progress \
   "$SRC/models/" \
   "$DEST:~/maddpg-adversarial-experiments/host_data/results/main_run/models/"
 

@@ -20,7 +20,7 @@ SRC="$SRC_HOST:~/maddpg-adversarial-experiments/host_data/results/main_run"
 
 echo "Pulling models from $SRC_HOST ..."
 mkdir -p "$DST/models"
-rsync -av --info=progress2 \
+rsync -av --progress \
   "$SRC/models/" \
   "$DST/models/"
 
