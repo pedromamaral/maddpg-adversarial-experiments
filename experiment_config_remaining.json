@@ -9,7 +9,7 @@
   },
 
   "training": {
-    "epochs": 200,
+    "epochs": 400,
     "episodes_per_epoch": 5,
     "timesteps_per_episode": 128,
     "batch_size": 512,
@@ -20,7 +20,7 @@
       "enabled": true,
       "epsilon_start": 1.0,
       "epsilon_end": 0.05,
-      "epsilon_decay_epochs": 80,
+      "epsilon_decay_epochs": 150,
       "decision_block_size": 3,
       "mode": "epsilon_greedy"
     },
@@ -67,7 +67,7 @@
   },
 
   "reward": {
-    "delivery_weight": 2.0,
+    "delivery_weight": 1.5,
     "drop_penalty": 1.0,
     "progress_shaping_weight": 0.0,
     "max_util_penalty": 0.0,
