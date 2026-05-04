@@ -60,6 +60,7 @@ class FGSMAttackFramework:
             Perturbed state as a 1-D numpy array.
         """
         # Resolve specific agent if the MADDPG orchestrator was passed
+        maddpg_ref = agent_network if hasattr(agent_network, 'agents') else None
         if hasattr(agent_network, 'agents'):
             agent = agent_network.agents[agent_index]
         else:
@@ -77,24 +78,35 @@ class FGSMAttackFramework:
             with torch.enable_grad():
                 agent.actor.eval()  # Use eval mode for consistent attack (prevents BN/Dropout noise)
                 
-                # Handle GNN processing differentiably if the agent uses it
+                # Handle GNN processing differentiably if the variant uses a GNN.
+                # GNN now lives on the MADDPG orchestrator and needs all agents'
+                # observations, but for adversarial input computation we only
+                # have access to the single target agent's state tensor.
+                # Strategy: apply GNN to a batch where all other agents receive
+                # their current (unperturbed) observations; only the target slot
+                # retains the grad_fn back through state_tensor.
                 current_state = state_tensor
-                if hasattr(agent, 'use_gnn') and agent.use_gnn and hasattr(agent, 'gnn_processor'):
-                    gp = agent.gnn_processor
-                    if gp is not None and getattr(gp, 'available', False):
-                        # Keep this path differentiable w.r.t. state_tensor.
-                        # The previous numpy-based process_state() detached the graph,
-                        # causing state_tensor.grad to be None for GNN variants.
-                        num_neighbors = min(4, state_tensor.shape[1])
-                        x_gnn = state_tensor[:, :num_neighbors].reshape(num_neighbors, 1)
-                        edge_indices = []
-                        for i in range(num_neighbors - 1):
-                            edge_indices.extend([[i, i + 1], [i + 1, i]])
-                        edge_index = torch.tensor(
-                            edge_indices, dtype=torch.long, device=self.device
-                        ).t().contiguous()
-                        gnn_out = gp(x_gnn, edge_index)
-                        current_state = gnn_out.mean(dim=0).unsqueeze(0)
+                gnn_proc = getattr(maddpg_ref, 'gnn_processor', None)
+                if gnn_proc is not None and getattr(gnn_proc, 'available', False):
+                    # Build a [n_agents, obs_dim] batch; target agent keeps grad
+                    n_agents_gnn = gnn_proc.n_agents
+                    obs_dim_gnn = gnn_proc.obs_dim
+                    dummy = torch.zeros(n_agents_gnn, obs_dim_gnn,
+                                        device=self.device)
+                    # Overwrite the target agent's slot with the attacked state
+                    # (trimmed/padded to obs_dim to handle shape mismatches)
+                    adv_obs = state_tensor.squeeze(0)[:obs_dim_gnn]
+                    if adv_obs.shape[0] < obs_dim_gnn:
+                        adv_obs = torch.cat(
+                            [adv_obs,
+                             torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=self.device)]
+                        )
+                    rows = list(range(n_agents_gnn))
+                    rows[agent_index % n_agents_gnn] = -1  # sentinel
+                    batch = dummy.clone()
+                    batch[agent_index % n_agents_gnn] = adv_obs
+                    out = gnn_proc(batch, gnn_proc.edge_index)  # [n_agents, obs_dim]
+                    current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
                 action_probs = agent.actor(current_state)
 
                 if self.attack_type == 'packet_loss':

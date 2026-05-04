@@ -70,7 +70,8 @@ def _episode_worker(args):
     (actor_weights_cpu, all_actor_params, n_agents, deterministic_mask,
         topology_type, n_nodes, topo_seed, reward_cfg, topology_cfg,
      epsilon, decision_block_size, t_per_ep, worker_seed,
-     trainable_indices, n_total_hosts, offered_load_factor) = args
+     trainable_indices, n_total_hosts, offered_load_factor,
+     gnn_info_cpu) = args
 
     import os
     import sys
@@ -92,8 +93,20 @@ def _episode_worker(args):
         if _p not in sys.path:
             sys.path.insert(0, _p)
 
-    from maddpg_implementation import ActorNetwork, Agent
+    from maddpg_implementation import ActorNetwork, Agent, GNNProcessor
     from network_environment import NetworkEngine, NetworkEnv
+
+    # Reconstruct GNN processor if the variant uses one
+    gnn_proc = None
+    if gnn_info_cpu is not None:
+        obs_dim_gnn, n_agents_gnn, adjacency_gnn, gnn_weights = gnn_info_cpu
+        gnn_proc = GNNProcessor(
+            obs_dim=obs_dim_gnn, hidden_dim=64,
+            n_agents=n_agents_gnn, adjacency=adjacency_gnn,
+        )
+        sd_gnn = {k: torch.tensor(v) for k, v in gnn_weights.items()}
+        gnn_proc.load_state_dict(sd_gnn, strict=False)
+        gnn_proc.eval()
 
     # Reconstruct actor networks on CPU (explicit device='cpu' avoids CUDA in workers)
     actors: dict = {}
@@ -149,6 +162,12 @@ def _episode_worker(args):
             deterministic=deterministic_mask[agent_idx],
         )
 
+    def _apply_gnn(all_obs: list) -> list:
+        """Apply GNN to a list of per-agent observations. Returns enhanced list."""
+        if gnn_proc is None:
+            return all_obs
+        return gnn_proc.process_observations([np.array(o) for o in all_obs])
+
     transitions = []
     env.engine.reset_with_load(offered_load_factor=offered_load_factor)
     states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
@@ -164,12 +183,13 @@ def _episode_worker(args):
             full_executed = [np.zeros(n_actions, dtype=np.float32)
                              for _ in range(n_total_hosts)]
             maddpg_actions = []
-            for topo_idx in range(n_total_hosts):
-                if topo_idx in trainable_set_idx:
-                    ti = topo_to_maddpg[topo_idx]
-                    action = _choose(ti, states[topo_idx])
-                    full_executed[topo_idx] = action
-                    maddpg_actions.append(action)
+            # Apply GNN to trainable agents' observations jointly
+            trainable_obs = [states[i] for i in trainable_indices]
+            enhanced_obs = _apply_gnn(trainable_obs)
+            for ti, topo_idx in enumerate(trainable_indices):
+                action = _choose(ti, enhanced_obs[ti])
+                full_executed[topo_idx] = action
+                maddpg_actions.append(action)
             next_states, rewards, info = env.step(full_executed,
                                                    obs_indices=trainable_indices)
             done = [t == t_per_ep - 1] * n_agents
@@ -181,7 +201,8 @@ def _episode_worker(args):
             transitions.append((t_states, maddpg_actions, t_rewards, t_next, done))
             ep_r += sum(t_rewards) / n_agents
         else:
-            executed_actions = [_choose(i, states[i]) for i in range(n_agents)]
+            enhanced_states = _apply_gnn(states)
+            executed_actions = [_choose(i, enhanced_states[i]) for i in range(n_agents)]
             next_states, rewards, info = env.step(executed_actions)
             done = [t == t_per_ep - 1] * n_agents
             transitions.append((
@@ -335,6 +356,20 @@ class StandaloneExperimentRunner:
             adjacency = None
             critic_dims = actor_dims * n_agents
 
+        # GNN adjacency: same topology sub-graph as neighborhood critic,
+        # but always built when use_gnn=True regardless of critic_domain
+        if vcfg.get('use_gnn', False):
+            trainable_set_gnn = set(trainable_hosts)
+            trainable_idx_map_gnn = {h: i for i, h in enumerate(trainable_hosts)}
+            gnn_adjacency = [
+                [trainable_idx_map_gnn[nb]
+                 for nb in engine.topology.get_neighbors(h)
+                 if nb in trainable_set_gnn]
+                for h in trainable_hosts
+            ]
+        else:
+            gnn_adjacency = None
+
         maddpg = MADDPG(
             actor_dims=actor_dims,
             critic_dims=critic_dims,
@@ -353,6 +388,7 @@ class StandaloneExperimentRunner:
             critic_target_mode=projection_cfg.get('critic_target_mode', 'block_argmax_onehot'),
             actor_mode=projection_cfg.get('actor_mode', 'soft'),
             adjacency=adjacency,
+            gnn_adjacency=gnn_adjacency,
         )
         return maddpg, engine, env
 
@@ -434,6 +470,7 @@ class StandaloneExperimentRunner:
     ) -> Tuple[List[float], List[float]]:
         """Collect n_episodes in parallel workers; push transitions to replay buffer."""
         actor_weights_cpu = maddpg.get_actor_weights_cpu()
+        gnn_info_cpu = maddpg.get_gnn_info_cpu() if maddpg.gnn_processor is not None else None
         all_actor_params = [
             (a.actor.input_dims, a.actor.fc1_dims, a.actor.fc2_dims, a.actor.n_actions)
             for a in maddpg.agents
@@ -449,6 +486,7 @@ class StandaloneExperimentRunner:
                 epsilon, decision_block_size, t_per_ep,
                 base_seed + epoch * 10_000 + ep_idx,
                 trainable_indices, n_total_hosts, train_load,
+                gnn_info_cpu,
             )
             for ep_idx in range(n_episodes)
         ]

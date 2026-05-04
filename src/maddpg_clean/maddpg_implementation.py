@@ -144,63 +144,113 @@ class CriticNetwork(nn.Module):
 
 
 class GNNProcessor(nn.Module):
-    """GNN processor for state pre-processing."""
+    """Multi-agent GNN: encodes [n_agents, obs_dim] jointly on the agent graph.
 
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
-        super(GNNProcessor, self).__init__()
+    Each trainable agent is a graph node whose feature vector is its full
+    obs_dim-dimensional observation.  GraphConv aggregates neighbour information
+    and a residual skip-connection preserves the original state so the network
+    starts as a near-identity transform and degrades gracefully when
+    torch_geometric is unavailable.
+
+    The GNN lives in MADDPG (not in Agent) because it requires all agents'
+    observations simultaneously.  Workers receive serialised weights and the
+    stored edge_index so they can apply the same transform during rollout,
+    keeping the training and execution distributions aligned.
+    """
+
+    def __init__(self, obs_dim: int, hidden_dim: int, n_agents: int,
+                 adjacency: Optional[List[List[int]]] = None):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.n_agents = n_agents
 
         try:
             from torch_geometric.nn import GraphConv
-            self.conv1 = GraphConv(input_dim, hidden_dim)
-            self.conv2 = GraphConv(hidden_dim, output_dim)
+            self.conv1 = GraphConv(obs_dim, hidden_dim)
+            self.conv2 = GraphConv(hidden_dim, obs_dim)
             self.available = True
         except ImportError:
             logger.warning("torch_geometric not available – GNN disabled.")
             self.available = False
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Build edge_index from the per-agent adjacency list
+        if adjacency is not None:
+            src, dst = [], []
+            for i, neighbours in enumerate(adjacency):
+                for j in neighbours:
+                    src.append(i)
+                    dst.append(j)
+            if src:
+                ei = torch.tensor([src, dst], dtype=torch.long)
+            else:
+                # No edges — use self-loops so GraphConv doesn't crash
+                ei = torch.stack([torch.arange(n_agents), torch.arange(n_agents)])
+        else:
+            # Fully-connected fallback: every agent attends to every other
+            pairs = [(a, b) for a in range(n_agents) for b in range(n_agents) if a != b]
+            src, dst = zip(*pairs) if pairs else ([], [])
+            ei = torch.tensor([list(src), list(dst)], dtype=torch.long)
+
+        self.register_buffer('edge_index', ei)
+
         if self.available:
             self.to(self.device)
 
-    def forward(self, x, edge_index):
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """x: [N, obs_dim].  Returns [N, obs_dim] with residual skip."""
         if not self.available:
             return x
-        x = F.relu(self.conv1(x, edge_index))
-        return self.conv2(x, edge_index)
+        h = F.relu(self.conv1(x, edge_index))
+        return F.relu(self.conv2(h, edge_index) + x)
 
-    def process_state(self, state: np.ndarray, topology_info=None) -> np.ndarray:
-        """Process a flat state vector through GNN node embeddings."""
+    # ── Inference (no-grad, numpy in/out) ────────────────────────────────────
+
+    def process_observations(self, observations: List[np.ndarray]) -> List[np.ndarray]:
+        """Encode a list of per-agent obs arrays.  Used during rollout."""
         if not self.available:
-            return state
+            return observations
+        x = torch.tensor(np.stack(observations), dtype=torch.float).to(self.device)
+        with torch.no_grad():
+            out = self(x, self.edge_index)
+        return [out[i].cpu().numpy() for i in range(len(observations))]
 
-        num_nodes = len(state)
-        obs_dim = 1  # Each node has a single scalar feature from the flat state
+    # ── Training (differentiable) ─────────────────────────────────────────────
 
-        if topology_info is None:
-            edge_index = []
-            for i in range(num_nodes - 1):
-                edge_index.extend([[i, i + 1], [i + 1, i]])
-            edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-        else:
-            edge_index = topology_info['edge_index']
+    def process_batch(self, states_t: List[torch.Tensor]) -> List[torch.Tensor]:
+        """Encode a list of per-agent [B, obs_dim] tensors.
 
-        # Shape: [num_nodes, obs_dim] – preserves all per-node information
-        x = torch.tensor(state, dtype=torch.float).reshape(num_nodes, obs_dim).to(self.device)
-        edge_index = edge_index.to(self.device)
+        Returns a list of enhanced [B, obs_dim] tensors that carry a grad_fn
+        back through the GNN parameters.  Uses the standard PyG batch trick:
+        the single-graph edge_index is tiled B times with per-sample node
+        offsets so message-passing respects mini-batch boundaries.
+        """
+        if not self.available:
+            return states_t
+        B = states_t[0].shape[0]
+        n = len(states_t)
+        # [B*n, obs_dim]
+        x = torch.stack(states_t, dim=1).reshape(B * n, self.obs_dim)
+        # Tile edge_index B times, offsetting node ids by n per sample
+        E = self.edge_index.shape[1]
+        offsets = torch.arange(B, device=self.device).repeat_interleave(E) * n
+        ei_src = self.edge_index[0].repeat(B) + offsets
+        ei_dst = self.edge_index[1].repeat(B) + offsets
+        batched_ei = torch.stack([ei_src, ei_dst])
+        out = self(x, batched_ei)               # [B*n, obs_dim]
+        out = out.reshape(B, n, self.obs_dim)   # [B, n, obs_dim]
+        return [out[:, i, :] for i in range(n)]
 
-        output = self(x, edge_index)  # [num_nodes, output_dim]
-        # Global mean-pool across nodes for a fixed-size state vector
-        processed_state = output.mean(dim=0).detach().cpu().numpy()
+    # ── Serialisation (for worker-process IPC) ───────────────────────────────
 
-        # Ensure output matches expected state dimension
-        if len(processed_state) < len(state):
-            processed_state = np.concatenate(
-                [processed_state, np.zeros(len(state) - len(processed_state))]
-            )
-        elif len(processed_state) > len(state):
-            processed_state = processed_state[:len(state)]
-
-        return processed_state
+    def get_weights_cpu(self) -> Dict[str, np.ndarray]:
+        """State dict as numpy arrays, excluding non-parameter buffers."""
+        return {
+            k: v.detach().cpu().numpy()
+            for k, v in self.state_dict().items()
+            if 'edge_index' not in k
+        }
 
 
 class Agent:
@@ -228,12 +278,6 @@ class Agent:
             'target_critic': os.path.join(chkpt_dir, f'{self.agent_name}_target_critic_best.pth'),
         }
 
-        # Optional GNN state pre-processor
-        self.use_gnn = use_gnn
-        self.gnn_processor = (
-            GNNProcessor(input_dim=1, hidden_dim=16, output_dim=actor_dims)
-            if use_gnn else None
-        )
         if critic_type == 'central_critic':
             critic_action_dims = n_agents * n_actions
         elif critic_type == 'neighborhood_critic':
@@ -276,6 +320,8 @@ class Agent:
         # Hard-copy online weights into targets at init
         self.update_network_parameters(tau=1.0)
 
+        # Note: GNN pre-processing is handled at the MADDPG level, not here.
+
     @staticmethod
     def _build_executed_action(policy_action: np.ndarray, epsilon: float,
                                decision_block_size: int,
@@ -308,14 +354,11 @@ class Agent:
             fixed_actions[:, block_start] = 1.0
         return fixed_actions
 
-    def choose_action(self, observation, topology_info=None,
+    def choose_action(self, observation,
                       training: bool = False, epsilon: float = 0.0,
                       decision_block_size: int = 1,
                       deterministic: bool = False):
         """Return policy action, and optionally the executed one-hot action."""
-        if self.use_gnn and self.gnn_processor is not None:
-            observation = self.gnn_processor.process_state(observation, topology_info)
-
         if isinstance(observation, list):
             observation = np.array(observation)
 
@@ -445,7 +488,8 @@ class MADDPG:
                  network_type: str = 'simple_q_network', use_gnn: bool = False,
                  critic_target_mode: str = 'block_argmax_onehot',
                  actor_mode: str = 'soft',
-                 adjacency: Optional[List[List[int]]] = None):
+                 adjacency: Optional[List[List[int]]] = None,
+                 gnn_adjacency: Optional[List[List[int]]] = None):
 
         self.n_agents = n_agents
         self.n_actions = n_actions
@@ -453,6 +497,7 @@ class MADDPG:
         self.critic_target_mode = critic_target_mode
         self.actor_mode = actor_mode
         self.adjacency = adjacency
+        self.chkpt_dir = chkpt_dir
 
         actor_dims_list = (
             actor_dims if isinstance(actor_dims, list) else [actor_dims] * n_agents
@@ -477,7 +522,7 @@ class MADDPG:
                 tau=tau,
                 critic_type=critic_type,
                 network_type=network_type,
-                use_gnn=use_gnn,
+                use_gnn=False,  # GNN is handled at MADDPG level
                 neighborhood_action_dims=(
                     (1 + len(adjacency[i])) * n_actions
                     if critic_type == 'neighborhood_critic' and adjacency is not None
@@ -487,13 +532,28 @@ class MADDPG:
             for i in range(n_agents)
         ]
 
+        # Shared GNN encoder — operates on all agents' observations jointly
+        self.gnn_adjacency = gnn_adjacency
+        self.gnn_processor: Optional[GNNProcessor] = None
+        self.gnn_optimizer = None
+        if use_gnn:
+            obs_dim = actor_dims_list[0]  # all agents share the same obs_dim
+            self.gnn_processor = GNNProcessor(
+                obs_dim=obs_dim, hidden_dim=64,
+                n_agents=n_agents, adjacency=gnn_adjacency,
+            )
+            if self.gnn_processor.available:
+                self.gnn_optimizer = optim.Adam(
+                    self.gnn_processor.parameters(), lr=alpha,
+                )
+
         self.memory = ReplayBuffer(
             max_size=50_000,
             actor_dims=actor_dims_list,
             n_actions=n_actions,
             n_agents=n_agents,
         )
-                             # Mixed-precision scaler (no-op on CPU, ~1.5-2x speedup on GPU)
+        # Mixed-precision scaler (no-op on CPU, ~1.5-2x speedup on GPU)
         self.scaler = GradScaler(enabled=torch.cuda.is_available())
 
     @staticmethod
@@ -528,6 +588,12 @@ class MADDPG:
                       decision_block_size: int = 1):
         if deterministic_mask is None:
             deterministic_mask = [False] * self.n_agents
+
+        # Apply shared GNN encoder to all agents' observations jointly
+        if self.gnn_processor is not None:
+            observations = self.gnn_processor.process_observations(
+                [np.array(o) for o in observations]
+            )
 
         if not training:
             return [
@@ -577,9 +643,27 @@ class MADDPG:
         rewards_t = torch.tensor(rewards, dtype=torch.float).to(device)   # [B, n_agents]
         dones_t = torch.tensor(dones).to(device)                           # [B, n_agents]
 
+        # ---- GNN encoding ----
+        # states_t_gnn carries grad_fn back through the GNN for actor updates.
+        # states_next_t_gnn is computed under no_grad (target network logic).
+        # Critic always receives .detach() tensors to prevent circular dependency.
+        if self.gnn_processor is not None:
+            if self.gnn_optimizer is not None:
+                self.gnn_optimizer.zero_grad()
+            with autocast(enabled=torch.cuda.is_available()):
+                states_t_gnn = self.gnn_processor.process_batch(states_t)
+            with torch.no_grad():
+                with autocast(enabled=torch.cuda.is_available()):
+                    states_next_t_gnn = self.gnn_processor.process_batch(states_next_t)
+        else:
+            states_t_gnn = states_t
+            states_next_t_gnn = states_next_t
+
         if self.critic_type == 'central_critic':
-            all_states = torch.cat(states_t, dim=1)           # [B, sum_obs_dims]
-            all_states_next = torch.cat(states_next_t, dim=1)
+            all_states = torch.cat(
+                [s.detach() for s in states_t_gnn], dim=1
+            )           # [B, sum_obs_dims]
+            all_states_next = torch.cat(states_next_t_gnn, dim=1)
             all_actions_flat = actions_t.view(batch_size, -1) # [B, n_agents*n_actions]
 
         for i, agent in enumerate(self.agents):
@@ -607,7 +691,7 @@ class MADDPG:
                             else:
                                 next_action_tensors.append(
                                     self._project_actions(
-                                        other_agent.target_actor(states_next_t[j]),
+                                        other_agent.target_actor(states_next_t_gnn[j]),
                                         decision_block_size=decision_block_size,
                                         mode=self.critic_target_mode,
                                         straight_through=False,
@@ -625,17 +709,17 @@ class MADDPG:
                 elif self.critic_type == 'neighborhood_critic':
                     nbr_idxs = self.adjacency[i] if self.adjacency else []
                     nc_states = torch.cat(
-                        [states_t[i]] + [states_t[j] for j in nbr_idxs], dim=1
+                        [states_t_gnn[i].detach()] + [states_t_gnn[j].detach() for j in nbr_idxs], dim=1
                     )
                     nc_states_next = torch.cat(
-                        [states_next_t[i]] + [states_next_t[j] for j in nbr_idxs], dim=1
+                        [states_next_t_gnn[i]] + [states_next_t_gnn[j] for j in nbr_idxs], dim=1
                     )
                     nc_actions = torch.cat(
                         [actions_t[:, i, :]] + [actions_t[:, j, :] for j in nbr_idxs], dim=1
                     )
                     with torch.no_grad():
                         next_self_a = self._project_actions(
-                            agent.target_actor(states_next_t[i]),
+                            agent.target_actor(states_next_t_gnn[i]),
                             decision_block_size=decision_block_size,
                             mode=self.critic_target_mode,
                             straight_through=False,
@@ -654,7 +738,7 @@ class MADDPG:
                             else:
                                 next_nbr_actions.append(
                                     self._project_actions(
-                                        self.agents[j].target_actor(states_next_t[j]),
+                                        self.agents[j].target_actor(states_next_t_gnn[j]),
                                         decision_block_size=decision_block_size,
                                         mode=self.critic_target_mode,
                                         straight_through=False,
@@ -666,8 +750,8 @@ class MADDPG:
                         target_q = agent_reward.unsqueeze(1) + agent.gamma * target_q
                     current_q = agent.critic(nc_states, nc_actions)
                 else:  # local critic
-                    agent_states = states_t[i]
-                    agent_states_next = states_next_t[i]
+                    agent_states = states_t_gnn[i].detach()
+                    agent_states_next = states_next_t_gnn[i]
                     agent_actions = actions_t[:, i, :]
 
                     with torch.no_grad():
@@ -691,7 +775,7 @@ class MADDPG:
 
             with autocast(enabled=torch.cuda.is_available()):
                 # ---- Actor update ----
-                predicted_actions_soft = agent.actor(states_t[i])
+                predicted_actions_soft = agent.actor(states_t_gnn[i])
                 if self.actor_mode == 'st_onehot':
                     predicted_actions = self._project_actions(
                         predicted_actions_soft,
@@ -711,14 +795,14 @@ class MADDPG:
                 elif self.critic_type == 'neighborhood_critic':
                     nbr_idxs = self.adjacency[i] if self.adjacency else []
                     nc_act_states = torch.cat(
-                        [states_t[i]] + [states_t[j] for j in nbr_idxs], dim=1
+                        [states_t_gnn[i].detach()] + [states_t_gnn[j].detach() for j in nbr_idxs], dim=1
                     )
                     nc_act_actions = torch.cat(
                         [predicted_actions] + [actions_t[:, j, :] for j in nbr_idxs], dim=1
                     )
                     actor_loss = -agent.critic(nc_act_states, nc_act_actions).mean()
                 else:
-                    actor_loss = -agent.critic(states_t[i], predicted_actions).mean()
+                    actor_loss = -agent.critic(states_t_gnn[i].detach(), predicted_actions).mean()
     
             agent.actor_optimizer.zero_grad()
             self.scaler.scale(actor_loss).backward()
@@ -726,6 +810,11 @@ class MADDPG:
             logger.debug("Agent %d actor loss:  %.6f", i, actor_loss.item())
 
             agent.update_network_parameters()
+
+        # Step GNN optimizer after all agents (grads accumulated across all actors)
+        if self.gnn_processor is not None and self.gnn_optimizer is not None:
+            torch.nn.utils.clip_grad_norm_(self.gnn_processor.parameters(), 1.0)
+            self.scaler.step(self.gnn_optimizer)
 
         # GradScaler must be updated once per full optimiser cycle, not once per
         # agent — calling it 65x per learn() causes premature scale reduction.
@@ -737,19 +826,45 @@ class MADDPG:
     def save_checkpoint(self):
         for agent in self.agents:
             agent.save_models()
+        if self.gnn_processor is not None:
+            os.makedirs(self.chkpt_dir, exist_ok=True)
+            torch.save(
+                self.gnn_processor.state_dict(),
+                os.path.join(self.chkpt_dir, 'gnn_processor.pth'),
+            )
 
     def save_best_checkpoint(self):
         for agent in self.agents:
             agent.save_best_models()
+        if self.gnn_processor is not None:
+            os.makedirs(self.chkpt_dir, exist_ok=True)
+            torch.save(
+                self.gnn_processor.state_dict(),
+                os.path.join(self.chkpt_dir, 'gnn_processor_best.pth'),
+            )
 
     def load_checkpoint(self):
         for agent in self.agents:
             agent.load_models()
+        if self.gnn_processor is not None:
+            path = os.path.join(self.chkpt_dir, 'gnn_processor.pth')
+            if os.path.exists(path):
+                self.gnn_processor.load_state_dict(
+                    torch.load(path, weights_only=True)
+                )
 
     def load_best_checkpoint(self) -> bool:
         loaded_all = True
         for agent in self.agents:
             loaded_all = agent.load_best_models() and loaded_all
+        if self.gnn_processor is not None:
+            path = os.path.join(self.chkpt_dir, 'gnn_processor_best.pth')
+            if os.path.exists(path):
+                self.gnn_processor.load_state_dict(
+                    torch.load(path, weights_only=True)
+                )
+            else:
+                loaded_all = False
         return loaded_all
 
     def get_actor_weights_cpu(self) -> List[Dict[str, 'np.ndarray']]:
@@ -758,6 +873,22 @@ class MADDPG:
             {k: v.detach().cpu().numpy() for k, v in agent.actor.state_dict().items()}
             for agent in self.agents
         ]
+
+    def get_gnn_info_cpu(self):
+        """Serialise GNN state for worker-process IPC.
+
+        Returns a tuple ``(obs_dim, n_agents, adjacency, weights)`` or ``None``
+        when there is no GNN or the GNN is unavailable (torch_geometric missing).
+        The adjacency list-of-lists is picklable without any tensor overhead.
+        """
+        if self.gnn_processor is None or not self.gnn_processor.available:
+            return None
+        return (
+            self.gnn_processor.obs_dim,
+            self.gnn_processor.n_agents,
+            self.gnn_adjacency,
+            self.gnn_processor.get_weights_cpu(),
+        )
 
 
 if __name__ == '__main__':
