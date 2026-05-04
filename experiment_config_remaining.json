@@ -45,7 +45,7 @@
       "smooth_window_checks": 3,
       "min_epochs": 80
     },
-    "offered_load_factor": 0.65
+    "offered_load_factor": 0.80
   },
   "paper1_eval": {
     "evaluation_episodes": 30,
