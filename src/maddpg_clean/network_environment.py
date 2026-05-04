@@ -621,6 +621,7 @@ class NetworkEngine:
             'shaping_term': 0.0,
             'chosen_util_term': 0.0,
             'extreme_cong_term': 0.0,
+            'var_util_term': 0.0,
         }
 
         for i, host in enumerate(hosts):
@@ -714,18 +715,26 @@ class NetworkEngine:
         # it caused (bandwidth overflow or TTL expiry on its own queue).
         delivery_weight      = float(self.reward_cfg.get('delivery_weight', 1.0))
         drop_penalty         = float(self.reward_cfg.get('drop_penalty', 0.0))
+        var_util_penalty     = float(self.reward_cfg.get('var_util_penalty', 0.0))
         global_delivery_rate = step_delivered / max(1, step_sent)
 
-        for stats in _agent_drop_stats:
+        for host, stats in zip(hosts, _agent_drop_stats):
             if stats is None:
                 rewards.append(0.0)
             else:
                 drop_count, total = stats
                 drop_term = drop_penalty * drop_count / max(1, total)
-                r = delivery_weight * global_delivery_rate - drop_term
+                if var_util_penalty > 0.0:
+                    adj_utils = [self.topology.get_util(host, n)
+                                 for n in self.topology.get_neighbors(host)]
+                    var_term = float(np.var(adj_utils)) if len(adj_utils) > 1 else 0.0
+                else:
+                    var_term = 0.0
+                r = delivery_weight * global_delivery_rate - drop_term - var_util_penalty * var_term
                 rewards.append(r)
                 reward_components['fwd_success_term'] += delivery_weight * global_delivery_rate
                 reward_components['chosen_util_term'] += drop_term
+                reward_components['var_util_term']    += var_util_penalty * var_term
 
         # bookkeeping
         self.topology.decay_utils()
@@ -780,6 +789,7 @@ class NetworkEngine:
                 'shaping_term':      reward_components['shaping_term'],
                 'chosen_util_term':  reward_components['chosen_util_term'],
                 'extreme_cong_term': reward_components['extreme_cong_term'],
+                'var_util_term':     reward_components['var_util_term'],
             },
         }
         return next_states, rewards, info
@@ -1090,6 +1100,7 @@ class NetworkEngine:
                 'shaping_term':      0.0,
                 'chosen_util_term':  0.0,
                 'extreme_cong_term': 0.0,
+                'var_util_term':     0.0,
             },
         }
 

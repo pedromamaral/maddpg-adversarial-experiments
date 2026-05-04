@@ -70,7 +70,7 @@ def _episode_worker(args):
     (actor_weights_cpu, all_actor_params, n_agents, deterministic_mask,
         topology_type, n_nodes, topo_seed, reward_cfg, topology_cfg,
      epsilon, decision_block_size, t_per_ep, worker_seed,
-     trainable_indices, n_total_hosts) = args
+     trainable_indices, n_total_hosts, offered_load_factor) = args
 
     import os
     import sys
@@ -150,7 +150,8 @@ def _episode_worker(args):
         )
 
     transitions = []
-    states = env.reset()
+    env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+    states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
     ep_r = 0.0
     ep_sent = 0
     ep_dropped = 0
@@ -439,6 +440,7 @@ class StandaloneExperimentRunner:
         ]
         trainable_indices = getattr(engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(engine, 'n_total_hosts', maddpg.n_agents)
+        train_load = float(self.config.get('training', {}).get('offered_load_factor', 1.0))
         worker_args = [
             (
                 actor_weights_cpu, all_actor_params, maddpg.n_agents, deterministic_mask,
@@ -446,7 +448,7 @@ class StandaloneExperimentRunner:
                 self.config.get('topology', {}),
                 epsilon, decision_block_size, t_per_ep,
                 base_seed + epoch * 10_000 + ep_idx,
-                trainable_indices, n_total_hosts,
+                trainable_indices, n_total_hosts, train_load,
             )
             for ep_idx in range(n_episodes)
         ]
