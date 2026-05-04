@@ -145,7 +145,8 @@
     {"attack_type": "reward_minimize", "epsilon": 0.20, "evaluation_episodes": 50},
     {"attack_type": "confusion",       "epsilon": 0.05, "evaluation_episodes": 50},
     {"attack_type": "confusion",       "epsilon": 0.10, "evaluation_episodes": 50},
-    {"attack_type": "confusion",       "epsilon": 0.15, "evaluation_episodes": 50}
+    {"attack_type": "confusion",       "epsilon": 0.15, "evaluation_episodes": 50},
+    {"attack_type": "confusion",       "epsilon": 0.20, "evaluation_episodes": 50}
   ],
 
   "fgsm_slo": {
