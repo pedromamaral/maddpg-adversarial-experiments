@@ -895,17 +895,23 @@ class NetworkEngine:
                 path = self.topology.path_cache.get((host, pkt['dst']), [])
                 if len(path) < 2:
                     dropped += 1
+                    self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 nxt = path[1]
                 required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, nxt), 1e-6)
                 if self.topology.avail_bw(host, nxt) < required_bw:
                     dropped += 1
+                    self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, nxt)
                 cap_scale = self.topology.get_capacity_scale(host, nxt)
                 self.topology.set_util(host, nxt, cur + PACKET_SIZE / max(cap_scale, 1e-6))
                 if nxt == pkt['dst']:
                     delivered += 1
+                    self._episode_stats['delivered_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['delivered_hop_samples'].append(pkt_hops + 1)
                 elif pkt['ttl'] > 0:
                     next_queue[nxt].append({
                         'dst': pkt['dst'],
@@ -915,12 +921,29 @@ class NetworkEngine:
                     })
                 else:
                     dropped += 1
+                    self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
         self.topology.decay_utils()
         self.packet_queue = next_queue
         if self.time_step % INJECT_EVERY == 0:
             self._inject_packets(int(max(1, round(N_INJECT_BATCH * self.offered_load_factor))))
         self.time_step += 1
+
+        # Update episode-level stats so get_episode_stats() reflects OSPF runs.
+        self._episode_stats['packets_sent']      += sent
+        self._episode_stats['packets_delivered'] += delivered
+        self._episode_stats['packets_dropped']   += dropped
+        self._episode_stats['steps']             += 1
+        current_backlog = sum(len(q) for q in self.packet_queue.values())
+        self._episode_stats['backlog_sum']  += current_backlog
+        self._episode_stats['backlog_peak'] = max(self._episode_stats['backlog_peak'], current_backlog)
+        util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
+        _mean_util = float(np.mean(util_values)) if util_values else 0.0
+        _max_util  = float(np.max(util_values))  if util_values else 0.0
+        self._episode_stats['step_mean_utils'].append(_mean_util)
+        self._episode_stats['step_max_utils'].append(_max_util)
+
         return {
             'packets_sent':      sent,
             'packets_delivered': delivered,
@@ -942,6 +965,11 @@ class NetworkEngine:
         for host, q in list(self.packet_queue.items()):
             nbrs = self.topology.get_neighbors(host)
             if not nbrs:
+                for pkt in q:
+                    self._episode_stats['dropped_delay_samples'].append(
+                        max(0, self.time_step - int(pkt.get('created_at', 0)))
+                    )
+                    self._episode_stats['dropped_hop_samples'].append(int(pkt.get('hops', 0)))
                 dropped += len(q)
                 sent += len(q)
                 continue
@@ -954,12 +982,16 @@ class NetworkEngine:
                 required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, chosen), 1e-6)
                 if self.topology.avail_bw(host, chosen) < required_bw:
                     dropped += 1
+                    self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, chosen)
                 cap_scale = self.topology.get_capacity_scale(host, chosen)
                 self.topology.set_util(host, chosen, cur + PACKET_SIZE / max(cap_scale, 1e-6))
                 if chosen == pkt['dst']:
                     delivered += 1
+                    self._episode_stats['delivered_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['delivered_hop_samples'].append(pkt_hops + 1)
                 elif pkt['ttl'] > 0:
                     next_queue[chosen].append({
                         'dst': pkt['dst'],
@@ -969,12 +1001,29 @@ class NetworkEngine:
                     })
                 else:
                     dropped += 1
+                    self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                    self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
         self.topology.decay_utils()
         self.packet_queue = next_queue
         if self.time_step % INJECT_EVERY == 0:
             self._inject_packets(int(max(1, round(N_INJECT_BATCH * self.offered_load_factor))))
         self.time_step += 1
+
+        # Update episode-level stats so get_episode_stats() reflects OSPF runs.
+        self._episode_stats['packets_sent']      += sent
+        self._episode_stats['packets_delivered'] += delivered
+        self._episode_stats['packets_dropped']   += dropped
+        self._episode_stats['steps']             += 1
+        current_backlog = sum(len(q) for q in self.packet_queue.values())
+        self._episode_stats['backlog_sum']  += current_backlog
+        self._episode_stats['backlog_peak'] = max(self._episode_stats['backlog_peak'], current_backlog)
+        util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
+        _mean_util = float(np.mean(util_values)) if util_values else 0.0
+        _max_util  = float(np.max(util_values))  if util_values else 0.0
+        self._episode_stats['step_mean_utils'].append(_mean_util)
+        self._episode_stats['step_max_utils'].append(_max_util)
+
         return {
             'packets_sent':      sent,
             'packets_delivered': delivered,
