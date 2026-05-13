@@ -76,9 +76,10 @@
     "min_end_to_end_pdr_pct": 85.0
   },
   "reward": {
-    "_comment": "Global end-to-end delivery reward. delivery_weight scales global step delivery rate (step_delivered/step_sent) shared by ALL active agents \u2014 solving credit assignment. drop_penalty is local per-agent. var_util_penalty penalises variance of adjacent link utilisation per agent \u2014 proactive load-balance incentive.",
-    "delivery_weight": 1.5,
+    "_comment": "Local per-agent reward uses bw_reward + drop_penalty (LC variants). CC variants override this with a global team reward = delivery_weight * delivery_rate - mean_util_weight * mean_util - var_util_penalty * util_variance, enabling architecturally correct CTDE credit assignment.",
+    "delivery_weight": 1.0,
     "drop_penalty": 1.0,
+    "mean_util_weight": 0.5,
     "progress_shaping_weight": 0.0,
     "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,

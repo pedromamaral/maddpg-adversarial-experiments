@@ -71,7 +71,7 @@ def _episode_worker(args):
         topology_type, n_nodes, topo_seed, reward_cfg, topology_cfg,
      epsilon, decision_block_size, t_per_ep, worker_seed,
      trainable_indices, n_total_hosts, offered_load_factor,
-     gnn_info_cpu) = args
+     gnn_info_cpu, use_central_state) = args
 
     import os
     import sys
@@ -175,6 +175,12 @@ def _episode_worker(args):
     ep_sent = 0
     ep_dropped = 0
 
+    # Precompute trainable_hosts list for central state computation
+    _trainable_hosts_local = (
+        [engine.topology.hosts[i] for i in trainable_indices]
+        if (use_central_state and trainable_indices is not None) else None
+    )
+
     for t in range(t_per_ep):
         if filtered:
             # Build full n_total_hosts-length action array: trainable agents get
@@ -190,15 +196,35 @@ def _episode_worker(args):
                 action = _choose(ti, enhanced_obs[ti])
                 full_executed[topo_idx] = action
                 maddpg_actions.append(action)
+            # Capture central state before step() updates the environment
+            cs = (engine.get_central_state(_trainable_hosts_local)
+                  if use_central_state else None)
             next_states, rewards, info = env.step(full_executed,
                                                    obs_indices=trainable_indices)
+            ncs = (engine.get_central_state(_trainable_hosts_local)
+                   if use_central_state else None)
             done = [t == t_per_ep - 1] * n_agents
             # Store only the trainable-agent slices — MADDPG expects exactly
             # n_agents items in each list passed to store_transition.
             t_states = [np.array(states[i], dtype=np.float32) for i in trainable_indices]
             t_next   = [np.array(next_states[i], dtype=np.float32) for i in trainable_indices]
-            t_rewards = [rewards[i] for i in trainable_indices]
-            transitions.append((t_states, maddpg_actions, t_rewards, t_next, done))
+            if use_central_state:
+                # CC variants use a shared global team reward so the CC critic
+                # optimises network-wide objectives, not a per-agent local signal.
+                # r_global = delivery_weight * delivery_rate
+                #            - mean_util_weight * mean_link_util
+                #            - var_util_penalty * util_variance
+                _dr  = info.get('delivery_rate', 0.0) / 100.0
+                _mu  = info.get('network_utilization', 0.0)
+                _uv  = info.get('util_variance', 0.0)
+                _dw  = float(reward_cfg.get('delivery_weight', 1.0))
+                _muw = float(reward_cfg.get('mean_util_weight', 0.5))
+                _vup = float(reward_cfg.get('var_util_penalty', 0.3))
+                r_global = _dw * _dr - _muw * _mu - _vup * _uv
+                t_rewards = [r_global] * n_agents
+            else:
+                t_rewards = [rewards[i] for i in trainable_indices]
+            transitions.append((t_states, maddpg_actions, t_rewards, t_next, done, cs, ncs))
             ep_r += sum(t_rewards) / n_agents
         else:
             enhanced_states = _apply_gnn(states)
@@ -211,6 +237,7 @@ def _episode_worker(args):
                 list(rewards),
                 [np.array(s, dtype=np.float32) for s in next_states],
                 list(done),
+                None, None,
             ))
             ep_r += sum(rewards) / n_agents
         states = next_states
@@ -349,12 +376,18 @@ class StandaloneExperimentRunner:
                 actor_dims * (1 + len(adjacency[i]))
                 for i in range(n_agents)
             ]
+            central_state_dims = None
         elif critic_domain == 'local_critic':
             adjacency = None
             critic_dims = actor_dims
+            central_state_dims = None
         else:
             adjacency = None
-            critic_dims = actor_dims * n_agents
+            # CC critic uses compact <B, D> central state instead of all local obs.
+            # central_state_dims = |E| + n_trainable_agents = 106 + 32 = 138.
+            _n_edges = engine.topology.graph.number_of_edges()
+            central_state_dims = _n_edges + n_agents
+            critic_dims = central_state_dims
 
         # GNN adjacency: same topology sub-graph as neighborhood critic,
         # but always built when use_gnn=True regardless of critic_domain
@@ -389,6 +422,7 @@ class StandaloneExperimentRunner:
             actor_mode=projection_cfg.get('actor_mode', 'soft'),
             adjacency=adjacency,
             gnn_adjacency=gnn_adjacency,
+            central_state_dims=central_state_dims,
         )
         return maddpg, engine, env
 
@@ -487,6 +521,7 @@ class StandaloneExperimentRunner:
                 base_seed + epoch * 10_000 + ep_idx,
                 trainable_indices, n_total_hosts, train_load,
                 gnn_info_cpu,
+                maddpg.memory.central_state_memory is not None,  # use_central_state
             )
             for ep_idx in range(n_episodes)
         ]
@@ -712,12 +747,22 @@ class StandaloneExperimentRunner:
 
     def run_training(self) -> Dict:
         logger.info("══════ PHASE 1 — TRAINING ══════")
-        results = {}
+        # Resume: load existing results so already-trained variants are skipped
+        try:
+            results = self._load('phase1_training_results.json')
+            logger.info("[TRAIN] Resuming — found existing results for: %s", list(results.keys()))
+        except Exception:
+            results = {}
         for vcfg in self.config['variants']:
+            if vcfg['name'] in results:
+                logger.info("[TRAIN] %s — already trained, skipping", vcfg['name'])
+                continue
             try:
                 results[vcfg['name']] = self.train_variant(vcfg)
             except Exception as exc:
                 logger.error(f"[TRAIN] {vcfg['name']} FAILED: {exc}")
+            # Save incrementally so a crash doesn't lose completed variants
+            self._save(results, 'phase1_training_results.json')
         self._save(results, 'phase1_training_results.json')
         self._generate_plots_for_phase(1)
         return results
@@ -1827,6 +1872,9 @@ def main():
     ap.add_argument('--results-dir', default=None)
     ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2'], default='all')
     ap.add_argument('--quick', action='store_true')
+    ap.add_argument('--variants', default=None,
+                    help='Comma-separated list of variant names to train; '
+                         'all others are skipped (e.g. CC-Simple,LC-Duelling-GNN)')
     args = ap.parse_args()
 
     runner = StandaloneExperimentRunner(args.config, args.gpu, args.results_dir)
@@ -1838,6 +1886,13 @@ def main():
             a['evaluation_episodes'] = 2
         runner.config.setdefault('paper1_eval', {})['evaluation_episodes'] = 2
         logger.info("Quick mode active")
+
+    if args.variants:
+        allowed = {v.strip() for v in args.variants.split(',')}
+        runner.config['variants'] = [
+            v for v in runner.config['variants'] if v['name'] in allowed
+        ]
+        logger.info("Variant filter active — training: %s", [v['name'] for v in runner.config['variants']])
 
     if   args.phase == 'all':    runner.run_all()
     elif args.phase == 'train':  runner.run_training()

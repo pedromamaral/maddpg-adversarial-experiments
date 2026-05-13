@@ -530,8 +530,15 @@ class NetworkEngine:
 
     @property
     def state_dims(self) -> int:
-        """Total state-vector size: max_neighbors + destination slots + 10 fixed slots."""
-        return self.max_neighbors + self.n_destinations + 10
+        """Total state-vector size: max_neighbors + destination slots + 9 fixed slots.
+
+        Fixed slots (9):
+          queue_depth, dest_diversity, timestep,
+          mean_adj_util, max_adj_util, var_adj_util,
+          K-path first-hop utilisation × K_PATHS (=3)
+        Removed from previous version: bucket fractions (3) and global mean util (1).
+        """
+        return self.max_neighbors + self.n_destinations + 6 + K_PATHS
 
     def get_state(self, host: str) -> np.ndarray:
         """
@@ -545,13 +552,13 @@ class NetworkEngine:
           [MAX_NEIGHBORS+2]             normalised timestep
           [MAX_NEIGHBORS+3 :
            MAX_NEIGHBORS+3+N_DEST]      one-hot presence flag per endpoint destination
-          [.. + 3]                      queue share by destination bucket (access, dist, core)
-          [.. + 4]                      mean adjacent link utilisation
-          [.. + 5]                      max adjacent link utilisation
-          [.. + 6]                      variance of adjacent link utilisations
-          [.. + 7]                      global mean link utilisation
+          [.. + 0]                      mean adjacent link utilisation
+          [.. + 1]                      max adjacent link utilisation
+          [.. + 2]                      variance of adjacent link utilisations
+          [.. + 3 : .. + 3+K_PATHS]    mean first-hop utilisation per k-path index
+                                        (action-aligned: slot k corresponds to action k)
 
-          Total = max_neighbors + n_destinations + 10
+          Total = max_neighbors + n_destinations + 6 + K_PATHS
         """
         mn   = self.max_neighbors
         nbrs = self.topology.get_neighbors(host)
@@ -568,19 +575,11 @@ class NetworkEngine:
         state.append(len(dsts_in_queue) / max(1, len(self.topology.hosts)))
         state.append(self.time_step / 256.0)
 
-        # destination indicator — 40 slots (access nodes only; traffic endpoints in SP network)
+        # destination indicator — N_DEST slots (access nodes only; traffic endpoints in SP network)
         for h in self.topology.access_nodes:
             state.append(1.0 if h in dsts_in_queue else 0.0)
 
-        # per-destination-bucket queue demand (access/dist/core)
-        bucket_counts = {bucket: 0 for bucket in DEST_BUCKETS}
-        for pkt in q:
-            bucket_counts[self.get_tier(pkt['dst'])] += 1
-        q_len = max(1, len(q))
-        for bucket in DEST_BUCKETS:
-            state.append(bucket_counts[bucket] / q_len)
-
-        # link statistics — 4 slots
+        # link statistics — 3 slots (removed: bucket fractions, global mean util)
         utils = [self.topology.get_util(host, nb) for nb in nbrs]
         if utils:
             state.append(float(np.mean(utils)))
@@ -588,16 +587,62 @@ class NetworkEngine:
             state.append(float(np.var(utils)) if len(utils) > 1 else 0.0)
         else:
             state.extend([0.0, 0.0, 0.0])
-        # Global mean utilisation: cached once per step() call rather than
-        # recomputed for every agent (was O(86 × |edges|) per timestep).
-        state.append(self._step_mean_util)
 
-        # guarantee exactly (mn + 50) dims
+        # K-path first-hop utilisation — K_PATHS slots (action-aligned)
+        # Slot k reflects the average congestion on the first hop of path k
+        # across all destinations, giving agents a signal tied to their action index.
+        for k in range(K_PATHS):
+            path_utils: List[float] = []
+            for dst in self.topology.access_nodes:
+                paths = self.topology.kpath_cache.get((host, dst), [])
+                if k < len(paths) and len(paths[k]) >= 2:
+                    nh = paths[k][1]
+                    path_utils.append(self.topology.get_util(host, nh))
+            state.append(float(np.mean(path_utils)) if path_utils else 0.0)
+
+        # guarantee exactly state_dims elements
         total = self.state_dims
         state = state[:total]
         while len(state) < total:
             state.append(0.0)
         return np.array(state, dtype=np.float32)
+
+    def get_central_state(self, trainable_hosts: List[str]) -> np.ndarray:
+        """Global state vector <B, D> for centralised critics.
+
+        B ∈ [0,1]^|E|  — normalised available bandwidth on every graph edge.
+        D ∈ [0,1]^|A|  — modal destination index (normalised) per trainable agent.
+
+        Total dims = |E| + len(trainable_hosts) = 106 + 32 = 138 for the
+        service_provider_real topology with degree_ge_3 filter.
+        """
+        # B: available bandwidth on all edges (ordered by graph.edges())
+        b = np.array(
+            [self.topology.avail_bw(u, v) for u, v in self.topology.graph.edges()],
+            dtype=np.float32,
+        )
+
+        # D: modal destination per trainable agent (which destination is most
+        # common in each agent's queue), normalised by n_destinations - 1.
+        access_to_idx: Dict[str, int] = {
+            a: i for i, a in enumerate(self.topology.access_nodes)
+        }
+        n_dest = len(self.topology.access_nodes)
+        d: List[float] = []
+        for host in trainable_hosts:
+            q = self.packet_queue[host]
+            if q:
+                counts: Dict[str, int] = {}
+                for pkt in q:
+                    dst = pkt['dst']
+                    counts[dst] = counts.get(dst, 0) + 1
+                modal = max(counts, key=counts.get)
+                idx = access_to_idx.get(modal, 0)
+            else:
+                idx = 0
+            d.append(float(idx) / max(1, n_dest - 1))
+
+        return np.concatenate([b, np.array(d, dtype=np.float32)])
 
     def step(self, actions: List[np.ndarray],
              obs_indices=None) -> Tuple[List[np.ndarray], List[float], Dict]:
@@ -704,37 +749,38 @@ class NetworkEngine:
             _agent_active.append(True)
 
         # ---------------------------------------------------------------
-        # Global end-to-end delivery reward
+        # Per-agent reward: f(min_adjacent_bw) + local drop penalty
         # ---------------------------------------------------------------
-        # All active agents share the same global delivery rate signal so that
-        # intermediate nodes receive the same credit as the last-hop agent.
-        # This solves the credit-assignment problem of the old per-agent
-        # delivery_weight which only fired for the agent one hop from the
-        # destination.
-        # Drop penalty remains local: each agent is penalised only for drops
-        # it caused (bandwidth overflow or TTL expiry on its own queue).
-        delivery_weight      = float(self.reward_cfg.get('delivery_weight', 1.0))
-        drop_penalty         = float(self.reward_cfg.get('drop_penalty', 0.0))
-        var_util_penalty     = float(self.reward_cfg.get('var_util_penalty', 0.0))
-        global_delivery_rate = step_delivered / max(1, step_sent)
+        # f(min_bw) is a piecewise function rewarding uncongested links and
+        # penalising congestion.  Each agent receives a signal derived from
+        # its *own* link state, fixing the broken credit-assignment of the
+        # previous global_delivery_rate which was identical for all 32 agents.
+        # BETA (=2.0) is defined at the top of this module.
+        drop_penalty = float(self.reward_cfg.get('drop_penalty', BETA))
 
         for host, stats in zip(hosts, _agent_drop_stats):
             if stats is None:
                 rewards.append(0.0)
             else:
                 drop_count, total = stats
-                drop_term = drop_penalty * drop_count / max(1, total)
-                if var_util_penalty > 0.0:
-                    adj_utils = [self.topology.get_util(host, n)
-                                 for n in self.topology.get_neighbors(host)]
-                    var_term = float(np.var(adj_utils)) if len(adj_utils) > 1 else 0.0
+                # f(min available BW across adjacent links)
+                adj_bws = [self.topology.avail_bw(host, nb)
+                           for nb in self.topology.get_neighbors(host)]
+                min_bw = float(min(adj_bws)) if adj_bws else 0.0
+                if min_bw >= 0.4:
+                    bw_reward = 1.0
+                elif min_bw >= 0.2:
+                    bw_reward = 0.2
+                elif min_bw >= 0.05:
+                    bw_reward = -1.0
                 else:
-                    var_term = 0.0
-                r = delivery_weight * global_delivery_rate - drop_term - var_util_penalty * var_term
+                    bw_reward = -5.0
+                # Per-agent drop penalty (local — not global delivery rate)
+                drop_term = drop_penalty * drop_count / max(1, total)
+                r = bw_reward - drop_term
                 rewards.append(r)
-                reward_components['fwd_success_term'] += delivery_weight * global_delivery_rate
+                reward_components['fwd_success_term'] += bw_reward
                 reward_components['chosen_util_term'] += drop_term
-                reward_components['var_util_term']    += var_util_penalty * var_term
 
         # bookkeeping
         self.topology.decay_utils()
@@ -775,6 +821,7 @@ class NetworkEngine:
             ]
         else:
             next_states = [self.get_state(h) for h in hosts]
+        util_var = float(np.var(util_values)) if util_values else 0.0
         info = {
             'packets_sent':      step_sent,
             'packets_delivered': step_delivered,
@@ -782,6 +829,7 @@ class NetworkEngine:
             'delivery_rate':     step_delivered / max(1, step_sent) * 100,
             'packet_loss_rate':  step_dropped / max(1, step_sent) * 100,
             'network_utilization': mean_util,
+            'util_variance':     util_var,
             'max_link_utilization': max_util,
             'backlog_packets': current_backlog,
             'reward_components': {

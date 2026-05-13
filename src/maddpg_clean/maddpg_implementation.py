@@ -435,7 +435,8 @@ class ReplayBuffer:
     """Centralised experience replay buffer supporting heterogeneous obs dims."""
 
     def __init__(self, max_size: int, actor_dims: List[int],
-                 n_actions: int, n_agents: int):
+                 n_actions: int, n_agents: int,
+                 central_state_dims: Optional[int] = None):
         self.mem_size = max_size
         self.mem_cntr = 0
         self.n_agents = n_agents
@@ -451,7 +452,20 @@ class ReplayBuffer:
         self.reward_memory = np.zeros((max_size, n_agents))
         self.terminal_memory = np.zeros((max_size, n_agents), dtype=bool)
 
-    def store_transition(self, obs, action, reward, obs_, done):
+        # Optional central state for CC critics (<B, D> vector)
+        if central_state_dims is not None:
+            self.central_state_memory = np.zeros(
+                (max_size, central_state_dims), dtype=np.float32
+            )
+            self.new_central_state_memory = np.zeros(
+                (max_size, central_state_dims), dtype=np.float32
+            )
+        else:
+            self.central_state_memory = None
+            self.new_central_state_memory = None
+
+    def store_transition(self, obs, action, reward, obs_, done,
+                         central_state=None, new_central_state=None):
         idx = self.mem_cntr % self.mem_size
         for i in range(self.n_agents):
             self.state_memory[i][idx] = obs[i]
@@ -459,6 +473,9 @@ class ReplayBuffer:
         self.action_memory[idx] = action
         self.reward_memory[idx] = reward
         self.terminal_memory[idx] = done
+        if self.central_state_memory is not None and central_state is not None:
+            self.central_state_memory[idx] = central_state
+            self.new_central_state_memory[idx] = new_central_state
         self.mem_cntr += 1
 
     def sample_buffer(self, batch_size: int):
@@ -471,7 +488,15 @@ class ReplayBuffer:
         rewards = self.reward_memory[batch]
         terminal = self.terminal_memory[batch]
 
-        return states, actions, rewards, states_, terminal
+        central_states = (
+            self.central_state_memory[batch]
+            if self.central_state_memory is not None else None
+        )
+        new_central_states = (
+            self.new_central_state_memory[batch]
+            if self.new_central_state_memory is not None else None
+        )
+        return states, actions, rewards, states_, terminal, central_states, new_central_states
 
     def ready(self, batch_size: int) -> bool:
         return self.mem_cntr >= batch_size
@@ -489,7 +514,8 @@ class MADDPG:
                  critic_target_mode: str = 'block_argmax_onehot',
                  actor_mode: str = 'soft',
                  adjacency: Optional[List[List[int]]] = None,
-                 gnn_adjacency: Optional[List[List[int]]] = None):
+                 gnn_adjacency: Optional[List[List[int]]] = None,
+                 central_state_dims: Optional[int] = None):
 
         self.n_agents = n_agents
         self.n_actions = n_actions
@@ -552,6 +578,7 @@ class MADDPG:
             actor_dims=actor_dims_list,
             n_actions=n_actions,
             n_agents=n_agents,
+            central_state_dims=central_state_dims,
         )
         # Mixed-precision scaler (no-op on CPU, ~1.5-2x speedup on GPU)
         self.scaler = GradScaler(enabled=torch.cuda.is_available())
@@ -629,7 +656,8 @@ class MADDPG:
         if deterministic_mask is None:
             deterministic_mask = [False] * self.n_agents
 
-        states_list, actions, rewards, states_next_list, dones = \
+        states_list, actions, rewards, states_next_list, dones, \
+            central_states_np, new_central_states_np = \
             self.memory.sample_buffer(batch_size)
 
         device = self.agents[0].actor.device
@@ -660,11 +688,22 @@ class MADDPG:
             states_next_t_gnn = states_next_t
 
         if self.critic_type == 'central_critic':
-            all_states = torch.cat(
-                [s.detach() for s in states_t_gnn], dim=1
-            )           # [B, sum_obs_dims]
-            all_states_next = torch.cat(states_next_t_gnn, dim=1)
-            all_actions_flat = actions_t.view(batch_size, -1) # [B, n_agents*n_actions]
+            if central_states_np is not None:
+                # Use compact <B, D> central state (106+32=138 dims) instead of
+                # concatenating all local obs (32×36=1152 dims).
+                all_states = torch.tensor(
+                    central_states_np, dtype=torch.float
+                ).to(device)                                     # [B, central_state_dims]
+                all_states_next = torch.tensor(
+                    new_central_states_np, dtype=torch.float
+                ).to(device)
+            else:
+                # Fallback: concatenate local states (used if central state not stored)
+                all_states = torch.cat(
+                    [s.detach() for s in states_t_gnn], dim=1
+                )
+                all_states_next = torch.cat(states_next_t_gnn, dim=1)
+            all_actions_flat = actions_t.view(batch_size, -1)   # [B, n_agents*n_actions]
 
         for i, agent in enumerate(self.agents):
             if deterministic_mask[i]:
@@ -805,7 +844,10 @@ class MADDPG:
                     actor_loss = -agent.critic(states_t_gnn[i].detach(), predicted_actions).mean()
     
             agent.actor_optimizer.zero_grad()
-            self.scaler.scale(actor_loss).backward()
+            # retain_graph keeps GNN intermediates alive so all 32 agents can
+            # accumulate gradients through the single shared GNN forward pass.
+            _retain = (self.gnn_processor is not None) and (i < len(self.agents) - 1)
+            self.scaler.scale(actor_loss).backward(retain_graph=_retain)
             self.scaler.step(agent.actor_optimizer)
             logger.debug("Agent %d actor loss:  %.6f", i, actor_loss.item())
 
@@ -820,8 +862,10 @@ class MADDPG:
         # agent — calling it 65x per learn() causes premature scale reduction.
         self.scaler.update()
 
-    def store_transition(self, obs, action, reward, obs_, done):
-        self.memory.store_transition(obs, action, reward, obs_, done)
+    def store_transition(self, obs, action, reward, obs_, done,
+                         central_state=None, new_central_state=None):
+        self.memory.store_transition(obs, action, reward, obs_, done,
+                                     central_state, new_central_state)
 
     def save_checkpoint(self):
         for agent in self.agents:
