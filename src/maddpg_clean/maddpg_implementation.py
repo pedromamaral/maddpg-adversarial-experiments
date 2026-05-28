@@ -159,10 +159,23 @@ class GNNProcessor(nn.Module):
     """
 
     def __init__(self, obs_dim: int, hidden_dim: int, n_agents: int,
-                 adjacency: Optional[List[List[int]]] = None):
+                 adjacency: Optional[List[List[int]]] = None,
+                 n_relay_nodes: int = 0):
+        """Initialise GNN encoder.
+
+        When ``n_relay_nodes > 0`` (Option-B / full-graph mode), the GNN
+        processes ``n_agents + n_relay_nodes`` nodes.  Relay nodes (transit
+        switches) are injected with zero feature vectors so they act purely
+        as message-passing intermediaries — their edges propagate agent
+        observations two hops through the physical topology, letting each
+        access-node implicitly observe congestion at peer nodes that share
+        the same upstream switch.
+        """
         super().__init__()
         self.obs_dim = obs_dim
         self.n_agents = n_agents
+        self.n_relay_nodes = n_relay_nodes
+        self._n_total = n_agents + n_relay_nodes
 
         try:
             from torch_geometric.nn import GraphConv
@@ -175,7 +188,9 @@ class GNNProcessor(nn.Module):
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        # Build edge_index from the per-agent adjacency list
+        # Build edge_index from the adjacency list.
+        # When n_relay_nodes > 0, adjacency covers all _n_total nodes;
+        # relay node indices start at n_agents.
         if adjacency is not None:
             src, dst = [], []
             for i, neighbours in enumerate(adjacency):
@@ -185,10 +200,10 @@ class GNNProcessor(nn.Module):
             if src:
                 ei = torch.tensor([src, dst], dtype=torch.long)
             else:
-                # No edges — use self-loops so GraphConv doesn't crash
-                ei = torch.stack([torch.arange(n_agents), torch.arange(n_agents)])
+                # No edges — use self-loops over all nodes so GraphConv doesn't crash
+                ei = torch.stack([torch.arange(self._n_total), torch.arange(self._n_total)])
         else:
-            # Fully-connected fallback: every agent attends to every other
+            # Fully-connected fallback among agents only (no relay nodes)
             pairs = [(a, b) for a in range(n_agents) for b in range(n_agents) if a != b]
             src, dst = zip(*pairs) if pairs else ([], [])
             ei = torch.tensor([list(src), list(dst)], dtype=torch.long)
@@ -208,13 +223,24 @@ class GNNProcessor(nn.Module):
     # ── Inference (no-grad, numpy in/out) ────────────────────────────────────
 
     def process_observations(self, observations: List[np.ndarray]) -> List[np.ndarray]:
-        """Encode a list of per-agent obs arrays.  Used during rollout."""
+        """Encode a list of per-agent obs arrays.  Used during rollout.
+
+        Relay nodes receive zero feature vectors and participate only as
+        message-passing intermediaries.  Only the first ``n_agents`` rows
+        of the GNN output are returned.
+        """
         if not self.available:
             return observations
-        x = torch.tensor(np.stack(observations), dtype=torch.float).to(self.device)
+        x_agents = np.stack(observations)  # [n_agents, obs_dim]
+        if self.n_relay_nodes > 0:
+            relay_zeros = np.zeros((self.n_relay_nodes, self.obs_dim), dtype=np.float32)
+            x_np = np.concatenate([x_agents, relay_zeros], axis=0)  # [n_total, obs_dim]
+        else:
+            x_np = x_agents
+        x = torch.tensor(x_np, dtype=torch.float).to(self.device)
         with torch.no_grad():
-            out = self(x, self.edge_index)
-        return [out[i].cpu().numpy() for i in range(len(observations))]
+            out = self(x, self.edge_index)  # [n_total, obs_dim]
+        return [out[i].cpu().numpy() for i in range(self.n_agents)]
 
     # ── Training (differentiable) ─────────────────────────────────────────────
 
@@ -225,22 +251,36 @@ class GNNProcessor(nn.Module):
         back through the GNN parameters.  Uses the standard PyG batch trick:
         the single-graph edge_index is tiled B times with per-sample node
         offsets so message-passing respects mini-batch boundaries.
+
+        Relay nodes receive zero features per sample and act only as
+        message-passing intermediaries; only agent-node outputs are returned.
         """
         if not self.available:
             return states_t
         B = states_t[0].shape[0]
-        n = len(states_t)
-        # [B*n, obs_dim]
-        x = torch.stack(states_t, dim=1).reshape(B * n, self.obs_dim)
-        # Tile edge_index B times, offsetting node ids by n per sample
+        n = len(states_t)          # == n_agents
+        n_total = self._n_total    # n_agents + n_relay_nodes
+        # Stack agent states: [B, n_agents, obs_dim]
+        x_agents = torch.stack(states_t, dim=1)
+        if self.n_relay_nodes > 0:
+            relay_zeros = torch.zeros(
+                B, self.n_relay_nodes, self.obs_dim,
+                dtype=x_agents.dtype, device=x_agents.device,
+            )
+            x_full = torch.cat([x_agents, relay_zeros], dim=1)  # [B, n_total, obs_dim]
+        else:
+            x_full = x_agents
+        # [B * n_total, obs_dim]
+        x = x_full.reshape(B * n_total, self.obs_dim)
+        # Tile edge_index B times, offsetting node ids by n_total per sample
         E = self.edge_index.shape[1]
-        offsets = torch.arange(B, device=self.device).repeat_interleave(E) * n
+        offsets = torch.arange(B, device=self.device).repeat_interleave(E) * n_total
         ei_src = self.edge_index[0].repeat(B) + offsets
         ei_dst = self.edge_index[1].repeat(B) + offsets
         batched_ei = torch.stack([ei_src, ei_dst])
-        out = self(x, batched_ei)               # [B*n, obs_dim]
-        out = out.reshape(B, n, self.obs_dim)   # [B, n, obs_dim]
-        return [out[:, i, :] for i in range(n)]
+        out = self(x, batched_ei)                    # [B * n_total, obs_dim]
+        out = out.reshape(B, n_total, self.obs_dim)  # [B, n_total, obs_dim]
+        return [out[:, i, :] for i in range(n)]      # only agent slices
 
     # ── Serialisation (for worker-process IPC) ───────────────────────────────
 
@@ -515,6 +555,7 @@ class MADDPG:
                  actor_mode: str = 'soft',
                  adjacency: Optional[List[List[int]]] = None,
                  gnn_adjacency: Optional[List[List[int]]] = None,
+                 gnn_n_relay: int = 0,
                  central_state_dims: Optional[int] = None):
 
         self.n_agents = n_agents
@@ -567,6 +608,7 @@ class MADDPG:
             self.gnn_processor = GNNProcessor(
                 obs_dim=obs_dim, hidden_dim=64,
                 n_agents=n_agents, adjacency=gnn_adjacency,
+                n_relay_nodes=gnn_n_relay,
             )
             if self.gnn_processor.available:
                 self.gnn_optimizer = optim.Adam(
@@ -931,6 +973,7 @@ class MADDPG:
             self.gnn_processor.obs_dim,
             self.gnn_processor.n_agents,
             self.gnn_adjacency,
+            self.gnn_processor.n_relay_nodes,
             self.gnn_processor.get_weights_cpu(),
         )
 

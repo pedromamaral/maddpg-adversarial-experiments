@@ -18,7 +18,7 @@
       "enabled": true,
       "epsilon_start": 1.0,
       "epsilon_end": 0.05,
-      "epsilon_decay_epochs": 150,
+      "epsilon_decay_epochs": 50,
       "decision_block_size": 3,
       "mode": "epsilon_greedy"
     },
@@ -36,7 +36,7 @@
       "validation_interval_epochs": 10,
       "validation_episodes": 5,
       "min_improvement": 0.001,
-      "warmup_epochs": 30
+      "warmup_epochs": 60
     },
     "early_stopping": {
       "enabled": true,
@@ -46,6 +46,15 @@
       "min_epochs": 80
     },
     "offered_load_factor": 0.80
+  },
+  "traffic": {
+    "mode": "flow",
+    "packet_size": 0.03,
+    "flow_packet_size": 0.03,
+    "flow_hold_steps": 1,
+    "flow_duration_steps": 12,
+    "flow_count": 21,
+    "episode_steps": 128
   },
   "paper1_eval": {
     "evaluation_episodes": 30,
@@ -76,7 +85,7 @@
     "min_end_to_end_pdr_pct": 85.0
   },
   "reward": {
-    "_comment": "Local per-agent reward uses bw_reward + drop_penalty (LC variants). CC variants override this with a global team reward = delivery_weight * delivery_rate - mean_util_weight * mean_util - var_util_penalty * util_variance, enabling architecturally correct CTDE credit assignment.",
+    "_comment": "All variants now use the same shared flow reward: delivery_weight * delivery_rate - drop_penalty * packet_loss - mean_util_weight * mean_util - var_util_penalty * util_variance - backlog_penalty * backlog. LC and CC differ only in critic/encoder architecture, not objective.",
     "delivery_weight": 1.0,
     "drop_penalty": 1.0,
     "mean_util_weight": 0.5,
@@ -196,6 +205,21 @@
       "critic_domain": "local_critic",
       "neural_network": "duelling_q_network",
       "use_gnn": true,
+      "actor_dims": 37,
+      "critic_dims": 37,
+      "n_agents": 32,
+      "n_actions": 63,
+      "fc1": 256,
+      "fc2": 128,
+      "alpha": 0.0003,
+      "beta": 0.0003
+    },
+    {
+      "_comment": "LC baseline: local critic with simple Q-network (no duelling). Establishes that LC > CC independent of network architecture.",
+      "name": "LC-Simple",
+      "critic_domain": "local_critic",
+      "neural_network": "simple_q_network",
+      "use_gnn": false,
       "actor_dims": 37,
       "critic_dims": 37,
       "n_agents": 32,

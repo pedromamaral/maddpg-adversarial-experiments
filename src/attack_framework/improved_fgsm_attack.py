@@ -101,11 +101,17 @@ class FGSMAttackFramework:
                             [adv_obs,
                              torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=self.device)]
                         )
-                    rows = list(range(n_agents_gnn))
-                    rows[agent_index % n_agents_gnn] = -1  # sentinel
                     batch = dummy.clone()
                     batch[agent_index % n_agents_gnn] = adv_obs
-                    out = gnn_proc(batch, gnn_proc.edge_index)  # [n_agents, obs_dim]
+                    # Full-graph mode: pad relay (switch) nodes with zeros so the
+                    # edge_index referencing all n_total nodes doesn't crash.
+                    n_relay = getattr(gnn_proc, 'n_relay_nodes', 0)
+                    if n_relay > 0:
+                        relay_pad = torch.zeros(n_relay, obs_dim_gnn, device=self.device)
+                        batch_full = torch.cat([batch, relay_pad], dim=0)
+                    else:
+                        batch_full = batch
+                    out = gnn_proc(batch_full, gnn_proc.edge_index)  # [n_total, obs_dim]
                     current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
                 action_probs = agent.actor(current_state)
 
@@ -168,7 +174,7 @@ class FGSMAttackFramework:
             # Return zero loss that is still connected to the graph to avoid grad errors
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
 
-        num_actions = action_probs.shape[-1]  # = 3 per paper (K paths)
+        num_actions = action_probs.shape[-1]  # n_dest × K_PATHS (e.g. 63 = 21 × 3)
         bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
 
     # Build per-action congestion weight by cycling over neighbor bandwidths.
@@ -400,15 +406,19 @@ def _execute_actions(
 ) -> Tuple[List, List[float], Dict]:
     """Execute joint actions in the real NetworkEngine."""
     all_hosts = self.network_engine.get_all_hosts()
-    num_actions = 3  # K=3 paths per paper
+    n_actions = self.network_engine.n_actions  # adapts to per-destination action space
 
-    # Convert integer action indices → one-hot probability arrays
-    # NetworkEngine.step() expects List[np.ndarray] of shape (num_actions,)
+    # Convert actions → arrays for NetworkEngine.step().
+    # choose_action() already returns np.ndarray probability vectors; integer
+    # indices (legacy callers) are converted to one-hot.
     action_arrays = []
     for action_idx in actions:
-        one_hot = np.zeros(num_actions, dtype=np.float32)
-        one_hot[int(action_idx) % num_actions] = 1.0
-        action_arrays.append(one_hot)
+        if isinstance(action_idx, np.ndarray):
+            action_arrays.append(action_idx.astype(np.float32))
+        else:
+            one_hot = np.zeros(n_actions, dtype=np.float32)
+            one_hot[int(action_idx) % n_actions] = 1.0
+            action_arrays.append(one_hot)
 
     next_states, rewards, info = self.network_engine.step(action_arrays)
 
@@ -691,6 +701,7 @@ def generate_mock_results() -> Dict:
     variants = [
         'CC-Simple', 'CC-Duelling', 'LC-Duelling',
         'CC-Simple-GNN', 'CC-Duelling-GNN', 'LC-Duelling-GNN',
+        'LC-Simple',
     ]
     epsilon_values = [0.01, 0.05, 0.1, 0.15, 0.2]
     rng = np.random.default_rng(42)

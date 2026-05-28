@@ -131,10 +131,10 @@ def plot_phase2_evaluation(results_dict: Dict,
         warnings.warn("Phase 2 results are empty; skipping Phase 2 plots.")
         return
 
-    variants = sorted(name for name in results_dict.keys() if not str(name).startswith("OSPF"))
-    baselines = sorted(name for name in results_dict.keys() if str(name).startswith("OSPF"))
-    if "OSPF" in results_dict and "OSPF" not in baselines:
-        baselines.append("OSPF")
+    variants = sorted(name for name in results_dict.keys() if not str(name).startswith("SP"))
+    baselines = sorted(name for name in results_dict.keys() if str(name).startswith("SP"))
+    if "SP" in results_dict and "SP" not in baselines:
+        baselines.append("SP")
     if not variants:
         return
 

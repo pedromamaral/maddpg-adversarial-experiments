@@ -31,5 +31,5 @@ rsync -av \
 
 echo ""
 echo "Done. You can now run:"
-echo "  bash run_maddpg_eval.sh   # Phase 2 — MADDPG evaluation"
-echo "  bash run_fgsm_eval.sh     # Phase 3 — FGSM adversarial evaluation"
+echo "  ./run_phase.sh paper1     # Phase 2 — clean evaluation"
+echo "  ./run_phase.sh paper2     # Phase 3 — FGSM adversarial evaluation"

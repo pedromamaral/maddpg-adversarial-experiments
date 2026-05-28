@@ -8,7 +8,7 @@ baseline evaluator; it plays no role during RL training.
 
 import numpy as np
 import networkx as nx
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, List, Tuple, Optional
 import random
 import itertools
@@ -25,6 +25,7 @@ CONGESTION_THRESHOLD = 0.7  # utilisation below this is not penalised
 PACKET_SIZE    = 0.03   # normalised bandwidth cost per packet per hop
 TTL_INIT       = 15     # max hops before drop (diameter ≈ 6, so 2× headroom)
 UTIL_DECAY     = 0.95   # per-step link-utilisation decay
+MAX_NODE_QUEUE_DEPTH = 100  # per-node packet buffer cap; overflow → true drop
 INIT_PACKETS   = 60     # packets injected at episode reset
 INJECT_EVERY   = 10     # inject N_INJECT_BATCH new packets every N steps
 N_INJECT_BATCH = 20
@@ -32,6 +33,7 @@ DEST_BUCKETS = ("access", "dist", "core")
 N_DEST_BUCKETS = len(DEST_BUCKETS)
 K_PATHS = 3          # K shortest paths per access-destination for per-packet routing
 SHAPING_WEIGHT = 0.4  # potential-based hop-progress reward shaping weight
+DEFAULT_FLOW_DURATION_STEPS = 12
 
 REAL_SERVICE_PROVIDER_TOPOLOGY = """BS1 S8 1000 1 0
 BS2 S13 1000 1 0
@@ -164,7 +166,7 @@ class NetworkTopology:
         self.graph = self._build()
         self.hosts = list(self.graph.nodes())
 
-        # Shortest-path cache — used by OSPF baseline ONLY (not by RL agents).
+        # Shortest-path cache — used by the Shortest Path baseline ONLY (not by RL agents).
         self.path_cache: Dict[Tuple, List] = {}
         for src, dst in itertools.permutations(self.hosts, 2):
             try:
@@ -174,21 +176,37 @@ class NetworkTopology:
 
         # K-shortest-paths cache — used by MADDPG per-destination routing.
         # Only (src, access_dst) pairs: core/dist nodes are not traffic endpoints.
-        # Paths are deduplicated by first hop to maximise action diversity.
+        # For degree-1 nodes (access endpoints with one uplink) all K paths share
+        # the same first hop, so dedup at the second hop (index=2) to give agents
+        # K genuinely different end-to-end routes.
         self.kpath_cache: Dict[Tuple[str, str], List[List[str]]] = {}
         for src in self.hosts:
+            _src_degree = self.graph.degree(src)
+            _dedup_idx = 2 if _src_degree == 1 else 1
             for dst in self.access_nodes:
                 if src != dst:
                     self.kpath_cache[(src, dst)] = self._build_distinct_kpaths(
-                        self.graph, src, dst, K_PATHS
+                        self.graph, src, dst, K_PATHS, dedup_hop_idx=_dedup_idx
                     )
 
-    @staticmethod
-    def _build_distinct_kpaths(graph, src: str, dst: str, k: int) -> List[List[str]]:
-        """Return up to k paths with distinct first hops, shortest first.
+        # Flow-mode fixed-duration reservations (disabled unless configured).
+        self._flow_hold_steps = 0
+        self._flow_reservation_buckets: Dict[Tuple[str, str], deque] = {}
+        self._flow_reserved: Dict[Tuple[str, str], float] = {}
 
-        Oversamples by 4× to find distinct first-hop alternatives; pads
-        with the shortest path if fewer than k distinct first hops exist.
+    @staticmethod
+    def _build_distinct_kpaths(graph, src: str, dst: str, k: int,
+                               dedup_hop_idx: int = 1) -> List[List[str]]:
+        """Return up to k paths with distinct hops at dedup_hop_idx, shortest first.
+
+        dedup_hop_idx=1 (default): deduplicate by first hop — best for nodes with
+          degree ≥ 2 where paths fan out immediately.
+        dedup_hop_idx=2: deduplicate by second hop — use for degree-1 access nodes
+          whose single uplink means all paths share the same first hop but diverge
+          at the adjacent switch, giving K genuinely different end-to-end routes.
+
+        Oversamples by 4× to find alternatives; pads with the shortest path if
+        fewer than k distinct hops exist at the chosen dedup position.
         """
         try:
             seen_fh: set = set()
@@ -196,7 +214,7 @@ class NetworkTopology:
             for p in itertools.islice(
                 nx.shortest_simple_paths(graph, src, dst), k * 4
             ):
-                fh = p[1] if len(p) >= 2 else None
+                fh = p[dedup_hop_idx] if len(p) > dedup_hop_idx else None
                 if fh is not None and fh not in seen_fh:
                     seen_fh.add(fh)
                     distinct.append(p)
@@ -352,7 +370,7 @@ class NetworkTopology:
 
     def refresh_path_cache(self):
         """Recompute shortest-path cache after topology changes (e.g. link failures).
-        Called by NetworkEngine._inject_failures so the OSPF baseline re-routes
+        Called by NetworkEngine._inject_failures so the Shortest Path baseline re-routes
         correctly rather than following stale pre-failure paths.
         """
         self.path_cache.clear()
@@ -398,6 +416,52 @@ class NetworkTopology:
         for u, v in self.graph.edges():
             self.set_util(u, v, self.get_util(u, v) * UTIL_DECAY)
 
+    @staticmethod
+    def _edge_key(u: str, v: str) -> Tuple[str, str]:
+        return (u, v) if u <= v else (v, u)
+
+    def configure_flow_reservations(self, hold_steps: int):
+        self._flow_hold_steps = max(1, int(hold_steps))
+        self._flow_reservation_buckets.clear()
+        self._flow_reserved.clear()
+        for u, v in self.graph.edges():
+            key = self._edge_key(u, v)
+            self._flow_reservation_buckets[key] = deque([0.0] * self._flow_hold_steps)
+            self._flow_reserved[key] = 0.0
+
+    def clear_flow_reservations(self):
+        for key, buckets in self._flow_reservation_buckets.items():
+            self._flow_reservation_buckets[key] = deque([0.0] * len(buckets))
+            self._flow_reserved[key] = 0.0
+
+    def add_flow_reservation(self, u: str, v: str, amount: float):
+        if self._flow_hold_steps <= 0 or not self.graph.has_edge(u, v):
+            return
+        key = self._edge_key(u, v)
+        if key not in self._flow_reservation_buckets:
+            return
+        val = max(0.0, float(amount))
+        self._flow_reserved[key] = self._flow_reserved.get(key, 0.0) + val
+        self._flow_reservation_buckets[key][-1] += val
+
+    def get_flow_reserved(self, u: str, v: str) -> float:
+        key = self._edge_key(u, v)
+        return self._flow_reserved.get(key, 0.0)
+
+    def decay_flow_reservations(self):
+        if self._flow_hold_steps <= 0:
+            return
+        for key, buckets in self._flow_reservation_buckets.items():
+            expired = buckets.popleft()
+            self._flow_reserved[key] = max(0.0, self._flow_reserved.get(key, 0.0) - expired)
+            buckets.append(0.0)
+
+    def sync_utils_from_flow_reservations(self):
+        if self._flow_hold_steps <= 0:
+            return
+        for u, v in self.graph.edges():
+            self.set_util(u, v, self.get_flow_reserved(u, v))
+
 
 class NetworkEngine:
     """
@@ -411,7 +475,8 @@ class NetworkEngine:
     def __init__(self, topology_type: str = "service_provider",
                  n_nodes: int = 65, seed: int = 42,
                  reward_config: Optional[Dict[str, float]] = None,
-                 topology_config: Optional[Dict] = None):
+                 topology_config: Optional[Dict] = None,
+                 traffic_config: Optional[Dict] = None):
         self.topology_type = topology_type
         self.n_nodes = n_nodes
         self.topo_seed = seed
@@ -426,6 +491,21 @@ class NetworkEngine:
         self.offered_load_factor = 1.0
         self.packet_queue: Dict[str, List[Dict]] = defaultdict(list)
         self._episode_stats = self._blank_stats()
+        traffic_cfg = traffic_config or {}
+        self.traffic_mode = str(traffic_cfg.get('mode', 'packet')).lower()
+        if self.traffic_mode not in ('packet', 'flow'):
+            self.traffic_mode = 'packet'
+        self.packet_size = float(traffic_cfg.get('packet_size', PACKET_SIZE))
+        self.flow_packet_size = float(traffic_cfg.get('flow_packet_size', self.packet_size))
+        self.flow_hold_steps = int(max(1, traffic_cfg.get('flow_hold_steps', 12)))
+        self.flow_duration_steps = int(max(1, traffic_cfg.get('flow_duration_steps', DEFAULT_FLOW_DURATION_STEPS)))
+        self.flow_count_base = int(max(1, traffic_cfg.get('flow_count', len(self.topology.access_nodes))))
+        self.episode_steps = int(max(1, traffic_cfg.get('episode_steps', 128)))
+        self._flow_schedule: Dict[int, List[Dict]] = defaultdict(list)
+        self._active_flows: List[Dict] = []
+        self._flow_seq = 0
+        if self.traffic_mode == 'flow':
+            self.topology.configure_flow_reservations(self.flow_hold_steps)
         base_reward = {
             'delivery_weight': ALPHA,
             'max_util_penalty': BETA,
@@ -440,7 +520,9 @@ class NetworkEngine:
         # Expose topology max degree so calling code can read actor_dims once.
         self.max_neighbors: int = self.topology.max_degree
         self.n_destinations: int = len(self.topology.access_nodes)
-        self.n_actions: int = K_PATHS  # single path-index choice ∈ {0,…,K-1} per timestep
+        self.n_actions: int = K_PATHS * self.n_destinations  # per-destination action matrix (n_dest × K_PATHS)
+        # Per-destination index: maps access node name → row index in the action matrix
+        self._access_to_idx: Dict[str, int] = {n: i for i, n in enumerate(self.topology.access_nodes)}
 
         # Node-tier lookup — used by Paper-2 attack surface analysis
         self._tier: Dict[str, str] = {}
@@ -457,17 +539,13 @@ class NetworkEngine:
         # is only called for the trainable subset when obs_indices is supplied.
         self._empty_state: np.ndarray = np.zeros(self.state_dims, dtype=np.float32)
 
-        # Indices (into topology.hosts) of pure-sink endpoint nodes — these nodes
-        # only receive traffic and never forward; skip the forwarding loop for them.
-        _sink_set = set(self.topology.access_nodes)
-        self._sink_host_indices: set = {
-            i for i, h in enumerate(self.topology.hosts) if h in _sink_set
-        }
-        # Non-sink hosts that can forward packets — precomputed so _inject_packets
-        # never recomputes this list on every call.
-        self._non_sink_hosts: list = [
-            h for h in self.topology.hosts if h not in _sink_set
-        ]
+        # Access nodes are now PE (ingress) agents: they inject and forward their
+        # own traffic.  Delivery is counted at the last transit switch when
+        # chosen == pkt['dst'], so access nodes never receive transit packets in
+        # their queues — no sink exclusion is needed.
+        self._sink_host_indices: set = set()
+        # Kept for API compatibility; unused for injection (access_nodes used directly).
+        self._non_sink_hosts: list = list(self.topology.hosts)
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -481,6 +559,8 @@ class NetworkEngine:
           'all'           – all topology nodes (default, legacy behaviour)
           'switches_only' – only switch nodes (S-prefixed)
           'degree_ge_3'   – only switches with degree ≥ 3 (true branching points)
+          'access_nodes'  – only edge/PE endpoints (BS*, MECS*, CS*); PE-router model
+                            where only ingress nodes make path decisions
         """
         all_hosts = self.topology.hosts
         if filter_mode == 'all':
@@ -491,6 +571,10 @@ class NetworkEngine:
         if filter_mode == 'degree_ge_3':
             return [h for h in switch_hosts
                     if len(self.topology.get_neighbors(h)) >= 3]
+        if filter_mode == 'access_nodes':
+            # PE-router model: only traffic ingress/egress endpoints act as agents.
+            # Transit (core/dist) switches forward packets without RL decisions.
+            return list(self.topology.access_nodes)
         raise ValueError(f"Unknown trainable_host_filter: {filter_mode!r}")
 
     def get_number_neighbors(self, host: str) -> int:
@@ -511,34 +595,51 @@ class NetworkEngine:
 
     def reset(self):
         self.topology.reset_utils()
+        if self.traffic_mode == 'flow':
+            self.topology.clear_flow_reservations()
         self.packet_queue = defaultdict(list)
         self.time_step = 0
         self.offered_load_factor = 1.0
         self._step_mean_util = 0.0
         self._episode_stats = self._blank_stats()
-        self._inject_packets(int(max(1, round(INIT_PACKETS * self.offered_load_factor))))
+        self._flow_schedule = defaultdict(list)
+        self._active_flows = []
+        self._flow_seq = 0
+        if self.traffic_mode == 'flow':
+            self._build_flow_schedule()
+        else:
+            self._inject_packets(int(max(1, round(INIT_PACKETS * self.offered_load_factor))))
 
     def reset_with_load(self, offered_load_factor: float = 1.0):
         """Reset environment state with a configurable offered-load multiplier."""
         self.topology.reset_utils()
+        if self.traffic_mode == 'flow':
+            self.topology.clear_flow_reservations()
         self.packet_queue = defaultdict(list)
         self.time_step = 0
         self.offered_load_factor = float(max(0.1, offered_load_factor))
         self._step_mean_util = 0.0
         self._episode_stats = self._blank_stats()
-        self._inject_packets(int(max(1, round(INIT_PACKETS * self.offered_load_factor))))
+        self._flow_schedule = defaultdict(list)
+        self._active_flows = []
+        self._flow_seq = 0
+        if self.traffic_mode == 'flow':
+            self._build_flow_schedule()
+        else:
+            self._inject_packets(int(max(1, round(INIT_PACKETS * self.offered_load_factor))))
 
     @property
     def state_dims(self) -> int:
-        """Total state-vector size: max_neighbors + destination slots + 9 fixed slots.
+        """Total state-vector size: max_neighbors + destination slots + fixed slots.
 
-        Fixed slots (9):
+        Fixed slots:
           queue_depth, dest_diversity, timestep,
           mean_adj_util, max_adj_util, var_adj_util,
-          K-path first-hop utilisation × K_PATHS (=3)
+          per-destination K-path first-hop utils (n_destinations × K_PATHS),
+          mean hops remaining (1)
         Removed from previous version: bucket fractions (3) and global mean util (1).
         """
-        return self.max_neighbors + self.n_destinations + 6 + K_PATHS
+        return self.max_neighbors + self.n_destinations + 7 - K_PATHS + K_PATHS * self.n_destinations
 
     def get_state(self, host: str) -> np.ndarray:
         """
@@ -557,8 +658,10 @@ class NetworkEngine:
           [.. + 2]                      variance of adjacent link utilisations
           [.. + 3 : .. + 3+K_PATHS]    mean first-hop utilisation per k-path index
                                         (action-aligned: slot k corresponds to action k)
+          [.. + 3+K_PATHS]             mean hops remaining in queue (normalised [0,1])
+                                        guides anti-loop learning
 
-          Total = max_neighbors + n_destinations + 6 + K_PATHS
+          Total = max_neighbors + n_destinations + 7 + K_PATHS
         """
         mn   = self.max_neighbors
         nbrs = self.topology.get_neighbors(host)
@@ -588,17 +691,22 @@ class NetworkEngine:
         else:
             state.extend([0.0, 0.0, 0.0])
 
-        # K-path first-hop utilisation — K_PATHS slots (action-aligned)
-        # Slot k reflects the average congestion on the first hop of path k
-        # across all destinations, giving agents a signal tied to their action index.
-        for k in range(K_PATHS):
-            path_utils: List[float] = []
-            for dst in self.topology.access_nodes:
-                paths = self.topology.kpath_cache.get((host, dst), [])
+        # Per-destination K-path first-hop utilisation — n_destinations * K_PATHS slots
+        # Layout: for each destination d, K_PATHS consecutive utils [util_k0, util_k1, util_k2]
+        # giving independent per-destination routing signals aligned to the action matrix.
+        for dst in self.topology.access_nodes:
+            paths = self.topology.kpath_cache.get((host, dst), [])
+            for k in range(K_PATHS):
                 if k < len(paths) and len(paths[k]) >= 2:
                     nh = paths[k][1]
-                    path_utils.append(self.topology.get_util(host, nh))
-            state.append(float(np.mean(path_utils)) if path_utils else 0.0)
+                    state.append(self.topology.get_util(host, nh))
+                else:
+                    state.append(0.0)
+
+        # mean hops remaining in queue — 1 slot (anti-loop signal)
+        _q = self.packet_queue[host]
+        _mean_hops = float(np.mean([p.get('hops', 0) for p in _q])) if _q else 0.0
+        state.append(max(0.0, 1.0 - _mean_hops / TTL_INIT))
 
         # guarantee exactly state_dims elements
         total = self.state_dims
@@ -655,6 +763,8 @@ class NetworkEngine:
         degree-2 pass-through switches when filter_mode='degree_ge_3').
         """
         self.time_step += 1
+        if self.traffic_mode == 'flow':
+            self._inject_scheduled_flow_packets()
         hosts = self.topology.hosts
         next_queue: Dict[str, List[Dict]] = defaultdict(list)
         step_sent = step_delivered = step_dropped = 0
@@ -686,8 +796,18 @@ class NetworkEngine:
                 _agent_active.append(False)
                 continue
 
-            # choose next-hop per destination (K-shortest-paths, per-packet)
-            kpath_next_hops = self._select_kpath_next_hops(action, host, nbrs)
+            # Per-destination MPLS path selection: action encodes an (n_dest × K_PATHS)
+            # routing matrix.  Each destination independently selects its path class
+            # (k=0 → shortest, k=1/2 → alternatives) via argmax on its row.
+            _n_dest = len(self.topology.access_nodes)
+            _expected = K_PATHS * _n_dest
+            if len(action) >= _expected:
+                _action_matrix = action[:_expected].reshape(_n_dest, K_PATHS)
+            else:
+                # Fallback for undersized actions (non-trainable transit nodes get zeros)
+                _pi = int(np.argmax(action[:K_PATHS])) if len(action) >= K_PATHS else 0
+                _action_matrix = np.zeros((_n_dest, K_PATHS), dtype=np.float32)
+                _action_matrix[:, _pi] = 1.0
 
             # forward packets
             delivered = dropped = 0
@@ -697,27 +817,60 @@ class NetworkEngine:
                 pkt_hops = int(pkt.get('hops', 0))
                 pkt_created = int(pkt.get('created_at', 0))
                 step_sent += 1
-                dst = pkt['dst']
-                if dst in kpath_next_hops:
-                    chosen = kpath_next_hops[dst]
+                dst     = pkt['dst']
+                path_k_pkt = pkt.get('path_k')
+                pkt_src    = pkt.get('src', host)
+
+                if path_k_pkt is None:
+                    # Ingress: per-destination path selection from action matrix.
+                    dst_idx = self._access_to_idx.get(dst, 0)
+                    path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
+                    pkt['path_k'] = path_k_pkt
+                    paths  = self.topology.kpath_cache.get((host, dst), [])
+                    chosen = self._next_hop_for_ingress(paths, path_k_pkt, nbrs)
                 else:
-                    # Non-access destination: fall back to shortest-path next hop
+                    # Transit: follow the established globally-consistent path.
+                    paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
+                    chosen = self._next_hop_for_transit(paths, path_k_pkt, host, nbrs)
+
+                if chosen is None:
+                    # Last-resort fallback — should only occur after link failures.
                     _sp = self.topology.path_cache.get((host, dst), [])
                     chosen = _sp[1] if len(_sp) >= 2 and _sp[1] in nbrs else nbrs[0]
 
-                required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, chosen), 1e-6)
+                required_bw = self._required_bw(host, chosen)
                 if self.topology.avail_bw(host, chosen) < required_bw:
-                    dropped += 1
-                    step_dropped += 1
-                    pkt_drop_count += 1
-                    self._episode_stats['dropped_delay_samples'].append(
-                        max(0, self.time_step - pkt_created)
-                    )
-                    self._episode_stats['dropped_hop_samples'].append(pkt_hops)
+                    self._episode_stats['capacity_block_events'] += 1
+                    if self.traffic_mode == 'flow':
+                        dropped += 1
+                        step_dropped += 1
+                        pkt_drop_count += 1
+                        self._episode_stats['drop_link_congestion'] += 1
+                        self._episode_stats['dropped_delay_samples'].append(
+                            max(0, self.time_step - pkt_created)
+                        )
+                        self._episode_stats['dropped_hop_samples'].append(pkt_hops)
+                    else:
+                        # Link congested: buffer packet at current node rather than drop.
+                        # TTL and hop count are unchanged — waiting is not a hop.
+                        # Only drop on genuine buffer overflow (MAX_NODE_QUEUE_DEPTH).
+                        step_sent -= 1  # this was not a forwarding event
+                        if len(next_queue[host]) < MAX_NODE_QUEUE_DEPTH:
+                            next_queue[host].append(pkt)
+                        else:
+                            # Buffer overflow: genuine drop
+                            dropped += 1
+                            step_dropped += 1
+                            pkt_drop_count += 1
+                            self._episode_stats['drop_overflow'] += 1
+                            self._episode_stats['dropped_delay_samples'].append(
+                                max(0, self.time_step - pkt_created)
+                            )
+                            self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, chosen)
                 cap_scale = self.topology.get_capacity_scale(host, chosen)
-                self.topology.set_util(host, chosen, cur + PACKET_SIZE / max(cap_scale, 1e-6))
+                self._register_link_load(host, chosen, required_bw, cur, cap_scale)
 
                 if chosen == pkt['dst']:
                     delivered += 1
@@ -731,14 +884,18 @@ class NetworkEngine:
                 elif pkt['ttl'] > 0:
                     next_queue[chosen].append({
                         'dst': pkt['dst'],
+                        'src': pkt.get('src', host),   # preserve injection source
+                        'path_k': pkt.get('path_k'),   # preserve MPLS-like path label
                         'ttl': pkt['ttl'] - 1,
                         'created_at': pkt_created,
                         'hops': pkt_hops + 1,
+                        'ingress': host,
                     })
                 else:
                     dropped += 1
                     step_dropped += 1   # TTL expired
                     pkt_drop_count += 1
+                    self._episode_stats['drop_ttl'] += 1
                     self._episode_stats['dropped_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
                     )
@@ -783,9 +940,9 @@ class NetworkEngine:
                 reward_components['chosen_util_term'] += drop_term
 
         # bookkeeping
-        self.topology.decay_utils()
+        self._advance_link_loads_one_step()
         self.packet_queue = next_queue
-        if self.time_step % INJECT_EVERY == 0:
+        if self.traffic_mode != 'flow' and self.time_step % INJECT_EVERY == 0:
             self._inject_packets(int(max(1, round(N_INJECT_BATCH * self.offered_load_factor))))
 
         self._episode_stats['packets_sent']      += step_sent
@@ -801,6 +958,9 @@ class NetworkEngine:
         self._episode_stats['backlog_peak'] = max(
             self._episode_stats['backlog_peak'], current_backlog
         )
+        queue_sizes = [len(q) for q in self.packet_queue.values()]
+        self._episode_stats['step_max_node_queue'].append(max(queue_sizes) if queue_sizes else 0)
+        self._episode_stats['step_active_queues'].append(sum(1 for size in queue_sizes if size > 0))
 
         util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
         mean_util = float(np.mean(util_values)) if util_values else 0.0
@@ -842,6 +1002,33 @@ class NetworkEngine:
         }
         return next_states, rewards, info
 
+    def _required_bw(self, u: str, v: str) -> float:
+        cap_scale = max(self.topology.get_capacity_scale(u, v), 1e-6)
+        load_unit = self.flow_packet_size if self.traffic_mode == 'flow' else self.packet_size
+        return load_unit / cap_scale
+
+    def _register_link_load(self, u: str, v: str, required_bw: float,
+                            cur_util: Optional[float] = None,
+                            cap_scale: Optional[float] = None):
+        if self.traffic_mode == 'flow':
+            self.topology.add_flow_reservation(u, v, required_bw)
+            # Keep utilization observations aligned with active reservations.
+            self.topology.set_util(u, v, self.topology.get_flow_reserved(u, v))
+            return
+
+        if cur_util is None:
+            cur_util = self.topology.get_util(u, v)
+        if cap_scale is None:
+            cap_scale = max(self.topology.get_capacity_scale(u, v), 1e-6)
+        self.topology.set_util(u, v, cur_util + self.packet_size / cap_scale)
+
+    def _advance_link_loads_one_step(self):
+        if self.traffic_mode == 'flow':
+            self.topology.decay_flow_reservations()
+            self.topology.sync_utils_from_flow_reservations()
+        else:
+            self.topology.decay_utils()
+
     def _select_kpath_next_hops(self, action: np.ndarray, host: str, nbrs: List[str]) -> Dict[str, str]:
         """Select next-hop per access destination using K-shortest-path action vector.
 
@@ -879,6 +1066,45 @@ class NetworkEngine:
             result[dst] = chosen
         return result
 
+    def _next_hop_for_ingress(self, paths: List[List[str]], path_k: int,
+                              nbrs: List[str]) -> Optional[str]:
+        """Return the first next-hop on path path_k for an ingress packet.
+
+        Tries path_k first, then alternative indices.  Returns None if no
+        valid neighbour is reachable on any precomputed path.
+        """
+        path_order = [path_k] + [j for j in range(len(paths)) if j != path_k]
+        for pi in path_order:
+            if pi < len(paths) and len(paths[pi]) >= 2:
+                nxt = paths[pi][1]
+                if nxt in nbrs:
+                    return nxt
+        return None
+
+    def _next_hop_for_transit(self, paths: List[List[str]], path_k: int,
+                              host: str, nbrs: List[str]) -> Optional[str]:
+        """Return next-hop for a transit packet on globally-consistent path path_k.
+
+        Locates host's current position in paths[path_k] and returns the next
+        node.  Structurally loop-free: paths are simple paths (no repeated
+        nodes), so a packet can never revisit a node along this path.
+        Falls back to alternative path indices when host is absent from path_k
+        (e.g. after a link failure diverted the packet). Returns None if no
+        valid neighbour is found.
+        """
+        path_order = [path_k] + [j for j in range(len(paths)) if j != path_k]
+        for pi in path_order:
+            if pi >= len(paths):
+                continue
+            path = paths[pi]
+            try:
+                pos = path.index(host)
+                if pos + 1 < len(path) and path[pos + 1] in nbrs:
+                    return path[pos + 1]
+            except ValueError:
+                pass
+        return None
+
     def get_episode_stats(self) -> Dict:
         s = self._episode_stats
         sent = max(1, s['packets_sent'])
@@ -889,6 +1115,8 @@ class NetworkEngine:
         delivered_hops = np.array(s['delivered_hop_samples'], dtype=np.float32)
         step_mean_utils = np.array(s['step_mean_utils'], dtype=np.float32)
         step_max_utils = np.array(s['step_max_utils'], dtype=np.float32)
+        step_max_node_queue = np.array(s['step_max_node_queue'], dtype=np.float32)
+        step_active_queues = np.array(s['step_active_queues'], dtype=np.float32)
         per_agent_steps = max(1, steps * len(self.topology.hosts))
 
         return {
@@ -901,8 +1129,19 @@ class NetworkEngine:
             # (kept for transparency but not the primary paper metric)
             'hop_delivery_frac': s['packets_delivered'] / sent * 100,
             # end_to_end_pdr: fraction of *injected* packets successfully delivered
+            # NOTE: penalised by in-transit backlog at episode end; use resolved_pdr
+            # for a metric that excludes truncated in-flight packets.
             'end_to_end_pdr': s['packets_delivered'] / injected * 100,
+            # resolved_pdr: PDR over packets with a final outcome only (delivered or
+            # dropped). Excludes packets still in-transit at episode end, making this
+            # independent of episode length and routing latency.
+            'resolved_pdr': s['packets_delivered'] / max(1, s['packets_delivered'] + s['packets_dropped']) * 100,
+            # true_loss_rate: unique dropped packets / unique injected packets.
+            # Unlike packet_loss_rate (per-hop), this is the true per-packet loss.
+            'true_loss_rate': s['packets_dropped'] / injected * 100,
             # packet_loss_rate: fraction of forwarding events ending in a drop
+            # NOTE: denominator is hop-forwarding events (~hops × injected), so
+            # this severely underestimates per-packet loss. Kept for legacy.
             'packet_loss_rate': s['packets_dropped'] / sent * 100,
             'goodput_per_step': s['packets_delivered'] / steps,
             'backlog_end': sum(len(q) for q in self.packet_queue.values()),
@@ -918,6 +1157,21 @@ class NetworkEngine:
             'overload_step_fraction': float(
                 np.mean(step_max_utils >= 0.80)
             ) if step_max_utils.size else 0.0,
+            'drop_ttl': int(s['drop_ttl']),
+            'drop_overflow': int(s['drop_overflow']),
+            'drop_link_congestion': int(s['drop_link_congestion']),
+            'drop_no_path': int(s['drop_no_path']),
+            'capacity_block_events': int(s['capacity_block_events']),
+            'drop_ttl_rate': s['drop_ttl'] / injected * 100,
+            'drop_overflow_rate': s['drop_overflow'] / injected * 100,
+            'drop_link_congestion_rate': s['drop_link_congestion'] / injected * 100,
+            'drop_no_path_rate': s['drop_no_path'] / injected * 100,
+            'capacity_block_per_step': s['capacity_block_events'] / steps,
+            'capacity_block_per_injected': s['capacity_block_events'] / injected,
+            'max_node_queue_peak': int(np.max(step_max_node_queue)) if step_max_node_queue.size else 0,
+            'max_node_queue_avg': float(np.mean(step_max_node_queue)) if step_max_node_queue.size else 0.0,
+            'active_queues_avg': float(np.mean(step_active_queues)) if step_active_queues.size else 0.0,
+            'traffic_mode': self.traffic_mode,
             'reward_components': {
                 k: float(v / per_agent_steps)
                 for k, v in s['reward_component_sums'].items()
@@ -953,19 +1207,27 @@ class NetworkEngine:
                 path = self.topology.path_cache.get((host, pkt['dst']), [])
                 if len(path) < 2:
                     dropped += 1
+                    self._episode_stats['drop_no_path'] += 1
                     self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 nxt = path[1]
-                required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, nxt), 1e-6)
+                required_bw = self._required_bw(host, nxt)
                 if self.topology.avail_bw(host, nxt) < required_bw:
-                    dropped += 1
-                    self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
-                    self._episode_stats['dropped_hop_samples'].append(pkt_hops)
+                    # Link congested: buffer at current node rather than drop.
+                    # TTL and hop count unchanged — waiting is not a hop.
+                    self._episode_stats['capacity_block_events'] += 1
+                    if len(next_queue[host]) < MAX_NODE_QUEUE_DEPTH:
+                        next_queue[host].append(pkt)
+                    else:
+                        dropped += 1
+                        self._episode_stats['drop_overflow'] += 1
+                        self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                        self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, nxt)
                 cap_scale = self.topology.get_capacity_scale(host, nxt)
-                self.topology.set_util(host, nxt, cur + PACKET_SIZE / max(cap_scale, 1e-6))
+                self._register_link_load(host, nxt, required_bw, cur, cap_scale)
                 if nxt == pkt['dst']:
                     delivered += 1
                     self._episode_stats['delivered_delay_samples'].append(max(0, self.time_step - pkt_created))
@@ -979,10 +1241,11 @@ class NetworkEngine:
                     })
                 else:
                     dropped += 1
+                    self._episode_stats['drop_ttl'] += 1
                     self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
-        self.topology.decay_utils()
+        self._advance_link_loads_one_step()
         self.packet_queue = next_queue
         if self.time_step % INJECT_EVERY == 0:
             self._inject_packets(int(max(1, round(N_INJECT_BATCH * self.offered_load_factor))))
@@ -996,6 +1259,9 @@ class NetworkEngine:
         current_backlog = sum(len(q) for q in self.packet_queue.values())
         self._episode_stats['backlog_sum']  += current_backlog
         self._episode_stats['backlog_peak'] = max(self._episode_stats['backlog_peak'], current_backlog)
+        queue_sizes = [len(q) for q in self.packet_queue.values()]
+        self._episode_stats['step_max_node_queue'].append(max(queue_sizes) if queue_sizes else 0)
+        self._episode_stats['step_active_queues'].append(sum(1 for size in queue_sizes if size > 0))
         util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
         _mean_util = float(np.mean(util_values)) if util_values else 0.0
         _max_util  = float(np.max(util_values))  if util_values else 0.0
@@ -1028,6 +1294,7 @@ class NetworkEngine:
                         max(0, self.time_step - int(pkt.get('created_at', 0)))
                     )
                     self._episode_stats['dropped_hop_samples'].append(int(pkt.get('hops', 0)))
+                    self._episode_stats['drop_no_path'] += 1
                 dropped += len(q)
                 sent += len(q)
                 continue
@@ -1037,15 +1304,17 @@ class NetworkEngine:
                 pkt_hops = int(pkt.get('hops', 0))
                 pkt_created = int(pkt.get('created_at', 0))
                 sent += 1
-                required_bw = PACKET_SIZE / max(self.topology.get_capacity_scale(host, chosen), 1e-6)
+                required_bw = self._required_bw(host, chosen)
                 if self.topology.avail_bw(host, chosen) < required_bw:
                     dropped += 1
+                    self._episode_stats['capacity_block_events'] += 1
+                    self._episode_stats['drop_overflow'] += 1
                     self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, chosen)
                 cap_scale = self.topology.get_capacity_scale(host, chosen)
-                self.topology.set_util(host, chosen, cur + PACKET_SIZE / max(cap_scale, 1e-6))
+                self._register_link_load(host, chosen, required_bw, cur, cap_scale)
                 if chosen == pkt['dst']:
                     delivered += 1
                     self._episode_stats['delivered_delay_samples'].append(max(0, self.time_step - pkt_created))
@@ -1059,10 +1328,11 @@ class NetworkEngine:
                     })
                 else:
                     dropped += 1
+                    self._episode_stats['drop_ttl'] += 1
                     self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
-        self.topology.decay_utils()
+        self._advance_link_loads_one_step()
         self.packet_queue = next_queue
         if self.time_step % INJECT_EVERY == 0:
             self._inject_packets(int(max(1, round(N_INJECT_BATCH * self.offered_load_factor))))
@@ -1076,6 +1346,9 @@ class NetworkEngine:
         current_backlog = sum(len(q) for q in self.packet_queue.values())
         self._episode_stats['backlog_sum']  += current_backlog
         self._episode_stats['backlog_peak'] = max(self._episode_stats['backlog_peak'], current_backlog)
+        queue_sizes = [len(q) for q in self.packet_queue.values()]
+        self._episode_stats['step_max_node_queue'].append(max(queue_sizes) if queue_sizes else 0)
+        self._episode_stats['step_active_queues'].append(sum(1 for size in queue_sizes if size > 0))
         util_values = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
         _mean_util = float(np.mean(util_values)) if util_values else 0.0
         _max_util  = float(np.max(util_values))  if util_values else 0.0
@@ -1092,20 +1365,86 @@ class NetworkEngine:
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _inject_packets(self, n: int):
-        # Inject at non-sink switch nodes — access endpoints are _sink_host_indices
-        # and are skipped by step(), so packets injected there are silently discarded.
-        srcs = self._non_sink_hosts or self.topology.hosts
-        dsts = self.topology.access_nodes or self.topology.hosts
+        # Inject at access (PE) nodes — traffic enters the SP backbone only at its
+        # edge endpoints, mirroring real MPLS/SR-TE traffic engineering where PE
+        # routers originate customer traffic and P routers only transit.
+        srcs = self.topology.access_nodes
+        dsts = self.topology.access_nodes
         for _ in range(n):
             src = random.choice(srcs)
             dst = random.choice([h for h in dsts if h != src])
             self.packet_queue[src].append({
                 'dst': dst,
+                'src': src,       # injection source — used for globally-consistent path lookup
+                'path_k': None,   # path label set by the ingress agent (MPLS-like LSP)
                 'ttl': TTL_INIT,
                 'created_at': self.time_step,
                 'hops': 0,
+                'ingress': None,
             })
         self._episode_stats['injected_count'] += n
+
+    def _build_flow_schedule(self):
+        """Create an episode traffic matrix as a schedule of access-to-access flows."""
+        access_nodes = list(self.topology.access_nodes)
+        if len(access_nodes) < 2:
+            return
+
+        self._flow_schedule = defaultdict(list)
+        self._active_flows = []
+        self._flow_seq = 0
+
+        flow_count = max(1, int(round(self.flow_count_base * self.offered_load_factor)))
+        duration = max(1, int(self.flow_duration_steps))
+        latest_start = max(1, self.episode_steps - duration + 1)
+
+        for _ in range(flow_count):
+            src = random.choice(access_nodes)
+            dst_choices = [h for h in access_nodes if h != src]
+            if not dst_choices:
+                continue
+            dst = random.choice(dst_choices)
+            start_step = random.randint(1, latest_start)
+            flow = {
+                'flow_id': self._flow_seq,
+                'src': src,
+                'dst': dst,
+                'start_step': start_step,
+                'end_step': min(self.episode_steps, start_step + duration - 1),
+            }
+            self._flow_schedule[start_step].append(flow)
+            self._flow_seq += 1
+
+    def _inject_scheduled_flow_packets(self):
+        """Inject one packet per active flow for the current step."""
+        if not self._flow_schedule and not self._active_flows:
+            return
+
+        current_step = self.time_step
+        scheduled = self._flow_schedule.pop(current_step, [])
+        if scheduled:
+            self._active_flows.extend(scheduled)
+
+        next_active: List[Dict] = []
+        injected = 0
+        for flow in self._active_flows:
+            if flow['start_step'] <= current_step <= flow['end_step']:
+                self.packet_queue[flow['src']].append({
+                    'dst': flow['dst'],
+                    'src': flow['src'],
+                    'path_k': None,
+                    'ttl': TTL_INIT,
+                    'created_at': current_step,
+                    'hops': 0,
+                    'ingress': None,
+                    'flow_id': flow['flow_id'],
+                })
+                injected += 1
+            if flow['end_step'] > current_step:
+                next_active.append(flow)
+
+        self._active_flows = next_active
+        self._episode_stats['injected_count'] += injected
 
     def _select_queue_level_next_hop(self, host: str, queue: List[Dict], nbrs: List[str]) -> str:
         """Pick one next-hop for the whole queue using shortest-path affinity."""
@@ -1141,8 +1480,15 @@ class NetworkEngine:
             'delivered_hop_samples': [],
             'dropped_delay_samples': [],
             'dropped_hop_samples': [],
+            'drop_ttl': 0,
+            'drop_overflow': 0,
+            'drop_link_congestion': 0,
+            'drop_no_path': 0,
+            'capacity_block_events': 0,
             'step_mean_utils': [],
             'step_max_utils': [],
+            'step_max_node_queue': [],
+            'step_active_queues': [],
             'reward_component_sums': {
                 'fwd_success_term':  0.0,
                 'shaping_term':      0.0,

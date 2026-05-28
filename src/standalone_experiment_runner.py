@@ -2,7 +2,7 @@
 Standalone Experiment Runner
 Three sequential phases:
   Phase 1  — training  (all 6 variants, hop-by-hop mode)
-  Phase 2  — Paper-1 evaluation (architecture comparison + OSPF baseline)
+  Phase 2  — Paper-1 evaluation (architecture comparison + Shortest Path baseline)
   Phase 3  — Paper-2 evaluation (FGSM adversarial attack study)
 """
 
@@ -55,6 +55,34 @@ logger = logging.getLogger(__name__)
 _WORKER_ENV_CACHE: dict = {}
 
 
+def _shared_flow_reward(info: Dict, reward_cfg: Dict) -> float:
+    """Shared team reward used by every variant.
+
+    The objective rewards delivered traffic and penalises congestion so the
+    learned policy prefers load-balancing over always taking k=0 shortest-path
+    routes.
+    """
+    delivery = float(info.get('delivery_rate', 0.0)) / 100.0
+    loss = float(info.get('packet_loss_rate', 0.0)) / 100.0
+    util = float(info.get('network_utilization', 0.0))
+    util_var = float(info.get('util_variance', 0.0))
+    backlog = float(info.get('backlog_packets', 0.0)) / 100.0
+
+    delivery_weight = float(reward_cfg.get('delivery_weight', 1.0))
+    drop_penalty = float(reward_cfg.get('drop_penalty', 1.0))
+    mean_util_weight = float(reward_cfg.get('mean_util_weight', 0.5))
+    var_util_penalty = float(reward_cfg.get('var_util_penalty', 0.3))
+    backlog_penalty = float(reward_cfg.get('backlog_penalty', 0.0))
+
+    return (
+        delivery_weight * delivery
+        - drop_penalty * loss
+        - mean_util_weight * util
+        - var_util_penalty * util_var
+        - backlog_penalty * backlog
+    )
+
+
 def _episode_worker(args):
     """
     Collect one episode in a subprocess and return all transitions.
@@ -69,7 +97,7 @@ def _episode_worker(args):
     """
     (actor_weights_cpu, all_actor_params, n_agents, deterministic_mask,
         topology_type, n_nodes, topo_seed, reward_cfg, topology_cfg,
-     epsilon, decision_block_size, t_per_ep, worker_seed,
+     traffic_cfg, epsilon, decision_block_size, t_per_ep, worker_seed,
      trainable_indices, n_total_hosts, offered_load_factor,
      gnn_info_cpu, use_central_state) = args
 
@@ -99,10 +127,11 @@ def _episode_worker(args):
     # Reconstruct GNN processor if the variant uses one
     gnn_proc = None
     if gnn_info_cpu is not None:
-        obs_dim_gnn, n_agents_gnn, adjacency_gnn, gnn_weights = gnn_info_cpu
+        obs_dim_gnn, n_agents_gnn, adjacency_gnn, n_relay_gnn, gnn_weights = gnn_info_cpu
         gnn_proc = GNNProcessor(
             obs_dim=obs_dim_gnn, hidden_dim=64,
             n_agents=n_agents_gnn, adjacency=adjacency_gnn,
+            n_relay_nodes=n_relay_gnn,
         )
         sd_gnn = {k: torch.tensor(v) for k, v in gnn_weights.items()}
         gnn_proc.load_state_dict(sd_gnn, strict=False)
@@ -126,12 +155,14 @@ def _episode_worker(args):
     # fixed (topology_type, n_nodes, topo_seed) so it never needs rebuilding.
     # NetworkTopology.__init__ runs ~2400 nx.shortest_simple_paths calls; caching
     # this once per worker process eliminates the reconstruction cost every epoch.
-    _topo_key = (topology_type, n_nodes, topo_seed)
+    _traffic_key = tuple(sorted((traffic_cfg or {}).items()))
+    _topo_key = (topology_type, n_nodes, topo_seed, _traffic_key)
     if _topo_key not in _WORKER_ENV_CACHE:
         engine = NetworkEngine(
             topology_type=topology_type, n_nodes=n_nodes, seed=topo_seed,
             reward_config=reward_cfg,
             topology_config=topology_cfg,
+            traffic_config=traffic_cfg,
         )
         _WORKER_ENV_CACHE[_topo_key] = engine
     else:
@@ -208,22 +239,10 @@ def _episode_worker(args):
             # n_agents items in each list passed to store_transition.
             t_states = [np.array(states[i], dtype=np.float32) for i in trainable_indices]
             t_next   = [np.array(next_states[i], dtype=np.float32) for i in trainable_indices]
-            if use_central_state:
-                # CC variants use a shared global team reward so the CC critic
-                # optimises network-wide objectives, not a per-agent local signal.
-                # r_global = delivery_weight * delivery_rate
-                #            - mean_util_weight * mean_link_util
-                #            - var_util_penalty * util_variance
-                _dr  = info.get('delivery_rate', 0.0) / 100.0
-                _mu  = info.get('network_utilization', 0.0)
-                _uv  = info.get('util_variance', 0.0)
-                _dw  = float(reward_cfg.get('delivery_weight', 1.0))
-                _muw = float(reward_cfg.get('mean_util_weight', 0.5))
-                _vup = float(reward_cfg.get('var_util_penalty', 0.3))
-                r_global = _dw * _dr - _muw * _mu - _vup * _uv
-                t_rewards = [r_global] * n_agents
-            else:
-                t_rewards = [rewards[i] for i in trainable_indices]
+            # All variants optimise the same shared flow-level objective.
+            # Only the critic/encoder architecture differs between LC and CC.
+            r_shared = _shared_flow_reward(info, reward_cfg)
+            t_rewards = [r_shared] * n_agents
             transitions.append((t_states, maddpg_actions, t_rewards, t_next, done, cs, ncs))
             ep_r += sum(t_rewards) / n_agents
         else:
@@ -231,15 +250,16 @@ def _episode_worker(args):
             executed_actions = [_choose(i, enhanced_states[i]) for i in range(n_agents)]
             next_states, rewards, info = env.step(executed_actions)
             done = [t == t_per_ep - 1] * n_agents
+            r_shared = _shared_flow_reward(info, reward_cfg)
             transitions.append((
                 [np.array(s, dtype=np.float32) for s in states],
                 [np.array(a, dtype=np.float32) for a in executed_actions],
-                list(rewards),
+                [r_shared] * n_agents,
                 [np.array(s, dtype=np.float32) for s in next_states],
                 list(done),
                 None, None,
             ))
-            ep_r += sum(rewards) / n_agents
+            ep_r += r_shared
         states = next_states
         ep_sent += info.get('packets_sent', 0)
         ep_dropped += info.get('packets_dropped', 0)
@@ -278,6 +298,12 @@ class StandaloneExperimentRunner:
             'enabled': False,
             'offered_loads': [0.75, 1.00, 1.25, 1.50],
             'include_failures': False,
+        })
+        cfg.setdefault('traffic', {
+            'mode': 'packet',
+            'packet_size': 0.03,
+            'flow_packet_size': 0.03,
+            'flow_hold_steps': 12,
         })
         cfg.setdefault('clean_slo', {
             'max_pkt_loss_pct': 5.0,
@@ -335,12 +361,14 @@ class StandaloneExperimentRunner:
         reward_cfg = self.config.get('reward', {})
         training_cfg = self.config.get('training', {})
         topology_cfg = self.config.get('topology', {})
+        traffic_cfg = self.config.get('traffic', {})
         projection_cfg = training_cfg.get('learn_action_projection', {})
         engine = NetworkEngine(
             topology_type=topology_cfg.get('type', 'service_provider'),
             n_nodes=int(topology_cfg.get('nodes', vcfg.get('n_agents', 65))),
             reward_config=reward_cfg,
             topology_config=topology_cfg,
+            traffic_config=traffic_cfg,
         )
         env = NetworkEnv(engine)
 
@@ -389,19 +417,38 @@ class StandaloneExperimentRunner:
             central_state_dims = _n_edges + n_agents
             critic_dims = central_state_dims
 
-        # GNN adjacency: same topology sub-graph as neighborhood critic,
-        # but always built when use_gnn=True regardless of critic_domain
+        # GNN adjacency: built over the full topology when trainable hosts are
+        # a strict subset (e.g. PE-router / access-nodes model).  Switch nodes
+        # become relay nodes that participate in message passing but produce no
+        # policy output — two-hop communication between access nodes via shared
+        # upstream switches emerges from the graph structure alone.
         if vcfg.get('use_gnn', False):
-            trainable_set_gnn = set(trainable_hosts)
-            trainable_idx_map_gnn = {h: i for i, h in enumerate(trainable_hosts)}
-            gnn_adjacency = [
-                [trainable_idx_map_gnn[nb]
-                 for nb in engine.topology.get_neighbors(h)
-                 if nb in trainable_set_gnn]
-                for h in trainable_hosts
-            ]
+            relay_nodes = [h for h in all_hosts if h not in set(trainable_hosts)]
+            gnn_n_relay = len(relay_nodes)
+            if gnn_n_relay > 0:
+                # Full-graph adjacency: agents indexed 0..n_agents-1,
+                # relay (switch) nodes indexed n_agents..n_total-1
+                full_node_order = trainable_hosts + relay_nodes
+                full_node_idx = {h: i for i, h in enumerate(full_node_order)}
+                gnn_adjacency = [
+                    [full_node_idx[nb]
+                     for nb in engine.topology.get_neighbors(h)
+                     if nb in full_node_idx]
+                    for h in full_node_order
+                ]
+            else:
+                # Legacy: trainable-subgraph adjacency only
+                trainable_set_gnn = set(trainable_hosts)
+                trainable_idx_map_gnn = {h: i for i, h in enumerate(trainable_hosts)}
+                gnn_adjacency = [
+                    [trainable_idx_map_gnn[nb]
+                     for nb in engine.topology.get_neighbors(h)
+                     if nb in trainable_set_gnn]
+                    for h in trainable_hosts
+                ]
         else:
             gnn_adjacency = None
+            gnn_n_relay = 0
 
         maddpg = MADDPG(
             actor_dims=actor_dims,
@@ -422,6 +469,7 @@ class StandaloneExperimentRunner:
             actor_mode=projection_cfg.get('actor_mode', 'soft'),
             adjacency=adjacency,
             gnn_adjacency=gnn_adjacency,
+            gnn_n_relay=gnn_n_relay,
             central_state_dims=central_state_dims,
         )
         return maddpg, engine, env
@@ -512,11 +560,12 @@ class StandaloneExperimentRunner:
         trainable_indices = getattr(engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(engine, 'n_total_hosts', maddpg.n_agents)
         train_load = float(self.config.get('training', {}).get('offered_load_factor', 1.0))
+        traffic_cfg = self.config.get('traffic', {})
         worker_args = [
             (
                 actor_weights_cpu, all_actor_params, maddpg.n_agents, deterministic_mask,
                 engine.topology_type, engine.n_nodes, engine.topo_seed, engine.reward_cfg,
-                self.config.get('topology', {}),
+            self.config.get('topology', {}), traffic_cfg,
                 epsilon, decision_block_size, t_per_ep,
                 base_seed + epoch * 10_000 + ep_idx,
                 trainable_indices, n_total_hosts, train_load,
@@ -823,29 +872,18 @@ class StandaloneExperimentRunner:
                 
                 results[name] = {'normal': normal, 'dual_link_failure': failures}
 
-            # OSPF baseline
+            # EVPN shortest-path baseline (same tunnel model as MADDPG, k=0 always)
             if len(results) > 0:  # Only run if at least one variant ran
-                logger.info(f"[P2]   OSPF baseline")
-                engine = NetworkEngine(
+                logger.info(f"[P2]   EVPN-SP baseline")
+                _evpn_engine = NetworkEngine(
                     topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
                     n_nodes=65,
+                    traffic_config=self.config.get('traffic', {}),
                 )
-                results['OSPF'] = {
-                    'normal': self._run_ospf_episodes(engine, curr_seeds, t_per_ep),
-                    'dual_link_failure': self._run_ospf_episodes(engine, curr_seeds, t_per_ep,
-                                                                  n_link_failures=2),
-                }
-                results['OSPF_FULL'] = results['OSPF']
-                results['OSPF_QUEUE'] = {
-                    'normal': self._run_ospf_episodes(
-                        engine, curr_seeds, t_per_ep,
-                        mode='queue_level',
-                    ),
-                    'dual_link_failure': self._run_ospf_episodes(
-                        engine, curr_seeds, t_per_ep,
-                        n_link_failures=2,
-                        mode='queue_level',
-                    ),
+                results['EVPN_SP'] = {
+                    'normal': self._run_evpn_sp_episodes(_evpn_engine, curr_seeds, t_per_ep),
+                    'dual_link_failure': self._run_evpn_sp_episodes(_evpn_engine, curr_seeds, t_per_ep,
+                                                                     n_link_failures=2),
                 }
 
             # Build rankings
@@ -907,26 +945,16 @@ class StandaloneExperimentRunner:
             
             results[name] = {'normal': normal, 'dual_link_failure': failures}
 
-        logger.info("[P2] OSPF baseline")
-        engine = NetworkEngine(
+        logger.info("[P2] EVPN-SP baseline")
+        _evpn_engine = NetworkEngine(
             topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
             n_nodes=65,
+            traffic_config=self.config.get('traffic', {}),
         )
-        results['OSPF'] = {
-            'normal': self._run_ospf_episodes(engine, curr_seeds, t_per_ep),
-            'dual_link_failure': self._run_ospf_episodes(engine, curr_seeds, t_per_ep, n_link_failures=2),
-        }
-        results['OSPF_FULL'] = results['OSPF']
-        results['OSPF_QUEUE'] = {
-            'normal': self._run_ospf_episodes(
-                engine, curr_seeds, t_per_ep,
-                mode='queue_level',
-            ),
-            'dual_link_failure': self._run_ospf_episodes(
-                engine, curr_seeds, t_per_ep,
-                n_link_failures=2,
-                mode='queue_level',
-            ),
+        results['EVPN_SP'] = {
+            'normal': self._run_evpn_sp_episodes(_evpn_engine, curr_seeds, t_per_ep),
+            'dual_link_failure': self._run_evpn_sp_episodes(_evpn_engine, curr_seeds, t_per_ep,
+                                                             n_link_failures=2),
         }
 
         self._save(results, 'phase2_maddpg_results.json')
@@ -957,10 +985,13 @@ class StandaloneExperimentRunner:
                            n_eps: int, t_per_ep: int,
                            n_link_failures: int = 0,
                            offered_load_factor: float = 1.0) -> Dict:
-        ep_rewards, ep_losses, ep_utils = [], [], []
-        ep_pdr, ep_hop_frac, ep_goodput = [], [], []
+        ep_rewards, ep_utils = [], []
+        ep_pdr, ep_resolved_pdr, ep_true_loss, ep_hop_frac, ep_goodput = [], [], [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
         ep_hops_mean, ep_overload_frac = [], []
+        ep_drop_ttl, ep_drop_overflow, ep_drop_no_path = [], [], []
+        ep_cap_blocks_per_step, ep_cap_blocks_per_injected = [], []
+        ep_max_node_queue_peak, ep_max_node_queue_avg, ep_active_queues_avg = [], [], []
         trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
         n_actions = maddpg.n_actions
@@ -969,7 +1000,7 @@ class StandaloneExperimentRunner:
             states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
             if n_link_failures:
                 self._inject_failures(env.engine, n_link_failures)
-            ep_r = ep_sent = ep_dropped = 0
+            ep_r = 0
             for t in range(t_per_ep):
                 if trainable_indices is not None:
                     t_states = [states[i] for i in trainable_indices]
@@ -980,14 +1011,13 @@ class StandaloneExperimentRunner:
                     actions = maddpg.choose_action(states)
                 next_states, rewards, info = env.step(actions)
                 states = next_states
-                ep_r      += sum(rewards)
-                ep_sent   += info['packets_sent']
-                ep_dropped += info['packets_dropped']
+                ep_r += sum(rewards)
             ep_rewards.append(ep_r / len(maddpg.agents))
-            ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
             ep_utils.append(float(np.nanmean(env.engine.get_link_utilization_distribution())))
             ep_stats = env.get_stats()
             ep_pdr.append(float(ep_stats.get('end_to_end_pdr', 0.0)))
+            ep_resolved_pdr.append(float(ep_stats.get('resolved_pdr', 0.0)))
+            ep_true_loss.append(float(ep_stats.get('true_loss_rate', 0.0)))
             ep_hop_frac.append(float(ep_stats.get('hop_delivery_frac', 0.0)))
             ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
             ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
@@ -995,13 +1025,26 @@ class StandaloneExperimentRunner:
             ep_util_p95.append(float(ep_stats.get('util_p95', 0.0)))
             ep_hops_mean.append(float(ep_stats.get('hops_mean', 0.0)))
             ep_overload_frac.append(float(ep_stats.get('overload_step_fraction', 0.0)))
+            ep_drop_ttl.append(float(ep_stats.get('drop_ttl_rate', 0.0)))
+            ep_drop_overflow.append(float(ep_stats.get('drop_overflow_rate', 0.0)))
+            ep_drop_no_path.append(float(ep_stats.get('drop_no_path_rate', 0.0)))
+            ep_cap_blocks_per_step.append(float(ep_stats.get('capacity_block_per_step', 0.0)))
+            ep_cap_blocks_per_injected.append(float(ep_stats.get('capacity_block_per_injected', 0.0)))
+            ep_max_node_queue_peak.append(float(ep_stats.get('max_node_queue_peak', 0.0)))
+            ep_max_node_queue_avg.append(float(ep_stats.get('max_node_queue_avg', 0.0)))
+            ep_active_queues_avg.append(float(ep_stats.get('active_queues_avg', 0.0)))
         return {
             'mean_reward':      float(np.mean(ep_rewards)),
             'std_reward':       float(np.std(ep_rewards)),
-            'mean_pkt_loss':    float(np.mean(ep_losses)),
-            'std_pkt_loss':     float(np.std(ep_losses)),
-            'mean_util':        float(np.mean(ep_utils)),
+            # true_pkt_loss: unique dropped / unique injected (per-packet, correct denominator)
+            'mean_true_pkt_loss':    float(np.mean(ep_true_loss)),
+            'std_true_pkt_loss':     float(np.std(ep_true_loss)),
+            # resolved_pdr: delivered / (delivered + dropped) — excludes in-transit backlog
+            'mean_resolved_pdr':     float(np.mean(ep_resolved_pdr)),
+            'std_resolved_pdr':      float(np.std(ep_resolved_pdr)),
+            # legacy metric: delivered / injected (penalised by episode-end backlog)
             'mean_end_to_end_pdr':   float(np.mean(ep_pdr)),
+            'mean_util':        float(np.mean(ep_utils)),
             'mean_hop_delivery_frac': float(np.mean(ep_hop_frac)),
             'mean_goodput_per_step': float(np.mean(ep_goodput)),
             'mean_delay_p95':   float(np.mean(ep_delay_p95)),
@@ -1009,7 +1052,91 @@ class StandaloneExperimentRunner:
             'mean_util_p95':    float(np.mean(ep_util_p95)),
             'mean_hops_mean':   float(np.mean(ep_hops_mean)),
             'mean_overload_fraction': float(np.mean(ep_overload_frac)),
+            'mean_drop_ttl_rate': float(np.mean(ep_drop_ttl)),
+            'mean_drop_overflow_rate': float(np.mean(ep_drop_overflow)),
+            'mean_drop_no_path_rate': float(np.mean(ep_drop_no_path)),
+            'mean_capacity_block_per_step': float(np.mean(ep_cap_blocks_per_step)),
+            'mean_capacity_block_per_injected': float(np.mean(ep_cap_blocks_per_injected)),
+            'mean_max_node_queue_peak': float(np.mean(ep_max_node_queue_peak)),
+            'mean_max_node_queue_avg': float(np.mean(ep_max_node_queue_avg)),
+            'mean_active_queues_avg': float(np.mean(ep_active_queues_avg)),
             'offered_load_factor': float(offered_load_factor),
+        }
+
+    def _run_evpn_sp_episodes(self, engine: NetworkEngine,
+                              n_eps: int, t_per_ep: int,
+                              n_link_failures: int = 0,
+                              offered_load_factor: float = 1.0) -> Dict:
+        """EVPN with shortest-path tunnels: same forwarding model as MADDPG but always
+        selects k=0 (shortest path) per destination.  Primary baseline — same buffering,
+        same queue dynamics, no learning."""
+        ep_utils = []
+        ep_pdr, ep_resolved_pdr, ep_true_loss, ep_hop_frac, ep_goodput = [], [], [], [], []
+        ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
+        ep_hops_mean, ep_overload_frac = [], []
+        ep_drop_ttl, ep_drop_overflow, ep_drop_no_path = [], [], []
+        ep_cap_blocks_per_step, ep_cap_blocks_per_injected = [], []
+        ep_max_node_queue_peak, ep_max_node_queue_avg, ep_active_queues_avg = [], [], []
+
+        n_hosts = len(engine.topology.hosts)
+        n_dest = engine.n_destinations
+        n_actions = engine.n_actions
+        k_per_dest = n_actions // max(1, n_dest)
+        # k=0 action for every destination: action matrix row = [1, 0, 0, ...]
+        k0_action = np.zeros(n_actions, dtype=np.float32)
+        k0_action[0::k_per_dest] = 1.0
+        all_actions = [k0_action for _ in range(n_hosts)]
+
+        for _ in range(n_eps):
+            engine.reset_with_load(offered_load_factor=offered_load_factor)
+            if n_link_failures:
+                self._inject_failures(engine, n_link_failures)
+            for _ in range(t_per_ep):
+                engine.step(all_actions)
+            ep_utils.append(float(np.nanmean(engine.get_link_utilization_distribution())))
+            ep_stats = engine.get_episode_stats()
+            ep_pdr.append(float(ep_stats.get('end_to_end_pdr', 0.0)))
+            ep_resolved_pdr.append(float(ep_stats.get('resolved_pdr', 0.0)))
+            ep_true_loss.append(float(ep_stats.get('true_loss_rate', 0.0)))
+            ep_hop_frac.append(float(ep_stats.get('hop_delivery_frac', 0.0)))
+            ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
+            ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
+            ep_backlog.append(float(ep_stats.get('backlog_end', 0.0)))
+            ep_util_p95.append(float(ep_stats.get('util_p95', 0.0)))
+            ep_hops_mean.append(float(ep_stats.get('hops_mean', 0.0)))
+            ep_overload_frac.append(float(ep_stats.get('overload_step_fraction', 0.0)))
+            ep_drop_ttl.append(float(ep_stats.get('drop_ttl_rate', 0.0)))
+            ep_drop_overflow.append(float(ep_stats.get('drop_overflow_rate', 0.0)))
+            ep_drop_no_path.append(float(ep_stats.get('drop_no_path_rate', 0.0)))
+            ep_cap_blocks_per_step.append(float(ep_stats.get('capacity_block_per_step', 0.0)))
+            ep_cap_blocks_per_injected.append(float(ep_stats.get('capacity_block_per_injected', 0.0)))
+            ep_max_node_queue_peak.append(float(ep_stats.get('max_node_queue_peak', 0.0)))
+            ep_max_node_queue_avg.append(float(ep_stats.get('max_node_queue_avg', 0.0)))
+            ep_active_queues_avg.append(float(ep_stats.get('active_queues_avg', 0.0)))
+        return {
+            'mean_true_pkt_loss': float(np.mean(ep_true_loss)),
+            'std_true_pkt_loss':  float(np.std(ep_true_loss)),
+            'mean_resolved_pdr':  float(np.mean(ep_resolved_pdr)),
+            'std_resolved_pdr':   float(np.std(ep_resolved_pdr)),
+            'mean_end_to_end_pdr':   float(np.mean(ep_pdr)),
+            'mean_util':     float(np.mean(ep_utils)),
+            'mean_hop_delivery_frac': float(np.mean(ep_hop_frac)),
+            'mean_goodput_per_step': float(np.mean(ep_goodput)),
+            'mean_delay_p95':   float(np.mean(ep_delay_p95)),
+            'mean_backlog_end': float(np.mean(ep_backlog)),
+            'mean_util_p95':    float(np.mean(ep_util_p95)),
+            'mean_hops_mean':   float(np.mean(ep_hops_mean)),
+            'mean_overload_fraction': float(np.mean(ep_overload_frac)),
+            'mean_drop_ttl_rate': float(np.mean(ep_drop_ttl)),
+            'mean_drop_overflow_rate': float(np.mean(ep_drop_overflow)),
+            'mean_drop_no_path_rate': float(np.mean(ep_drop_no_path)),
+            'mean_capacity_block_per_step': float(np.mean(ep_cap_blocks_per_step)),
+            'mean_capacity_block_per_injected': float(np.mean(ep_cap_blocks_per_injected)),
+            'mean_max_node_queue_peak': float(np.mean(ep_max_node_queue_peak)),
+            'mean_max_node_queue_avg': float(np.mean(ep_max_node_queue_avg)),
+            'mean_active_queues_avg': float(np.mean(ep_active_queues_avg)),
+            'offered_load_factor': float(offered_load_factor),
+            'routing_mode': 'evpn_sp',
         }
 
     def _run_ospf_episodes(self, engine: NetworkEngine,
@@ -1017,26 +1144,27 @@ class StandaloneExperimentRunner:
                            n_link_failures: int = 0,
                            offered_load_factor: float = 1.0,
                            mode: str = 'full') -> Dict:
-        ep_losses, ep_utils = [], []
-        ep_pdr, ep_hop_frac, ep_goodput = [], [], []
+        ep_utils = []
+        ep_pdr, ep_resolved_pdr, ep_true_loss, ep_hop_frac, ep_goodput = [], [], [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
         ep_hops_mean, ep_overload_frac = [], []
+        ep_drop_ttl, ep_drop_overflow, ep_drop_no_path = [], [], []
+        ep_cap_blocks_per_step, ep_cap_blocks_per_injected = [], []
+        ep_max_node_queue_peak, ep_max_node_queue_avg, ep_active_queues_avg = [], [], []
         for _ in range(n_eps):
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
-            ep_sent = ep_dropped = 0
             for _ in range(t_per_ep):
                 if mode == 'queue_level':
-                    info = engine.ospf_queue_level_step()
+                    engine.ospf_queue_level_step()
                 else:
-                    info = engine.ospf_step()
-                ep_sent    += info['packets_sent']
-                ep_dropped += info['packets_dropped']
-            ep_losses.append(ep_dropped / max(1, ep_sent) * 100)
+                    engine.ospf_step()
             ep_utils.append(float(np.nanmean(engine.get_link_utilization_distribution())))
             ep_stats = engine.get_episode_stats()
             ep_pdr.append(float(ep_stats.get('end_to_end_pdr', 0.0)))
+            ep_resolved_pdr.append(float(ep_stats.get('resolved_pdr', 0.0)))
+            ep_true_loss.append(float(ep_stats.get('true_loss_rate', 0.0)))
             ep_hop_frac.append(float(ep_stats.get('hop_delivery_frac', 0.0)))
             ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
             ep_delay_p95.append(float(ep_stats.get('delay_p95', 0.0)))
@@ -1044,11 +1172,24 @@ class StandaloneExperimentRunner:
             ep_util_p95.append(float(ep_stats.get('util_p95', 0.0)))
             ep_hops_mean.append(float(ep_stats.get('hops_mean', 0.0)))
             ep_overload_frac.append(float(ep_stats.get('overload_step_fraction', 0.0)))
+            ep_drop_ttl.append(float(ep_stats.get('drop_ttl_rate', 0.0)))
+            ep_drop_overflow.append(float(ep_stats.get('drop_overflow_rate', 0.0)))
+            ep_drop_no_path.append(float(ep_stats.get('drop_no_path_rate', 0.0)))
+            ep_cap_blocks_per_step.append(float(ep_stats.get('capacity_block_per_step', 0.0)))
+            ep_cap_blocks_per_injected.append(float(ep_stats.get('capacity_block_per_injected', 0.0)))
+            ep_max_node_queue_peak.append(float(ep_stats.get('max_node_queue_peak', 0.0)))
+            ep_max_node_queue_avg.append(float(ep_stats.get('max_node_queue_avg', 0.0)))
+            ep_active_queues_avg.append(float(ep_stats.get('active_queues_avg', 0.0)))
         return {
-            'mean_pkt_loss': float(np.mean(ep_losses)),
-            'std_pkt_loss':  float(np.std(ep_losses)),
-            'mean_util':     float(np.mean(ep_utils)),
+            # true_pkt_loss: unique dropped / unique injected (per-packet, correct denominator)
+            'mean_true_pkt_loss': float(np.mean(ep_true_loss)),
+            'std_true_pkt_loss':  float(np.std(ep_true_loss)),
+            # resolved_pdr: delivered / (delivered + dropped) — excludes in-transit backlog
+            'mean_resolved_pdr':  float(np.mean(ep_resolved_pdr)),
+            'std_resolved_pdr':   float(np.std(ep_resolved_pdr)),
+            # legacy metric: delivered / injected (penalised by episode-end backlog)
             'mean_end_to_end_pdr':   float(np.mean(ep_pdr)),
+            'mean_util':     float(np.mean(ep_utils)),
             'mean_hop_delivery_frac': float(np.mean(ep_hop_frac)),
             'mean_goodput_per_step': float(np.mean(ep_goodput)),
             'mean_delay_p95':   float(np.mean(ep_delay_p95)),
@@ -1056,6 +1197,14 @@ class StandaloneExperimentRunner:
             'mean_util_p95':    float(np.mean(ep_util_p95)),
             'mean_hops_mean':   float(np.mean(ep_hops_mean)),
             'mean_overload_fraction': float(np.mean(ep_overload_frac)),
+            'mean_drop_ttl_rate': float(np.mean(ep_drop_ttl)),
+            'mean_drop_overflow_rate': float(np.mean(ep_drop_overflow)),
+            'mean_drop_no_path_rate': float(np.mean(ep_drop_no_path)),
+            'mean_capacity_block_per_step': float(np.mean(ep_cap_blocks_per_step)),
+            'mean_capacity_block_per_injected': float(np.mean(ep_cap_blocks_per_injected)),
+            'mean_max_node_queue_peak': float(np.mean(ep_max_node_queue_peak)),
+            'mean_max_node_queue_avg': float(np.mean(ep_max_node_queue_avg)),
+            'mean_active_queues_avg': float(np.mean(ep_active_queues_avg)),
             'offered_load_factor': float(offered_load_factor),
             'routing_mode': mode,
         }
@@ -1108,51 +1257,27 @@ class StandaloneExperimentRunner:
                     )
             out['methods'][name] = method_payload
 
-        logger.info("[P2][SWEEP] OSPF_FULL")
-        engine = NetworkEngine(
+        logger.info("[P2][SWEEP] EVPN_SP")
+        _evpn_sweep_engine = NetworkEngine(
             topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
             n_nodes=65,
+            traffic_config=self.config.get('traffic', {}),
         )
-        full_payload = {'normal': {}, 'dual_link_failure': {}}
+        evpn_payload = {'normal': {}, 'dual_link_failure': {}}
         for load in loads:
             key = f"load_{load:.2f}"
-            full_payload['normal'][key] = self._run_ospf_episodes(
-                engine, n_eps, t_per_ep,
+            evpn_payload['normal'][key] = self._run_evpn_sp_episodes(
+                _evpn_sweep_engine, n_eps, t_per_ep,
                 n_link_failures=0,
                 offered_load_factor=load,
-                mode='full',
             )
             if include_failures:
-                full_payload['dual_link_failure'][key] = self._run_ospf_episodes(
-                    engine, n_eps, t_per_ep,
+                evpn_payload['dual_link_failure'][key] = self._run_evpn_sp_episodes(
+                    _evpn_sweep_engine, n_eps, t_per_ep,
                     n_link_failures=2,
                     offered_load_factor=load,
-                    mode='full',
                 )
-        out['methods']['OSPF_FULL'] = full_payload
-
-        logger.info("[P2][SWEEP] OSPF_QUEUE")
-        engine = NetworkEngine(
-            topology_type=self.config.get('topology', {}).get('type', 'service_provider'),
-            n_nodes=65,
-        )
-        queue_payload = {'normal': {}, 'dual_link_failure': {}}
-        for load in loads:
-            key = f"load_{load:.2f}"
-            queue_payload['normal'][key] = self._run_ospf_episodes(
-                engine, n_eps, t_per_ep,
-                n_link_failures=0,
-                offered_load_factor=load,
-                mode='queue_level',
-            )
-            if include_failures:
-                queue_payload['dual_link_failure'][key] = self._run_ospf_episodes(
-                    engine, n_eps, t_per_ep,
-                    n_link_failures=2,
-                    offered_load_factor=load,
-                    mode='queue_level',
-                )
-        out['methods']['OSPF_QUEUE'] = queue_payload
+        out['methods']['EVPN_SP'] = evpn_payload
 
         for name, payload in out['methods'].items():
             out['summary'][name] = {
@@ -1179,9 +1304,9 @@ class StandaloneExperimentRunner:
         last_ok = None
         for key, metrics in ordered:
             load = float(key.split('_')[-1])
-            loss_ok = float(metrics.get('mean_pkt_loss', 1000.0)) <= max_loss
+            loss_ok = float(metrics.get('mean_true_pkt_loss', 1000.0)) <= max_loss
             delay_ok = float(metrics.get('mean_delay_p95', 1e9)) <= max_delay
-            pdr_ok = float(metrics.get('mean_end_to_end_pdr', 0.0)) >= min_pdr
+            pdr_ok = float(metrics.get('mean_resolved_pdr', 0.0)) >= min_pdr
             if loss_ok and delay_ok and pdr_ok:
                 last_ok = load
             else:
@@ -1563,11 +1688,13 @@ class StandaloneExperimentRunner:
         return {
             'default': {
                 'higher_is_better': {
-                    'mean_end_to_end_pdr':   0.35,
+                    # resolved_pdr = delivered/(delivered+dropped): excludes in-transit backlog
+                    'mean_resolved_pdr':     0.35,
                     'mean_goodput_per_step': 0.20,
                 },
                 'lower_is_better': {
-                    'mean_pkt_loss':          0.20,
+                    # true_pkt_loss = dropped/injected: per unique packet, correct denominator
+                    'mean_true_pkt_loss':     0.20,
                     'mean_delay_p95':         0.10,
                     'mean_backlog_end':       0.05,
                     'mean_hops_mean':         0.05,
@@ -1576,11 +1703,11 @@ class StandaloneExperimentRunner:
             },
             'robustness': {
                 'higher_is_better': {
-                    'mean_end_to_end_pdr':   0.35,
+                    'mean_resolved_pdr':     0.35,
                     'mean_goodput_per_step': 0.20,
                 },
                 'lower_is_better': {
-                    'mean_pkt_loss':          0.20,
+                    'mean_true_pkt_loss':     0.20,
                     'mean_delay_p95':         0.10,
                     'mean_backlog_end':       0.05,
                     'mean_hops_mean':         0.05,
@@ -1642,7 +1769,7 @@ class StandaloneExperimentRunner:
         for scenario in ['normal', 'dual_link_failure']:
             items = []
             for name, payload in phase2_results.items():
-                if str(name).startswith('OSPF'):
+                if str(name).startswith('SP') or name == 'EVPN_SP':
                     continue
                 if scenario not in payload:
                     continue
@@ -1872,6 +1999,9 @@ def main():
     ap.add_argument('--results-dir', default=None)
     ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2'], default='all')
     ap.add_argument('--quick', action='store_true')
+    ap.add_argument('--smoke', action='store_true',
+                    help='Smoke-test mode: 80 epochs / 3 eps / 64 steps — enough to '
+                         'verify reward signal and full pipeline without a full run')
     ap.add_argument('--variants', default=None,
                     help='Comma-separated list of variant names to train; '
                          'all others are skipped (e.g. CC-Simple,LC-Duelling-GNN)')
@@ -1886,6 +2016,20 @@ def main():
             a['evaluation_episodes'] = 2
         runner.config.setdefault('paper1_eval', {})['evaluation_episodes'] = 2
         logger.info("Quick mode active")
+
+    if args.smoke:
+        runner.config['training'].update(
+            epochs=80, episodes_per_epoch=3, timesteps_per_episode=64,
+            batch_size=256)
+        runner.config['training']['best_checkpoint'].update(
+            warmup_epochs=25, validation_interval_epochs=5, validation_episodes=3)
+        runner.config['training']['early_stopping'].update(
+            min_epochs=50, patience_checks=8, smooth_window_checks=2)
+        for a in runner.config['attack_configs']:
+            a['evaluation_episodes'] = 10
+        runner.config.setdefault('paper1_eval', {})['evaluation_episodes'] = 10
+        runner.config.setdefault('load_sweep', {})['offered_loads'] = [0.5, 0.75, 1.0, 1.3]
+        logger.info("Smoke mode active — 80 epochs / 3 eps / 64 steps")
 
     if args.variants:
         allowed = {v.strip() for v in args.variants.split(',')}
