@@ -1260,7 +1260,10 @@ class StandaloneExperimentRunner:
             u, v = candidates[int(idx)]
             if G.has_edge(u, v):
                 G.remove_edge(u, v)
-        engine.topology.refresh_path_cache()
+        # Do NOT refresh_path_cache here: stale paths simulate the real-world
+        # OSPF/BGP convergence window where agents must reroute mid-episode.
+        # EVPN_SP (k=0 only) cannot recover if its single path is severed;
+        # MADDPG agents with k>0 alternatives can fall back to alternate paths.
 
     def _run_phase2_load_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
         load_cfg = self.config.get('load_sweep', {})
