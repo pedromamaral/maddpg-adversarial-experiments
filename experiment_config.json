@@ -51,7 +51,7 @@
     "mode": "flow",
     "packet_size": 0.03,
     "flow_packet_size": 0.03,
-    "flow_hold_steps": 1,
+    "flow_hold_steps": 5,
     "flow_duration_steps": 12,
     "flow_count": 21,
     "episode_steps": 128
