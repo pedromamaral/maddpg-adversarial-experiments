@@ -19,7 +19,10 @@ from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
 import numpy as np
+import torch
+import gc
 import multiprocessing as mp
+import networkx as nx
 
 try:
     from scipy.stats import kendalltau
@@ -995,7 +998,17 @@ class StandaloneExperimentRunner:
         trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
         n_actions = maddpg.n_actions
+        # Snapshot topology before the loop so each episode gets a fresh graph
+        _topo_snapshot = (
+            [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
+            if n_link_failures else None
+        )
         for _ in range(n_eps):
+            if _topo_snapshot is not None:
+                G = env.engine.topology.graph
+                G.remove_edges_from(list(G.edges()))
+                G.add_edges_from(_topo_snapshot)
+                env.engine.topology.refresh_path_cache()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
             if n_link_failures:
@@ -1086,8 +1099,18 @@ class StandaloneExperimentRunner:
         k0_action = np.zeros(n_actions, dtype=np.float32)
         k0_action[0::k_per_dest] = 1.0
         all_actions = [k0_action for _ in range(n_hosts)]
+        # Snapshot topology before the loop so each episode gets a fresh graph
+        _topo_snapshot = (
+            [(u, v, dict(d)) for u, v, d in engine.topology.graph.edges(data=True)]
+            if n_link_failures else None
+        )
 
         for _ in range(n_eps):
+            if _topo_snapshot is not None:
+                G = engine.topology.graph
+                G.remove_edges_from(list(G.edges()))
+                G.add_edges_from(_topo_snapshot)
+                engine.topology.refresh_path_cache()
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
@@ -1151,7 +1174,17 @@ class StandaloneExperimentRunner:
         ep_drop_ttl, ep_drop_overflow, ep_drop_no_path = [], [], []
         ep_cap_blocks_per_step, ep_cap_blocks_per_injected = [], []
         ep_max_node_queue_peak, ep_max_node_queue_avg, ep_active_queues_avg = [], [], []
+        # Snapshot topology before the loop so each episode gets a fresh graph
+        _topo_snapshot = (
+            [(u, v, dict(d)) for u, v, d in engine.topology.graph.edges(data=True)]
+            if n_link_failures else None
+        )
         for _ in range(n_eps):
+            if _topo_snapshot is not None:
+                G = engine.topology.graph
+                G.remove_edges_from(list(G.edges()))
+                G.add_edges_from(_topo_snapshot)
+                engine.topology.refresh_path_cache()
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
@@ -1211,11 +1244,22 @@ class StandaloneExperimentRunner:
 
     @staticmethod
     def _inject_failures(engine: NetworkEngine, n: int):
-        edges = list(engine.topology.graph.edges())
-        for idx in np.random.choice(len(edges), size=min(n, len(edges)), replace=False):
-            u, v = edges[idx]
-            if engine.topology.graph.has_edge(u, v):
-                engine.topology.graph.remove_edge(u, v)
+        G = engine.topology.graph
+        # Only remove non-bridge edges: bridges create hard path cuts where no
+        # routing policy can recover, making all variants degrade identically.
+        bridge_set: set = set()
+        for u, v in nx.bridges(G):
+            bridge_set.add((u, v))
+            bridge_set.add((v, u))
+        candidates = [(u, v) for u, v in G.edges() if (u, v) not in bridge_set]
+        if not candidates:
+            # Fallback: no non-bridge edges available (rare), use all edges
+            candidates = list(G.edges())
+        chosen_indices = np.random.choice(len(candidates), size=min(n, len(candidates)), replace=False)
+        for idx in chosen_indices:
+            u, v = candidates[int(idx)]
+            if G.has_edge(u, v):
+                G.remove_edge(u, v)
         engine.topology.refresh_path_cache()
 
     def _run_phase2_load_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
@@ -1347,6 +1391,19 @@ class StandaloneExperimentRunner:
             'attack_cases_used': len(attack_configs),
         }
 
+        # Resume: load any partial results saved by a previous run
+        _partial_path = os.path.join(self.results_dir, 'phase3_fgsm_results.json')
+        if os.path.exists(_partial_path):
+            try:
+                with open(_partial_path) as _pf:
+                    _partial = json.load(_pf)
+                for _k, _v in _partial.items():
+                    if _k != '_run_config':
+                        all_results[_k] = _v
+                logger.info(f"[P3] Resumed partial results — {len(all_results) - 1} variant(s) already done")
+            except Exception as _e:
+                logger.warning(f"[P3] Could not load partial results: {_e}")
+
         variants = self.config['variants']
         if max_attack_variants > 0:
             variants = variants[:max_attack_variants]
@@ -1356,6 +1413,9 @@ class StandaloneExperimentRunner:
             name = vcfg['name']
             if name not in training_results:
                 logger.warning(f"[P2] {name} — no trained model, skipping")
+                continue
+            if name in all_results:
+                logger.info(f"[P3] {name} — already complete (resuming), skipping")
                 continue
             logger.info(f"[P2] Attacking {name}")
             maddpg, engine, env = self._make_variant(vcfg)
@@ -1384,10 +1444,21 @@ class StandaloneExperimentRunner:
 
                 logger.info(f"[P2]   {name}  {key}")
                 case_t0 = time.time()
-                clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
-                attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
-                                                 attack=True, attack_type=atype,
-                                                 epsilon=eps)
+                try:
+                    clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+                    attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
+                                                     attack=True, attack_type=atype,
+                                                     epsilon=eps)
+                except torch.cuda.OutOfMemoryError:
+                    logger.warning(f"[P3]   {name}  {key} — CUDA OOM, recording as failed")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    variant_results[key] = {'error': 'CUDA_OOM', 'run_config': {'attack_type': atype, 'epsilon': eps}}
+                    skipped_cases.append({'attack_type': atype, 'epsilon': eps, 'reason': 'CUDA_OOM'})
+                    consecutive_failures += 1
+                    if atype not in critical_by_type:
+                        critical_by_type[atype] = eps
+                    continue
                 slo_eval = self._evaluate_attack_slo(clean, attacked)
                 variant_results[key] = {
                     'clean': clean, 'attacked': attacked,
@@ -1424,15 +1495,27 @@ class StandaloneExperimentRunner:
                 logger.info(f"[P2]   {name}  attack surface analysis")
                 n_eps    = self.config['attack_configs'][-1]['evaluation_episodes']
                 t_per_ep = self.config['training']['timesteps_per_episode']
-                variant_results['surface'] = self._attack_surface_analysis(
-                    maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+                try:
+                    variant_results['surface'] = self._attack_surface_analysis(
+                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+                except torch.cuda.OutOfMemoryError:
+                    logger.warning(f"[P3]   {name}  attack surface analysis — CUDA OOM, skipping")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    variant_results['surface'] = {'error': 'CUDA_OOM'}
 
                 # GNN embedding attack (GNN variants only)
                 if vcfg.get('use_gnn', False):
                     logger.info(f"[P2]   {name}  GNN embedding attack")
-                    variant_results['gnn_embedding_attack'] = self._attack_episodes(
-                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
-                        attack=True, attack_type='packet_loss', epsilon=0.10)
+                    try:
+                        variant_results['gnn_embedding_attack'] = self._attack_episodes(
+                            maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
+                            attack=True, attack_type='packet_loss', epsilon=0.10)
+                    except torch.cuda.OutOfMemoryError:
+                        logger.warning(f"[P3]   {name}  GNN embedding attack — CUDA OOM, skipping")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        variant_results['gnn_embedding_attack'] = {'error': 'CUDA_OOM'}
             else:
                 skipped_cases.append({
                     'attack_type': 'surface_and_gnn',
@@ -1447,6 +1530,20 @@ class StandaloneExperimentRunner:
                 'critical_epsilon_by_type': critical_by_type,
             }
             all_results[name] = variant_results
+
+            # Incremental save — preserve progress even if a later variant crashes
+            self._save(all_results, 'phase3_fgsm_results.json')
+
+            # Release GPU memory before processing the next variant to prevent OOM
+            del maddpg, engine, env
+            gc.collect()
+            gc.collect()  # two passes to break cycles
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()   # wait for any async kernels to finish
+                torch.cuda.empty_cache()   # release allocator cache back to OS
+                logger.info(f"[P3] GPU after {name}: "
+                            f"{torch.cuda.memory_allocated() / 1024**3:.2f} GiB allocated, "
+                            f"{torch.cuda.memory_reserved() / 1024**3:.2f} GiB reserved")
 
         all_results['_run_config']['phase3_runtime_sec'] = float(time.time() - phase_t0)
         self._save(all_results, 'phase3_fgsm_results.json')
@@ -1513,13 +1610,14 @@ class StandaloneExperimentRunner:
                                 agent_index=agent_idx,
                             ))
                     states = adv
-                if trainable_indices is not None:
-                    t_states = [states[i] for i in trainable_indices]
-                    t_actions = maddpg.choose_action(t_states)
-                    actions = self._build_full_actions(t_actions, n_total_hosts,
-                                                      trainable_indices, n_actions)
-                else:
-                    actions = maddpg.choose_action(states)
+                with torch.no_grad():
+                    if trainable_indices is not None:
+                        t_states = [states[i] for i in trainable_indices]
+                        t_actions = maddpg.choose_action(t_states)
+                        actions = self._build_full_actions(t_actions, n_total_hosts,
+                                                          trainable_indices, n_actions)
+                    else:
+                        actions = maddpg.choose_action(states)
                 next_states, rewards, info = env.step(actions)
                 states = next_states
                 ep_r      += sum(rewards)

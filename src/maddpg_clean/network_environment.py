@@ -544,6 +544,10 @@ class NetworkEngine:
         # chosen == pkt['dst'], so access nodes never receive transit packets in
         # their queues — no sink exclusion is needed.
         self._sink_host_indices: set = set()
+        # Fast membership test for host endpoints (BS*, MECS*, CS*).  Used in
+        # step() to skip k-path selection at the host level and defer it to the
+        # dist switch (correct MPLS PE model).
+        self._endpoint_host_set: set = set(self.topology.access_nodes)
         # Kept for API compatibility; unused for injection (access_nodes used directly).
         self._non_sink_hosts: list = list(self.topology.hosts)
 
@@ -575,6 +579,12 @@ class NetworkEngine:
             # PE-router model: only traffic ingress/egress endpoints act as agents.
             # Transit (core/dist) switches forward packets without RL decisions.
             return list(self.topology.access_nodes)
+        if filter_mode == 'dist_nodes':
+            # PE-switch model: only the dist switches (ingress PE routers) act as
+            # agents — they make all k-path decisions on behalf of the single-homed
+            # endpoints attached to them.  Correct architectural mapping for
+            # source-based k-path routing in the SP topology.
+            return list(self.topology.dist_nodes)
         raise ValueError(f"Unknown trainable_host_filter: {filter_mode!r}")
 
     def get_number_neighbors(self, host: str) -> int:
@@ -822,12 +832,20 @@ class NetworkEngine:
                 pkt_src    = pkt.get('src', host)
 
                 if path_k_pkt is None:
-                    # Ingress: per-destination path selection from action matrix.
-                    dst_idx = self._access_to_idx.get(dst, 0)
-                    path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
-                    pkt['path_k'] = path_k_pkt
-                    paths  = self.topology.kpath_cache.get((host, dst), [])
-                    chosen = self._next_hop_for_ingress(paths, path_k_pkt, nbrs)
+                    if host in self._endpoint_host_set:
+                        # Host endpoint (BS*, MECS*, CS*): single uplink to dist
+                        # switch.  Forward without selecting path_k so the PE
+                        # switch makes the k-path decision (MPLS PE model).
+                        chosen = nbrs[0] if nbrs else None
+                    else:
+                        # Ingress PE switch: select k-path on behalf of the
+                        # source endpoint.  kpath_cache is keyed from pkt_src
+                        # (the originating endpoint), not from this switch.
+                        dst_idx = self._access_to_idx.get(dst, 0)
+                        path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
+                        pkt['path_k'] = path_k_pkt
+                        paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
+                        chosen = self._next_hop_for_transit(paths, path_k_pkt, host, nbrs)
                 else:
                     # Transit: follow the established globally-consistent path.
                     paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
