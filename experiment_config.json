@@ -45,7 +45,7 @@
       "smooth_window_checks": 3,
       "min_epochs": 80
     },
-    "offered_load_factor": 0.80
+    "offered_load_factor": 1.00
   },
   "traffic": {
     "mode": "flow",
@@ -93,7 +93,7 @@
     "_comment": "All variants now use the same shared flow reward: delivery_weight * delivery_rate - drop_penalty * packet_loss - mean_util_weight * mean_util - var_util_penalty * util_variance - backlog_penalty * backlog. LC and CC differ only in critic/encoder architecture, not objective.",
     "delivery_weight": 1.0,
     "drop_penalty": 1.0,
-    "mean_util_weight": 0.5,
+    "mean_util_weight": 0.8,
     "progress_shaping_weight": 0.0,
     "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,
