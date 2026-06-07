@@ -1010,9 +1010,16 @@ class StandaloneExperimentRunner:
                 G.add_edges_from(_topo_snapshot)
                 env.engine.topology.refresh_path_cache()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
-            states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
             if n_link_failures:
                 self._inject_failures(env.engine, n_link_failures)
+                # Rebuild path caches on the post-failure topology so agents
+                # select from K paths that are actually reachable.  This lets
+                # different variants show differentiated routing behaviour;
+                # without this refresh all K paths in kpath_cache still route
+                # through removed links and _next_hop_for_transit falls back
+                # identically for every variant.
+                env.engine.topology.refresh_path_cache()
+            states = [env.engine.get_state(h) for h in env.engine.get_all_hosts()]
             ep_r = 0
             for t in range(t_per_ep):
                 if trainable_indices is not None:
@@ -1114,6 +1121,7 @@ class StandaloneExperimentRunner:
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
+                engine.topology.refresh_path_cache()
             for _ in range(t_per_ep):
                 engine.step(all_actions)
             ep_utils.append(float(np.nanmean(engine.get_link_utilization_distribution())))
@@ -1188,6 +1196,7 @@ class StandaloneExperimentRunner:
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
+                engine.topology.refresh_path_cache()
             for _ in range(t_per_ep):
                 if mode == 'queue_level':
                     engine.ospf_queue_level_step()
@@ -1260,10 +1269,11 @@ class StandaloneExperimentRunner:
             u, v = candidates[int(idx)]
             if G.has_edge(u, v):
                 G.remove_edge(u, v)
-        # Do NOT refresh_path_cache here: stale paths simulate the real-world
-        # OSPF/BGP convergence window where agents must reroute mid-episode.
-        # EVPN_SP (k=0 only) cannot recover if its single path is severed;
-        # MADDPG agents with k>0 alternatives can fall back to alternate paths.
+        # Do NOT refresh_path_cache here: callers rebuild the path caches
+        # immediately after this call so that all K paths in kpath_cache are
+        # reachable on the post-failure topology.  Refreshing inside this
+        # function would prevent the caller from first restoring the snapshot
+        # (needed to give each episode a fresh starting topology).
 
     def _run_phase2_load_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
         load_cfg = self.config.get('load_sweep', {})
