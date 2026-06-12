@@ -16,9 +16,10 @@ from pathlib import Path
 import re
 
 # ── Reward hyper-parameters ──────────────────────────────────────────────────
-ALPHA = 1.0   # delivery weight
-BETA  = 2.0   # congestion penalty (only fires above CONGESTION_THRESHOLD)
-GAMMA = 0.4   # utilisation variance penalty (load-balance incentive)
+ALPHA = 1.0      # delivery weight
+BETA  = 2.0      # congestion penalty (only fires above CONGESTION_THRESHOLD)
+GAMMA = 0.4      # utilisation variance penalty (load-balance incentive)
+PATH_ALPHA = 0.7 # weight of path-bottleneck penalty vs local bw reward
 CONGESTION_THRESHOLD = 0.7  # utilisation below this is not penalised
 
 # ── Packet parameters ─────────────────────────────────────────────────────────
@@ -666,8 +667,9 @@ class NetworkEngine:
           [.. + 0]                      mean adjacent link utilisation
           [.. + 1]                      max adjacent link utilisation
           [.. + 2]                      variance of adjacent link utilisations
-          [.. + 3 : .. + 3+K_PATHS]    mean first-hop utilisation per k-path index
-                                        (action-aligned: slot k corresponds to action k)
+          [.. + 3 : .. + 3+K_PATHS]    max-link utilisation per k-path index
+                                        (action-aligned: slot k corresponds to action k;
+                                         bottleneck util over all hops, not just first hop)
           [.. + 3+K_PATHS]             mean hops remaining in queue (normalised [0,1])
                                         guides anti-loop learning
 
@@ -701,15 +703,20 @@ class NetworkEngine:
         else:
             state.extend([0.0, 0.0, 0.0])
 
-        # Per-destination K-path first-hop utilisation — n_destinations * K_PATHS slots
+        # Per-destination K-path bottleneck utilisation — n_destinations * K_PATHS slots
         # Layout: for each destination d, K_PATHS consecutive utils [util_k0, util_k1, util_k2]
-        # giving independent per-destination routing signals aligned to the action matrix.
+        # Each slot is the MAX utilisation across all hops of path k (bottleneck signal),
+        # giving the actor a direct gradient to prefer the least-loaded path.
         for dst in self.topology.access_nodes:
             paths = self.topology.kpath_cache.get((host, dst), [])
             for k in range(K_PATHS):
                 if k < len(paths) and len(paths[k]) >= 2:
-                    nh = paths[k][1]
-                    state.append(self.topology.get_util(host, nh))
+                    path = paths[k]
+                    util = max(
+                        self.topology.get_util(path[j], path[j + 1])
+                        for j in range(len(path) - 1)
+                    )
+                    state.append(util)
                 else:
                     state.append(0.0)
 
@@ -781,6 +788,7 @@ class NetworkEngine:
         rewards = []
         _agent_drop_stats = []  # (pkt_drop_count, total) per active agent; None if inactive
         _agent_active = []  # True for agents that processed packets this step
+        _agent_bottleneck: List[Optional[float]] = []  # mean path-bottleneck util; None if inactive
         reward_components = {
             'fwd_success_term': 0.0,
             'shaping_term': 0.0,
@@ -794,6 +802,7 @@ class NetworkEngine:
             # packets. Skip them early to avoid neighbor/queue lookups.
             if i in self._sink_host_indices:
                 _agent_drop_stats.append(None)
+                _agent_bottleneck.append(None)
                 _agent_active.append(False)
                 continue
 
@@ -803,6 +812,7 @@ class NetworkEngine:
 
             if not nbrs or not q:
                 _agent_drop_stats.append(None)
+                _agent_bottleneck.append(None)
                 _agent_active.append(False)
                 continue
 
@@ -818,6 +828,23 @@ class NetworkEngine:
                 _pi = int(np.argmax(action[:K_PATHS])) if len(action) >= K_PATHS else 0
                 _action_matrix = np.zeros((_n_dest, K_PATHS), dtype=np.float32)
                 _action_matrix[:, _pi] = 1.0
+
+            # Compute mean bottleneck util for chosen paths (pre-action network state).
+            # Only considers destinations with packets currently in queue.
+            _active_dsts = {pkt['dst'] for pkt in q}
+            _bn_list: List[float] = []
+            for _d_idx, _dst in enumerate(self.topology.access_nodes):
+                if _dst not in _active_dsts:
+                    continue
+                _ck = int(np.argmax(_action_matrix[_d_idx]))
+                _bpaths = self.topology.kpath_cache.get((host, _dst), [])
+                if _ck < len(_bpaths) and len(_bpaths[_ck]) >= 2:
+                    _bpath = _bpaths[_ck]
+                    _bn_list.append(max(
+                        self.topology.get_util(_bpath[j], _bpath[j + 1])
+                        for j in range(len(_bpath) - 1)
+                    ))
+            _agent_bottleneck_val = float(np.mean(_bn_list)) if _bn_list else 0.0
 
             # forward packets
             delivered = dropped = 0
@@ -919,26 +946,34 @@ class NetworkEngine:
                     )
                     self._episode_stats['dropped_hop_samples'].append(pkt_hops + 1)
 
-            # collect per-agent drop stats for deferred global reward computation
+            # collect per-agent stats for deferred global reward computation
             _agent_drop_stats.append((pkt_drop_count, len(q)))
+            _agent_bottleneck.append(_agent_bottleneck_val)
             _agent_active.append(True)
 
         # ---------------------------------------------------------------
-        # Per-agent reward: f(min_adjacent_bw) + local drop penalty
+        # Per-agent reward: path-bottleneck + local drop penalty + variance
         # ---------------------------------------------------------------
-        # f(min_bw) is a piecewise function rewarding uncongested links and
-        # penalising congestion.  Each agent receives a signal derived from
-        # its *own* link state, fixing the broken credit-assignment of the
-        # previous global_delivery_rate which was identical for all 32 agents.
-        # BETA (=2.0) is defined at the top of this module.
-        drop_penalty = float(self.reward_cfg.get('drop_penalty', BETA))
+        # r = (1-path_alpha) * f(min_adj_bw) - path_alpha * bottleneck_util
+        #     - drop_penalty * drop_rate - var_util_penalty * network_var
+        #
+        # path_alpha (default PATH_ALPHA=0.7) makes the bottleneck term dominant
+        # so agents learn to prefer least-loaded paths, not just uncongested
+        # local links.  The variance penalty is a global load-balance incentive.
+        drop_penalty    = float(self.reward_cfg.get('drop_penalty',    BETA))
+        path_alpha      = float(self.reward_cfg.get('path_alpha',      PATH_ALPHA))
+        var_util_pen_w  = float(self.reward_cfg.get('var_util_penalty', GAMMA))
 
-        for host, stats in zip(hosts, _agent_drop_stats):
+        # Global variance penalty — computed once, applied to all active agents.
+        _util_vals_pre = [self.topology.get_util(u, v) for u, v in self.topology.graph.edges()]
+        var_pen = var_util_pen_w * float(np.var(_util_vals_pre)) if len(_util_vals_pre) > 1 else 0.0
+
+        for host, stats, bn in zip(hosts, _agent_drop_stats, _agent_bottleneck):
             if stats is None:
                 rewards.append(0.0)
             else:
                 drop_count, total = stats
-                # f(min available BW across adjacent links)
+                # f(min available BW across adjacent links) — local congestion signal
                 adj_bws = [self.topology.avail_bw(host, nb)
                            for nb in self.topology.get_neighbors(host)]
                 min_bw = float(min(adj_bws)) if adj_bws else 0.0
@@ -950,12 +985,13 @@ class NetworkEngine:
                     bw_reward = -1.0
                 else:
                     bw_reward = -5.0
-                # Per-agent drop penalty (local — not global delivery rate)
                 drop_term = drop_penalty * drop_count / max(1, total)
-                r = bw_reward - drop_term
+                bn_val = bn if bn is not None else 0.0
+                r = (1.0 - path_alpha) * bw_reward - path_alpha * bn_val - drop_term - var_pen
                 rewards.append(r)
                 reward_components['fwd_success_term'] += bw_reward
-                reward_components['chosen_util_term'] += drop_term
+                reward_components['chosen_util_term'] += bn_val
+                reward_components['var_util_term']    += var_pen
 
         # bookkeeping
         self._advance_link_loads_one_step()
@@ -1232,16 +1268,23 @@ class NetworkEngine:
                 nxt = path[1]
                 required_bw = self._required_bw(host, nxt)
                 if self.topology.avail_bw(host, nxt) < required_bw:
-                    # Link congested: buffer at current node rather than drop.
-                    # TTL and hop count unchanged — waiting is not a hop.
                     self._episode_stats['capacity_block_events'] += 1
-                    if len(next_queue[host]) < MAX_NODE_QUEUE_DEPTH:
-                        next_queue[host].append(pkt)
-                    else:
+                    if self.traffic_mode == 'flow':
+                        # Flow mode: immediate drop — same semantics as MADDPG step().
+                        # Ensures OSPF/SP baseline is evaluated under identical conditions.
                         dropped += 1
-                        self._episode_stats['drop_overflow'] += 1
+                        self._episode_stats['drop_link_congestion'] += 1
                         self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
                         self._episode_stats['dropped_hop_samples'].append(pkt_hops)
+                    else:
+                        # Packet mode: buffer at current node — TTL and hop count unchanged.
+                        if len(next_queue[host]) < MAX_NODE_QUEUE_DEPTH:
+                            next_queue[host].append(pkt)
+                        else:
+                            dropped += 1
+                            self._episode_stats['drop_overflow'] += 1
+                            self._episode_stats['dropped_delay_samples'].append(max(0, self.time_step - pkt_created))
+                            self._episode_stats['dropped_hop_samples'].append(pkt_hops)
                     continue
                 cur = self.topology.get_util(host, nxt)
                 cap_scale = self.topology.get_capacity_scale(host, nxt)

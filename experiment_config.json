@@ -9,7 +9,7 @@
   "training": {
     "epochs": 400,
     "episodes_per_epoch": 5,
-    "timesteps_per_episode": 128,
+    "timesteps_per_episode": 256,
     "batch_size": 512,
     "memory_size": 100000,
     "learn_freq": 10,
@@ -52,9 +52,9 @@
     "packet_size": 0.03,
     "flow_packet_size": 0.03,
     "flow_hold_steps": 8,
-    "flow_duration_steps": 30,
-    "flow_count": 300,
-    "episode_steps": 128
+    "flow_duration_steps": 12,
+    "flow_count": 21,
+    "episode_steps": 256
   },
   "paper1_eval": {
     "evaluation_episodes": 30,
@@ -95,7 +95,8 @@
     "max_util_penalty": 0.0,
     "congestion_threshold": 0.8,
     "var_util_penalty": 0.3,
-    "backlog_penalty": 0.0
+    "backlog_penalty": 0.0,
+    "path_alpha": 0.7
   },
   "runtime_control": {
     "profile": "standard",
