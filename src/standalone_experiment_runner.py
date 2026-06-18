@@ -978,7 +978,13 @@ class StandaloneExperimentRunner:
             load_sweep_results = self._run_phase2_load_sweep(training_results, curr_seeds, t_per_ep)
             self._save(load_sweep_results, 'phase2_load_sweep_results.json')
             ranking['load_sweep_summary'] = load_sweep_results.get('summary', {})
-        
+
+        hotspot_cfg = self.config.get('hotspot_sweep', {})
+        if bool(hotspot_cfg.get('enabled', False)):
+            logger.info("[P2] Running hotspot traffic sweep (skewed matrix)")
+            hotspot_results = self._run_hotspot_sweep(training_results, curr_seeds, t_per_ep)
+            self._save(hotspot_results, 'phase2_hotspot_sweep_results.json')
+
         self._save(ranking, 'phase2_rankings.json')
         self._generate_plots_for_phase(2)
         logger.info("[P2] evaluation complete")
@@ -1342,6 +1348,100 @@ class StandaloneExperimentRunner:
                 'critical_load_failure': self._compute_critical_load(payload.get('dual_link_failure', {}))
                     if include_failures else None,
             }
+
+        return out
+
+    def _run_hotspot_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
+        """Load sweep with a skewed traffic matrix (CDN-like many-to-few pattern).
+
+        Evaluates the same trained checkpoints as the uniform sweep but injects
+        traffic where `skew_weight` fraction of flows are forced from `hot_srcs`
+        to `hot_dsts`.  SP is expected to congest the transit links feeding those
+        destinations; MADDPG should route around them.
+        """
+        hotspot_cfg = self.config.get('hotspot_sweep', {})
+        loads = [float(x) for x in hotspot_cfg.get('offered_loads', [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0])]
+        skew_weight = float(hotspot_cfg.get('skew_weight', 0.75))
+        hot_srcs = hotspot_cfg.get('hot_srcs', ['BS1', 'BS2', 'BS3', 'BS4', 'MECS1', 'MECS2', 'MECS3', 'MECS4'])
+        hot_dsts = hotspot_cfg.get('hot_dsts', ['CS1', 'CS2'])
+
+        skewed_traffic_cfg = {**self.config.get('traffic', {}), 'skew': {
+            'weight': skew_weight,
+            'hot_srcs': hot_srcs,
+            'hot_dsts': hot_dsts,
+        }}
+
+        topology_cfg = self.config.get('topology', {})
+        reward_cfg = self.config.get('reward', {})
+        filter_mode = self.config.get('training', {}).get('trainable_host_filter', 'all')
+
+        out = {
+            'meta': {
+                'loads': loads,
+                'evaluation_episodes': int(n_eps),
+                'timesteps_per_episode': int(t_per_ep),
+                'skew_weight': skew_weight,
+                'hot_srcs': hot_srcs,
+                'hot_dsts': hot_dsts,
+                'description': (
+                    f'{skew_weight*100:.0f}% of flows go from {hot_srcs} to {hot_dsts}; '
+                    'rest uniform. Tests routing under CDN-like traffic concentration.'
+                ),
+            },
+            'methods': {},
+        }
+
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                continue
+            logger.info(f"[P2][HOTSPOT] {name}")
+            # Reuse trained MADDPG from the uniform-traffic checkpoint; only the
+            # evaluation engine uses the skewed traffic config.
+            maddpg, _, _ = self._make_variant(vcfg)
+            self._load_variant_checkpoint(maddpg, name)
+
+            hot_engine = NetworkEngine(
+                topology_type=topology_cfg.get('type', 'service_provider'),
+                n_nodes=int(topology_cfg.get('nodes', 65)),
+                reward_config=reward_cfg,
+                topology_config=topology_cfg,
+                traffic_config=skewed_traffic_cfg,
+            )
+            all_hosts = hot_engine.get_all_hosts()
+            trainable_hosts = hot_engine.get_trainable_hosts(filter_mode)
+            host_to_idx = {h: i for i, h in enumerate(all_hosts)}
+            hot_engine.trainable_host_indices = [host_to_idx[h] for h in trainable_hosts]
+            hot_engine.n_total_hosts = len(all_hosts)
+            hot_env = NetworkEnv(hot_engine)
+
+            method_payload = {}
+            for i, load in enumerate(loads, 1):
+                key = f"load_{load:.2f}"
+                logger.info(f"[P2][HOTSPOT] {name}  load={load:.2f}  ({i}/{len(loads)})")
+                method_payload[key] = self._run_eval_episodes(
+                    maddpg, hot_env, n_eps, t_per_ep,
+                    n_link_failures=0,
+                    offered_load_factor=load,
+                )
+            out['methods'][name] = method_payload
+
+        logger.info("[P2][HOTSPOT] EVPN_SP")
+        sp_hot_engine = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            traffic_config=skewed_traffic_cfg,
+        )
+        sp_payload = {}
+        for i, load in enumerate(loads, 1):
+            key = f"load_{load:.2f}"
+            logger.info(f"[P2][HOTSPOT] EVPN_SP  load={load:.2f}  ({i}/{len(loads)})")
+            sp_payload[key] = self._run_evpn_sp_episodes(
+                sp_hot_engine, n_eps, t_per_ep,
+                n_link_failures=0,
+                offered_load_factor=load,
+            )
+        out['methods']['EVPN_SP'] = sp_payload
 
         return out
 
@@ -2108,7 +2208,7 @@ def main():
     ap.add_argument('--config',      default='experiment_config.json')
     ap.add_argument('--gpu',         type=int, default=0)
     ap.add_argument('--results-dir', default=None)
-    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2'], default='all')
+    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot'], default='all')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--smoke', action='store_true',
                     help='Smoke-test mode: 80 epochs / 3 eps / 64 steps — enough to '
@@ -2149,10 +2249,16 @@ def main():
         ]
         logger.info("Variant filter active — training: %s", [v['name'] for v in runner.config['variants']])
 
-    if   args.phase == 'all':    runner.run_all()
-    elif args.phase == 'train':  runner.run_training()
-    elif args.phase == 'paper1': runner.evaluate_maddpg()
-    elif args.phase == 'paper2': runner.evaluate_fgsm()
+    if   args.phase == 'all':     runner.run_all()
+    elif args.phase == 'train':   runner.run_training()
+    elif args.phase == 'paper1':  runner.evaluate_maddpg()
+    elif args.phase == 'paper2':  runner.evaluate_fgsm()
+    elif args.phase == 'hotspot':
+        tr = runner._load('phase1_training_results.json')
+        t_per_ep = runner.config['training']['timesteps_per_episode']
+        n_eps = runner.config.get('paper1_eval', {}).get('evaluation_episodes', 20)
+        results = runner._run_hotspot_sweep(tr, n_eps, t_per_ep)
+        runner._save(results, 'phase2_hotspot_sweep_results.json')
 
 
 if __name__ == '__main__':

@@ -81,6 +81,14 @@
     ],
     "include_failures": false
   },
+  "hotspot_sweep": {
+    "enabled": true,
+    "offered_loads": [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0],
+    "skew_weight": 0.75,
+    "hot_srcs": ["BS1", "BS2", "BS3", "BS4", "MECS1", "MECS2", "MECS3", "MECS4"],
+    "hot_dsts": ["CS1", "CS2"],
+    "_comment": "75% of flows go from BS/MECS nodes to CS1+CS2 (CDN hotspot). SP will congest the transit links converging on CS1 (S7-S12, S21-S12, S30-S12). MADDPG routes around the bottleneck."
+  },
   "clean_slo": {
     "max_pkt_loss_pct": 5.0,
     "max_delay_p95": 15.0,
