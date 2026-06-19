@@ -82,12 +82,25 @@
     "include_failures": false
   },
   "hotspot_sweep": {
-    "enabled": true,
+    "enabled": false,
     "offered_loads": [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0],
     "skew_weight": 0.75,
     "hot_srcs": ["BS1", "BS2", "BS3", "BS4", "MECS1", "MECS2", "MECS3", "MECS4"],
     "hot_dsts": ["CS1", "CS2"],
     "_comment": "75% of flows go from BS/MECS nodes to CS1+CS2 (CDN hotspot). SP will congest the transit links converging on CS1 (S7-S12, S21-S12, S30-S12). MADDPG routes around the bottleneck."
+  },
+  "failure_sweep": {
+    "enabled": true,
+    "offered_loads": [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0],
+    "target_links": [["S8", "S13"], ["S8", "S22"]],
+    "_comment_links": "Fail the two primary inter-cluster links S8-S13 and S8-S22 (cap 300 each). These carry cross-cluster traffic for clusters 2 and 3 (BS2/MECS2/BS3/MECS3). After failure all that traffic must detour through the core. SP floods the surviving S8-S1 link (cap 300); MADDPG CC variants can distribute across the three distinct core paths to each destination.",
+    "include_hotspot": true,
+    "hotspot": {
+      "skew_weight": 0.75,
+      "hot_srcs": ["BS1", "BS2", "BS3", "BS4", "MECS1", "MECS2", "MECS3", "MECS4"],
+      "hot_dsts": ["CS1", "CS2"],
+      "_comment": "Same CDN hotspot as hotspot_sweep, combined with targeted link failures."
+    }
   },
   "clean_slo": {
     "max_pkt_loss_pct": 5.0,

@@ -985,6 +985,12 @@ class StandaloneExperimentRunner:
             hotspot_results = self._run_hotspot_sweep(training_results, curr_seeds, t_per_ep)
             self._save(hotspot_results, 'phase2_hotspot_sweep_results.json')
 
+        failure_cfg = self.config.get('failure_sweep', {})
+        if bool(failure_cfg.get('enabled', False)):
+            logger.info("[P2] Running targeted failure sweep")
+            failure_results = self._run_failure_sweep(training_results, curr_seeds, t_per_ep)
+            self._save(failure_results, 'phase2_failure_sweep_results.json')
+
         self._save(ranking, 'phase2_rankings.json')
         self._generate_plots_for_phase(2)
         logger.info("[P2] evaluation complete")
@@ -993,7 +999,8 @@ class StandaloneExperimentRunner:
     def _run_eval_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                            n_eps: int, t_per_ep: int,
                            n_link_failures: int = 0,
-                           offered_load_factor: float = 1.0) -> Dict:
+                           offered_load_factor: float = 1.0,
+                           target_links: list = None) -> Dict:
         ep_rewards, ep_utils = [], []
         ep_pdr, ep_resolved_pdr, ep_true_loss, ep_hop_frac, ep_goodput = [], [], [], [], []
         ep_delay_p95, ep_backlog, ep_util_p95 = [], [], []
@@ -1004,10 +1011,11 @@ class StandaloneExperimentRunner:
         trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
         n_actions = maddpg.n_actions
+        _needs_failure = bool(n_link_failures or target_links)
         # Snapshot topology before the loop so each episode gets a fresh graph
         _topo_snapshot = (
             [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
-            if n_link_failures else None
+            if _needs_failure else None
         )
         for _ in range(n_eps):
             if _topo_snapshot is not None:
@@ -1016,8 +1024,8 @@ class StandaloneExperimentRunner:
                 G.add_edges_from(_topo_snapshot)
                 env.engine.topology.refresh_path_cache()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
-            if n_link_failures:
-                self._inject_failures(env.engine, n_link_failures)
+            if _needs_failure:
+                self._inject_failures(env.engine, n_link_failures, target_links=target_links)
                 # Rebuild path caches on the post-failure topology so agents
                 # select from K paths that are actually reachable.  This lets
                 # different variants show differentiated routing behaviour;
@@ -1092,7 +1100,8 @@ class StandaloneExperimentRunner:
     def _run_evpn_sp_episodes(self, engine: NetworkEngine,
                               n_eps: int, t_per_ep: int,
                               n_link_failures: int = 0,
-                              offered_load_factor: float = 1.0) -> Dict:
+                              offered_load_factor: float = 1.0,
+                              target_links: list = None) -> Dict:
         """EVPN with shortest-path tunnels: same forwarding model as MADDPG but always
         selects k=0 (shortest path) per destination.  Primary baseline — same buffering,
         same queue dynamics, no learning."""
@@ -1112,10 +1121,11 @@ class StandaloneExperimentRunner:
         k0_action = np.zeros(n_actions, dtype=np.float32)
         k0_action[0::k_per_dest] = 1.0
         all_actions = [k0_action for _ in range(n_hosts)]
+        _needs_failure = bool(n_link_failures or target_links)
         # Snapshot topology before the loop so each episode gets a fresh graph
         _topo_snapshot = (
             [(u, v, dict(d)) for u, v, d in engine.topology.graph.edges(data=True)]
-            if n_link_failures else None
+            if _needs_failure else None
         )
 
         for _ in range(n_eps):
@@ -1125,8 +1135,8 @@ class StandaloneExperimentRunner:
                 G.add_edges_from(_topo_snapshot)
                 engine.topology.refresh_path_cache()
             engine.reset_with_load(offered_load_factor=offered_load_factor)
-            if n_link_failures:
-                self._inject_failures(engine, n_link_failures)
+            if _needs_failure:
+                self._inject_failures(engine, n_link_failures, target_links=target_links)
                 engine.topology.refresh_path_cache()
             for _ in range(t_per_ep):
                 engine.step(all_actions)
@@ -1258,23 +1268,32 @@ class StandaloneExperimentRunner:
         }
 
     @staticmethod
-    def _inject_failures(engine: NetworkEngine, n: int):
+    def _inject_failures(engine: NetworkEngine, n: int = 0,
+                          target_links: list = None):
         G = engine.topology.graph
-        # Only remove non-bridge edges: bridges create hard path cuts where no
-        # routing policy can recover, making all variants degrade identically.
-        bridge_set: set = set()
-        for u, v in nx.bridges(G):
-            bridge_set.add((u, v))
-            bridge_set.add((v, u))
-        candidates = [(u, v) for u, v in G.edges() if (u, v) not in bridge_set]
-        if not candidates:
-            # Fallback: no non-bridge edges available (rare), use all edges
-            candidates = list(G.edges())
-        chosen_indices = np.random.choice(len(candidates), size=min(n, len(candidates)), replace=False)
-        for idx in chosen_indices:
-            u, v = candidates[int(idx)]
-            if G.has_edge(u, v):
-                G.remove_edge(u, v)
+        if target_links:
+            # Targeted failure: remove explicitly named link pairs. Bidirectional
+            # edges are removed in both directions so the topology is symmetric.
+            for u, v in target_links:
+                if G.has_edge(u, v):
+                    G.remove_edge(u, v)
+                if G.has_edge(v, u):
+                    G.remove_edge(v, u)
+        else:
+            # Random non-bridge failure: only remove non-bridge edges so the
+            # graph stays connected and every variant has at least one path.
+            bridge_set: set = set()
+            for u, v in nx.bridges(G):
+                bridge_set.add((u, v))
+                bridge_set.add((v, u))
+            candidates = [(u, v) for u, v in G.edges() if (u, v) not in bridge_set]
+            if not candidates:
+                candidates = list(G.edges())
+            chosen_indices = np.random.choice(len(candidates), size=min(n, len(candidates)), replace=False)
+            for idx in chosen_indices:
+                u, v = candidates[int(idx)]
+                if G.has_edge(u, v):
+                    G.remove_edge(u, v)
         # Do NOT refresh_path_cache here: callers rebuild the path caches
         # immediately after this call so that all K paths in kpath_cache are
         # reachable on the post-failure topology.  Refreshing inside this
@@ -1442,6 +1461,137 @@ class StandaloneExperimentRunner:
                 offered_load_factor=load,
             )
         out['methods']['EVPN_SP'] = sp_payload
+
+        return out
+
+    def _run_failure_sweep(self, training_results: Dict, n_eps: int, t_per_ep: int) -> Dict:
+        """Load sweep with targeted link failures on primary inter-cluster paths.
+
+        Fails the links named in failure_sweep.target_links at the start of every
+        episode (restored between episodes).  Sweeps offered load across both uniform
+        and (optionally) hotspot traffic matrices so that the two stressors can be
+        studied in isolation and combined.
+
+        SP is expected to flood the surviving paths with all rerouted traffic; MADDPG
+        CC variants should distribute load across the remaining K-paths.
+        """
+        cfg = self.config.get('failure_sweep', {})
+        loads = [float(x) for x in cfg.get('offered_loads', [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0])]
+        target_links = [list(lp) for lp in cfg.get('target_links', [['S8', 'S13'], ['S8', 'S22']])]
+        include_hotspot = bool(cfg.get('include_hotspot', True))
+
+        topology_cfg = self.config.get('topology', {})
+        reward_cfg   = self.config.get('reward', {})
+        base_traffic = self.config.get('traffic', {})
+        filter_mode  = self.config.get('training', {}).get('trainable_host_filter', 'all')
+
+        hs_cfg = cfg.get('hotspot', self.config.get('hotspot_sweep', {}))
+        skew_weight = float(hs_cfg.get('skew_weight', 0.75))
+        hot_srcs    = hs_cfg.get('hot_srcs', ['BS1', 'BS2', 'BS3', 'BS4', 'MECS1', 'MECS2', 'MECS3', 'MECS4'])
+        hot_dsts    = hs_cfg.get('hot_dsts', ['CS1', 'CS2'])
+        skewed_traffic = {**base_traffic, 'skew': {
+            'weight': skew_weight, 'hot_srcs': hot_srcs, 'hot_dsts': hot_dsts,
+        }}
+
+        out = {
+            'meta': {
+                'loads': loads,
+                'evaluation_episodes': int(n_eps),
+                'timesteps_per_episode': int(t_per_ep),
+                'target_links': target_links,
+                'include_hotspot': include_hotspot,
+                'skew_weight': skew_weight if include_hotspot else None,
+                'hot_srcs': hot_srcs if include_hotspot else None,
+                'hot_dsts': hot_dsts if include_hotspot else None,
+                'description': (
+                    f'Targeted failure: {target_links}. '
+                    f'Fails primary inter-cluster links so rerouted traffic '
+                    f'must share surviving capacity. Tests under uniform and '
+                    f'hotspot traffic matrices.'
+                ),
+            },
+            'methods': {},
+        }
+
+        def _make_engine(traffic_cfg):
+            eng = NetworkEngine(
+                topology_type=topology_cfg.get('type', 'service_provider'),
+                n_nodes=int(topology_cfg.get('nodes', 65)),
+                reward_config=reward_cfg,
+                topology_config=topology_cfg,
+                traffic_config=traffic_cfg,
+            )
+            all_hosts = eng.get_all_hosts()
+            trainable  = eng.get_trainable_hosts(filter_mode)
+            h2i = {h: i for i, h in enumerate(all_hosts)}
+            eng.trainable_host_indices = [h2i[h] for h in trainable]
+            eng.n_total_hosts = len(all_hosts)
+            return eng
+
+        for vcfg in self.config['variants']:
+            name = vcfg['name']
+            if name not in training_results:
+                continue
+            logger.info(f"[P2][FAILURE] {name}")
+            maddpg, _, _ = self._make_variant(vcfg)
+            self._load_variant_checkpoint(maddpg, name)
+
+            uni_engine = _make_engine(base_traffic)
+            uni_env    = NetworkEnv(uni_engine)
+            hot_engine = _make_engine(skewed_traffic) if include_hotspot else None
+            hot_env    = NetworkEnv(hot_engine) if hot_engine else None
+
+            uni_payload = {}
+            hot_payload = {} if include_hotspot else None
+            for i, load in enumerate(loads, 1):
+                key = f"load_{load:.2f}"
+                logger.info(f"[P2][FAILURE] {name}  load={load:.2f}  ({i}/{len(loads)})")
+                uni_payload[key] = self._run_eval_episodes(
+                    maddpg, uni_env, n_eps, t_per_ep,
+                    offered_load_factor=load,
+                    target_links=target_links,
+                )
+                if include_hotspot:
+                    hot_payload[key] = self._run_eval_episodes(
+                        maddpg, hot_env, n_eps, t_per_ep,
+                        offered_load_factor=load,
+                        target_links=target_links,
+                    )
+            out['methods'][name] = {'uniform': uni_payload}
+            if include_hotspot:
+                out['methods'][name]['hotspot'] = hot_payload
+
+        logger.info("[P2][FAILURE] EVPN_SP")
+        sp_uni_engine = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            traffic_config=base_traffic,
+        )
+        sp_hot_engine = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            traffic_config=skewed_traffic,
+        ) if include_hotspot else None
+
+        sp_uni_payload = {}
+        sp_hot_payload = {} if include_hotspot else None
+        for i, load in enumerate(loads, 1):
+            key = f"load_{load:.2f}"
+            logger.info(f"[P2][FAILURE] EVPN_SP  load={load:.2f}  ({i}/{len(loads)})")
+            sp_uni_payload[key] = self._run_evpn_sp_episodes(
+                sp_uni_engine, n_eps, t_per_ep,
+                offered_load_factor=load,
+                target_links=target_links,
+            )
+            if include_hotspot:
+                sp_hot_payload[key] = self._run_evpn_sp_episodes(
+                    sp_hot_engine, n_eps, t_per_ep,
+                    offered_load_factor=load,
+                    target_links=target_links,
+                )
+        out['methods']['EVPN_SP'] = {'uniform': sp_uni_payload}
+        if include_hotspot:
+            out['methods']['EVPN_SP']['hotspot'] = sp_hot_payload
 
         return out
 
@@ -2208,7 +2358,7 @@ def main():
     ap.add_argument('--config',      default='experiment_config.json')
     ap.add_argument('--gpu',         type=int, default=0)
     ap.add_argument('--results-dir', default=None)
-    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot'], default='all')
+    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot', 'failure'], default='all')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--smoke', action='store_true',
                     help='Smoke-test mode: 80 epochs / 3 eps / 64 steps — enough to '
@@ -2259,6 +2409,12 @@ def main():
         n_eps = runner.config.get('paper1_eval', {}).get('evaluation_episodes', 20)
         results = runner._run_hotspot_sweep(tr, n_eps, t_per_ep)
         runner._save(results, 'phase2_hotspot_sweep_results.json')
+    elif args.phase == 'failure':
+        tr = runner._load('phase1_training_results.json')
+        t_per_ep = runner.config['training']['timesteps_per_episode']
+        n_eps = runner.config.get('paper1_eval', {}).get('evaluation_episodes', 20)
+        results = runner._run_failure_sweep(tr, n_eps, t_per_ep)
+        runner._save(results, 'phase2_failure_sweep_results.json')
 
 
 if __name__ == '__main__':
