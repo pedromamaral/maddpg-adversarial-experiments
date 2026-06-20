@@ -1528,6 +1528,14 @@ class StandaloneExperimentRunner:
             eng.n_total_hosts = len(all_hosts)
             return eng
 
+        # Engines are created once before the variant loop so that NetworkTopology's
+        # global random.seed(42) call (in __init__) doesn't reset the RNG for each
+        # variant, which would make every variant see an identical traffic sequence.
+        uni_engine = _make_engine(base_traffic)
+        uni_env    = NetworkEnv(uni_engine)
+        hot_engine = _make_engine(skewed_traffic) if include_hotspot else None
+        hot_env    = NetworkEnv(hot_engine) if hot_engine else None
+
         for vcfg in self.config['variants']:
             name = vcfg['name']
             if name not in training_results:
@@ -1535,11 +1543,6 @@ class StandaloneExperimentRunner:
             logger.info(f"[P2][FAILURE] {name}")
             maddpg, _, _ = self._make_variant(vcfg)
             self._load_variant_checkpoint(maddpg, name)
-
-            uni_engine = _make_engine(base_traffic)
-            uni_env    = NetworkEnv(uni_engine)
-            hot_engine = _make_engine(skewed_traffic) if include_hotspot else None
-            hot_env    = NetworkEnv(hot_engine) if hot_engine else None
 
             uni_payload = {}
             hot_payload = {} if include_hotspot else None

@@ -382,10 +382,12 @@ class NetworkTopology:
                 self.path_cache[(src, dst)] = []
         self.kpath_cache.clear()
         for src in self.hosts:
+            _src_degree = self.graph.degree(src)
+            _dedup_idx = 2 if _src_degree == 1 else 1
             for dst in self.access_nodes:
                 if src != dst:
                     self.kpath_cache[(src, dst)] = self._build_distinct_kpaths(
-                        self.graph, src, dst, K_PATHS
+                        self.graph, src, dst, K_PATHS, dedup_hop_idx=_dedup_idx
                     )
 
     # ── edge helpers ─────────────────────────────────────────────────────────
