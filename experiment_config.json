@@ -255,66 +255,24 @@
     }
   ],
   "attack_configs": [
+    {"attack_type": "packet_loss",   "epsilon": 0.05, "evaluation_episodes": 50},
+    {"attack_type": "packet_loss",   "epsilon": 0.1,  "evaluation_episodes": 50},
+    {"attack_type": "packet_loss",   "epsilon": 0.15, "evaluation_episodes": 50},
+    {"attack_type": "packet_loss",   "epsilon": 0.2,  "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize","epsilon": 0.05, "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize","epsilon": 0.1,  "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize","epsilon": 0.15, "evaluation_episodes": 50},
+    {"attack_type": "reward_minimize","epsilon": 0.2,  "evaluation_episodes": 50},
+    {"attack_type": "confusion",     "epsilon": 0.05, "evaluation_episodes": 50},
+    {"attack_type": "confusion",     "epsilon": 0.1,  "evaluation_episodes": 50},
+    {"attack_type": "confusion",     "epsilon": 0.15, "evaluation_episodes": 50},
+    {"attack_type": "confusion",     "epsilon": 0.2,  "evaluation_episodes": 50},
     {
-      "attack_type": "packet_loss",
-      "epsilon": 0.05,
-      "evaluation_episodes": 50
+      "_comment": "Partial-compromise sweep: epsilon fixed at 0.1, fraction of agents compromised varies. Establishes the vulnerability curve — how many agents must an adversary control?",
+      "attack_type": "packet_loss", "epsilon": 0.1, "attack_fraction": 0.10, "evaluation_episodes": 50
     },
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.1,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.15,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "packet_loss",
-      "epsilon": 0.2,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "reward_minimize",
-      "epsilon": 0.05,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "reward_minimize",
-      "epsilon": 0.1,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "reward_minimize",
-      "epsilon": 0.15,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "reward_minimize",
-      "epsilon": 0.2,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "confusion",
-      "epsilon": 0.05,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "confusion",
-      "epsilon": 0.1,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "confusion",
-      "epsilon": 0.15,
-      "evaluation_episodes": 50
-    },
-    {
-      "attack_type": "confusion",
-      "epsilon": 0.2,
-      "evaluation_episodes": 50
-    }
+    {"attack_type": "packet_loss", "epsilon": 0.1, "attack_fraction": 0.25, "evaluation_episodes": 50},
+    {"attack_type": "packet_loss", "epsilon": 0.1, "attack_fraction": 0.50, "evaluation_episodes": 50}
   ],
   "fgsm_slo": {
     "max_pkt_loss_pct": 12.0,

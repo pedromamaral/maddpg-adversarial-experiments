@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import time
+import random
 import argparse
 import logging
 import warnings
@@ -1694,16 +1695,21 @@ class StandaloneExperimentRunner:
 
             # Standard FGSM sweep
             for acfg in attack_configs:
-                atype    = acfg['attack_type']
-                eps      = acfg['epsilon']
-                n_eps    = acfg['evaluation_episodes']
-                t_per_ep = self.config['training']['timesteps_per_episode']
-                key      = f"{atype}_eps{eps}"
+                atype          = acfg['attack_type']
+                eps            = acfg['epsilon']
+                n_eps          = acfg['evaluation_episodes']
+                t_per_ep       = self.config['training']['timesteps_per_episode']
+                attack_fraction = float(acfg.get('attack_fraction', 1.0))
+                key = (
+                    f"{atype}_eps{eps}_frac{attack_fraction:.2f}"
+                    if attack_fraction < 1.0 else f"{atype}_eps{eps}"
+                )
 
                 if phase3_skip_after_critical and atype in critical_by_type and eps > critical_by_type[atype]:
                     skipped_cases.append({
                         'attack_type': atype,
                         'epsilon': eps,
+                        'attack_fraction': attack_fraction,
                         'reason': 'skipped_after_critical_epsilon',
                     })
                     continue
@@ -1714,12 +1720,13 @@ class StandaloneExperimentRunner:
                     clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
                     attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
                                                      attack=True, attack_type=atype,
-                                                     epsilon=eps)
+                                                     epsilon=eps,
+                                                     attack_fraction=attack_fraction)
                 except torch.cuda.OutOfMemoryError:
                     logger.warning(f"[P3]   {name}  {key} — CUDA OOM, recording as failed")
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                    variant_results[key] = {'error': 'CUDA_OOM', 'run_config': {'attack_type': atype, 'epsilon': eps}}
+                    variant_results[key] = {'error': 'CUDA_OOM', 'run_config': {'attack_type': atype, 'epsilon': eps, 'attack_fraction': attack_fraction}}
                     skipped_cases.append({'attack_type': atype, 'epsilon': eps, 'reason': 'CUDA_OOM'})
                     consecutive_failures += 1
                     if atype not in critical_by_type:
@@ -1837,7 +1844,8 @@ class StandaloneExperimentRunner:
                          attack: bool = False,
                          attack_type: str = 'packet_loss',
                          epsilon: float = 0.05,
-                         targeted_tiers: Optional[List[str]] = None) -> Dict:
+                         targeted_tiers: Optional[List[str]] = None,
+                         attack_fraction: float = 1.0) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         hosts = env.engine.get_all_hosts()
@@ -1858,6 +1866,16 @@ class StandaloneExperimentRunner:
         for _ in range(n_eps):
             states = env.reset()
             ep_r = ep_sent = ep_dropped = ep_delivered = 0
+
+            # Determine which topology indices are compromised this episode.
+            # The set is fixed per-episode (an adversary who owns a node keeps
+            # access for the full episode, not just individual timesteps).
+            if attack and attack_fraction < 1.0 and trainable_indices is not None:
+                n_compromised = max(1, int(len(trainable_indices) * attack_fraction))
+                compromised_topo = set(random.sample(trainable_indices, n_compromised))
+            else:
+                compromised_topo = None  # None → attack all eligible agents
+
             for _ in range(t_per_ep):
                 if attack:
                     adv = []
@@ -1867,6 +1885,8 @@ class StandaloneExperimentRunner:
                             adv.append(s)
                         elif targeted_tiers and env.engine.get_tier(host) not in targeted_tiers:
                             adv.append(s)
+                        elif compromised_topo is not None and topo_idx not in compromised_topo:
+                            adv.append(s)  # not compromised this episode
                         else:
                             agent_idx = topo_to_maddpg[topo_idx] if topo_to_maddpg else topo_idx
                             adv.append(self.attack_framework.generate_adversarial_state(
@@ -1913,6 +1933,7 @@ class StandaloneExperimentRunner:
                 'attack': attack,
                 'attack_type': attack_type if attack else 'clean',
                 'epsilon': float(epsilon) if attack else 0.0,
+                'attack_fraction': float(attack_fraction) if attack else 1.0,
                 'targeted_tiers': targeted_tiers or [],
                 'evaluation_episodes': int(n_eps),
                 'timesteps_per_episode': int(t_per_ep),
