@@ -1628,10 +1628,56 @@ class StandaloneExperimentRunner:
     # PHASE 3 — FGSM atttack evaluation
     # ═══════════════════════════════════════════════════════════════════════════
 
+    def _make_attack_env(self, hotspot_cfg: Optional[Dict]) -> NetworkEnv:
+        """Build an evaluation environment for the FGSM phase.
+
+        When hotspot_cfg is provided, traffic is skewed onto the hot src/dst pairs
+        so that the attack is evaluated under a concentrated demand matrix (the
+        regime in which routing decisions — and therefore adversarial perturbation
+        of them — actually move delivery). Returns a NetworkEnv with the trainable
+        agent indices attached, matching _make_variant's bookkeeping.
+        """
+        topology_cfg = self.config.get('topology', {})
+        reward_cfg   = self.config.get('reward', {})
+        base_traffic = self.config.get('traffic', {})
+        filter_mode  = self.config.get('training', {}).get('trainable_host_filter', 'all')
+
+        traffic = dict(base_traffic)
+        if hotspot_cfg:
+            traffic['skew'] = {
+                'weight':   float(hotspot_cfg.get('skew_weight', 0.75)),
+                'hot_srcs': hotspot_cfg.get('hot_srcs', []),
+                'hot_dsts': hotspot_cfg.get('hot_dsts', []),
+            }
+
+        eng = NetworkEngine(
+            topology_type=topology_cfg.get('type', 'service_provider'),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
+            reward_config=reward_cfg,
+            topology_config=topology_cfg,
+            traffic_config=traffic,
+        )
+        all_hosts  = eng.get_all_hosts()
+        trainable  = eng.get_trainable_hosts(filter_mode)
+        h2i = {h: i for i, h in enumerate(all_hosts)}
+        eng.trainable_host_indices = [h2i[h] for h in trainable]
+        eng.n_total_hosts = len(all_hosts)
+        return NetworkEnv(eng)
+
     def evaluate_fgsm(self, training_results: Optional[Dict] = None) -> Dict:
         logger.info("══════ PHASE 3 — FGSM ATTACK EVALUATION ══════")
         if training_results is None:
             training_results = self._load('phase1_training_results.json')
+
+        # Attack evaluation regime: elevated load + (optionally) hotspot traffic.
+        # Attacks at nominal uniform load are uninformative — the lightly loaded
+        # network has ample spare capacity, so perturbing path choice does not
+        # produce drops. We therefore evaluate under stress by default.
+        attack_eval_cfg = self.config.get('attack_eval', {})
+        attack_load = float(attack_eval_cfg.get('offered_load_factor', 2.0))
+        attack_hotspot = attack_eval_cfg.get('hotspot') or None
+        logger.info(f"[P3] Attack regime: load={attack_load:.2f}x  "
+                    f"hotspot={'on' if attack_hotspot else 'off'}")
 
         phase_t0 = time.time()
         runtime_cfg = self.config.get('runtime_control', {})
@@ -1687,6 +1733,9 @@ class StandaloneExperimentRunner:
             logger.info(f"[P2] Attacking {name}")
             maddpg, engine, env = self._make_variant(vcfg)
             self._load_variant_checkpoint(maddpg, name)
+            # Evaluate the attack under the stress regime (load + hotspot), not on
+            # the lightly loaded uniform env returned by _make_variant.
+            env = self._make_attack_env(attack_hotspot)
             variant_results = {}
             skipped_cases = []
             critical_by_type = {}
@@ -1717,11 +1766,13 @@ class StandaloneExperimentRunner:
                 logger.info(f"[P2]   {name}  {key}")
                 case_t0 = time.time()
                 try:
-                    clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+                    clean    = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                                     offered_load_factor=attack_load)
                     attacked = self._attack_episodes(maddpg, env, n_eps, t_per_ep,
                                                      attack=True, attack_type=atype,
                                                      epsilon=eps,
-                                                     attack_fraction=attack_fraction)
+                                                     attack_fraction=attack_fraction,
+                                                     offered_load_factor=attack_load)
                 except torch.cuda.OutOfMemoryError:
                     logger.warning(f"[P3]   {name}  {key} — CUDA OOM, recording as failed")
                     if torch.cuda.is_available():
@@ -1770,7 +1821,8 @@ class StandaloneExperimentRunner:
                 t_per_ep = self.config['training']['timesteps_per_episode']
                 try:
                     variant_results['surface'] = self._attack_surface_analysis(
-                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10)
+                        maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep, epsilon=0.10,
+                        offered_load_factor=attack_load)
                 except torch.cuda.OutOfMemoryError:
                     logger.warning(f"[P3]   {name}  attack surface analysis — CUDA OOM, skipping")
                     if torch.cuda.is_available():
@@ -1783,7 +1835,8 @@ class StandaloneExperimentRunner:
                     try:
                         variant_results['gnn_embedding_attack'] = self._attack_episodes(
                             maddpg, env, n_eps=n_eps, t_per_ep=t_per_ep,
-                            attack=True, attack_type='packet_loss', epsilon=0.10)
+                            attack=True, attack_type='packet_loss', epsilon=0.10,
+                            offered_load_factor=attack_load)
                     except torch.cuda.OutOfMemoryError:
                         logger.warning(f"[P3]   {name}  GNN embedding attack — CUDA OOM, skipping")
                         if torch.cuda.is_available():
@@ -1845,7 +1898,9 @@ class StandaloneExperimentRunner:
                          attack_type: str = 'packet_loss',
                          epsilon: float = 0.05,
                          targeted_tiers: Optional[List[str]] = None,
-                         attack_fraction: float = 1.0) -> Dict:
+                         attack_fraction: float = 1.0,
+                         offered_load_factor: float = 1.0,
+                         traffic_seed: int = 20240601) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         hosts = env.engine.get_all_hosts()
@@ -1863,8 +1918,21 @@ class StandaloneExperimentRunner:
             self.attack_framework.epsilon = float(epsilon)
             self.attack_framework.attack_type = attack_type
 
+        # Seed the global RNG so the injected-traffic sequence is identical between
+        # the clean and attacked runs of this case: routing decisions do not draw
+        # from this RNG, so clean vs. attacked becomes a paired comparison on the
+        # same traffic and the only difference is the adversarial perturbation.
+        random.seed(traffic_seed)
+        np.random.seed(traffic_seed)
+        torch.manual_seed(traffic_seed)
+        # Dedicated RNG for choosing the compromised agent subset, kept separate
+        # from the global RNG so that partial-compromise cases do not desync the
+        # traffic sequence relative to the clean baseline.
+        _attack_rng = random.Random(traffic_seed)
+
         for _ in range(n_eps):
-            states = env.reset()
+            env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+            states = [env.engine.get_state(h) for h in hosts]
             ep_r = ep_sent = ep_dropped = ep_delivered = 0
 
             # Determine which topology indices are compromised this episode.
@@ -1872,7 +1940,7 @@ class StandaloneExperimentRunner:
             # access for the full episode, not just individual timesteps).
             if attack and attack_fraction < 1.0 and trainable_indices is not None:
                 n_compromised = max(1, int(len(trainable_indices) * attack_fraction))
-                compromised_topo = set(random.sample(trainable_indices, n_compromised))
+                compromised_topo = set(_attack_rng.sample(trainable_indices, n_compromised))
             else:
                 compromised_topo = None  # None → attack all eligible agents
 
@@ -1934,6 +2002,7 @@ class StandaloneExperimentRunner:
                 'attack_type': attack_type if attack else 'clean',
                 'epsilon': float(epsilon) if attack else 0.0,
                 'attack_fraction': float(attack_fraction) if attack else 1.0,
+                'offered_load_factor': float(offered_load_factor),
                 'targeted_tiers': targeted_tiers or [],
                 'evaluation_episodes': int(n_eps),
                 'timesteps_per_episode': int(t_per_ep),
@@ -1942,17 +2011,22 @@ class StandaloneExperimentRunner:
 
     def _attack_surface_analysis(self, maddpg: MADDPG, env: NetworkEnv,
                                   n_eps: int, t_per_ep: int,
-                                  epsilon: float = 0.10) -> Dict:
-        clean  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False)
+                                  epsilon: float = 0.10,
+                                  offered_load_factor: float = 1.0) -> Dict:
+        clean  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                       offered_load_factor=offered_load_factor)
         core_r = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
                                        attack_type='packet_loss', epsilon=epsilon,
-                                       targeted_tiers=['core'])
+                                       targeted_tiers=['core'],
+                                       offered_load_factor=offered_load_factor)
         dist_r = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
                                        attack_type='packet_loss', epsilon=epsilon,
-                                       targeted_tiers=['dist'])
+                                       targeted_tiers=['dist'],
+                                       offered_load_factor=offered_load_factor)
         acc_r  = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
                                        attack_type='packet_loss', epsilon=epsilon,
-                                       targeted_tiers=['access'])
+                                       targeted_tiers=['access'],
+                                       offered_load_factor=offered_load_factor)
         return {
             'clean':           clean,
             'core_attacked': {

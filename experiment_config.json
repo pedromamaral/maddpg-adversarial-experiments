@@ -254,6 +254,15 @@
       "beta": 0.0003
     }
   ],
+  "attack_eval": {
+    "_comment": "FGSM attacks are evaluated under stress: elevated load + hotspot traffic. At nominal uniform load the network has ample spare capacity, so perturbing routing decisions produces no drops and the attack is uninformative.",
+    "offered_load_factor": 2.0,
+    "hotspot": {
+      "skew_weight": 0.75,
+      "hot_srcs": ["BS1", "BS2", "BS3", "BS4", "MECS1", "MECS2", "MECS3", "MECS4"],
+      "hot_dsts": ["CS1", "CS2"]
+    }
+  },
   "attack_configs": [
     {"attack_type": "packet_loss",   "epsilon": 0.05, "evaluation_episodes": 50},
     {"attack_type": "packet_loss",   "epsilon": 0.1,  "evaluation_episodes": 50},
