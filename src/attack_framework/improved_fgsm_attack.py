@@ -186,7 +186,7 @@ class FGSMAttackFramework:
     # High congestion (low bandwidth) → high weight → push agent toward congested paths
         congestion_weights = torch.sigmoid((1.0 - per_action_bw) * 10.0)
         congestion_loss = torch.sum(action_probs * congestion_weights)
-        return -congestion_loss  # maximise congestion selection
+        return congestion_loss  # gradient ascent maximises congestion-path selection
 
     def _reward_minimize_objective(
         self,
@@ -212,10 +212,11 @@ class FGSMAttackFramework:
         neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
         per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
 
-        # Negate expected bandwidth so FGSM (gradient ascent) minimises it —
-        # this deceives the agent into believing low-BW (bad) paths are attractive.
+        # Gradient ascent on expected_bw makes congested links appear to have
+        # high capacity — the agent then selects those links thinking they are
+        # free, but they are actually saturated (spoofing attack).
         expected_bw = torch.sum(action_probs * per_action_bw)
-        return -expected_bw  # gradient pushes agent toward low-bandwidth (bad) paths
+        return expected_bw  # gradient ascent inflates perceived bandwidth on congested paths
 
     def _confusion_objective(
         self,
@@ -245,8 +246,8 @@ class FGSMAttackFramework:
         worst_action = per_action_bw.argmin(dim=-1).detach()  # shape: (1,)
         worst_prob = action_probs.gather(1, worst_action.unsqueeze(1))  # shape: (1, 1)
 
-        # Maximise probability of worst action (minimise negative log-likelihood).
-        return -torch.log(worst_prob + 1e-8).mean()
+        # Gradient ascent on log(P(worst)) maximises the probability of the worst action.
+        return torch.log(worst_prob + 1e-8).mean()
 
     # ------------------------------------------------------------------
     # Domain constraints

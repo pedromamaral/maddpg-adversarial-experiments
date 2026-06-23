@@ -7,6 +7,11 @@ Three sequential phases:
 """
 
 import os
+# Allow PyTorch CUDA allocator to use expandable memory segments so that
+# fragmented GPU memory from multiple sequential MADDPG variant loads can be
+# reused without triggering false OOM errors.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 import sys
 import json
 import time
@@ -1860,7 +1865,18 @@ class StandaloneExperimentRunner:
             # Incremental save — preserve progress even if a later variant crashes
             self._save(all_results, 'phase3_fgsm_results.json')
 
-            # Release GPU memory before processing the next variant to prevent OOM
+            # Release GPU memory before processing the next variant to prevent OOM.
+            # Explicitly move all model parameters to CPU before deletion so that
+            # Python reference cycles cannot keep tensors pinned on the GPU.
+            if torch.cuda.is_available():
+                for agent in getattr(maddpg, 'agents', []):
+                    for net in ('actor', 'critic', 'target_actor', 'target_critic'):
+                        m = getattr(agent, net, None)
+                        if m is not None:
+                            m.cpu()
+                gnn = getattr(maddpg, 'gnn_processor', None)
+                if gnn is not None:
+                    gnn.cpu()
             del maddpg, engine, env
             gc.collect()
             gc.collect()  # two passes to break cycles
