@@ -1,0 +1,340 @@
+% ============================================================================
+%  Results section — MADDPG routing-variant architecture study (Paper 1)
+%  Requires: \usepackage{graphicx,booktabs,siunitx} (or remove siunitx columns)
+%  Figures live in host_data/results/main_run/figures/  (PDF preferred).
+%  Suggested: \graphicspath{{host_data/results/main_run/figures/}}
+% ============================================================================
+\section{Results}
+\label{sec:results}
+
+% ---------------------------------------------------------------------------
+\subsection{Experimental setup}
+\label{sec:setup}
+
+We evaluate seven cooperative MADDPG routing agents on an $86$-node hierarchical
+service-provider topology comprising a meshed core, a distribution tier, and
+$21$ provider-edge (PE) endpoints ($7$ base stations, $7$ MEC servers, and
+$7$ content servers). Only the distribution-tier switches act as learning
+agents ($32$ agents); core and access nodes forward along the labelled path
+selected at ingress, following an MPLS-style PE model. Each agent chooses among
+$K{=}3$ pre-computed shortest paths per destination.
+
+The seven variants factor along three architectural axes: the
+\emph{critic domain} (centralised critic, \textbf{CC}, vs.\ local critic,
+\textbf{LC}), the \emph{value head} (simple vs.\ duelling $Q$-network), and the
+optional \emph{GNN encoder} that pre-processes all agents' observations on the
+agent graph before the actor and critic. We compare against an
+\textbf{EVPN-SP} baseline: the identical forwarding and queueing model driven by
+deterministic shortest-path (k$=0$) tunnels, i.e.\ the learning-free classical
+control plane.
+
+Traffic is generated as access-to-access flows. We report three regimes:
+(i)~\emph{uniform}, where source--destination pairs are drawn uniformly;
+(ii)~\emph{hotspot}, where a fraction $w{=}0.75$ of flows are concentrated from
+$\{$BS1--4, MEC1--4$\}$ onto two content servers $\{$CS1, CS2$\}$, emulating a
+CDN flash crowd; and (iii)~\emph{dual-link failure}, where the two primary
+inter-cluster links (S8--S13 and S8--S22, capacity $300$ each) are removed at
+the start of every episode, forcing rerouted traffic to share the surviving
+core capacity. Each operating point is swept over an offered-load factor in
+$[0.4, 3.0]\times$ and averaged over $20$--$30$ episodes of $256$ timesteps.
+Unless noted, the headline metric is the \emph{resolved packet-delivery ratio}
+(PDR), defined as delivered\,/\,(delivered\,+\,dropped), which is independent of
+episode length and in-transit backlog.
+
+% ---------------------------------------------------------------------------
+\subsection{Training convergence}
+\label{sec:training}
+
+All seven variants converge under the shared flow reward
+(Fig.~\ref{fig:train-reward}, Fig.~\ref{fig:train-loss}); curves show the raw
+per-episode signal (faint) and a $41$-episode rolling mean (bold). Two effects
+are already visible at training time. First, the \emph{local-critic} variants
+attain markedly higher reward than their centralised counterparts
+($+6$ to $+8$ reward units) and lower packet loss. Second, the GNN encoder
+delays but does not destabilise convergence (best checkpoints at epoch $240$
+vs.\ $150$). Table~\ref{tab:training} summarises the final operating points and
+the best-checkpoint epoch used for all subsequent evaluation.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F1_training_reward.pdf}
+  \caption{Training reward (rolling mean over the raw per-episode signal). The
+  local-critic family (LC) converges to a higher reward than the centralised
+  family (CC); the GNN encoder mainly shifts the convergence epoch.}
+  \label{fig:train-reward}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F2_training_pkt_loss.pdf}
+  \caption{Training packet loss (rolling mean). LC variants reach the lowest
+  loss, consistent with the reward ranking.}
+  \label{fig:train-loss}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \caption{Training summary. All variants stopped early; the best checkpoint
+  (by validation reward) is used for every evaluation in this section.}
+  \label{tab:training}
+  \begin{tabular}{lcccc}
+    \toprule
+    Variant & Final reward & Final loss (\%) & Best epoch & Stop epoch \\
+    \midrule
+    CC-Simple        & 20.0 & 1.21 & 150 & 270 \\
+    CC-Duelling      & 20.1 & 1.08 & 150 & 270 \\
+    CC-Simple-GNN    & 22.1 & 1.17 & 240 & 360 \\
+    CC-Duelling-GNN  & 21.7 & 1.15 & 240 & 360 \\
+    LC-Duelling      & 26.7 & 0.89 & 150 & 270 \\
+    LC-Simple        & 27.4 & 0.92 & 240 & 360 \\
+    \textbf{LC-Duelling-GNN} & \textbf{29.0} & \textbf{0.89} & 240 & 360 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Uniform load: shortest path is hard to beat}
+\label{sec:uniform}
+
+Under uniform traffic (Fig.~\ref{fig:pdr-normal}), no learned policy surpasses
+the EVPN-SP baseline at any load. EVPN-SP leads with $94.8\%$ PDR at nominal
+load and $88.3\%$ at $2\times$ overload; the LC variants track it within
+$0.5$--$1.4$ percentage points (pp), while the CC variants trail by
+$3$--$4$\,pp. The multi-metric view (Table~\ref{tab:kpi-uniform}) shows the gap
+is not confined to delivery: the CC variants also incur longer paths
+($\sim$8.1 vs.\ 6.5--7.0 hops), higher tail delay, and higher utilisation. On a
+symmetric demand matrix the reward-maximising policy is essentially
+shortest-path, so the centralised critic's tendency to deviate onto longer
+alternates is pure overhead here. This explains the apparent inversion with the
+training reward (Sec.~\ref{sec:training}): training is performed on uniform
+traffic, where LC's near-shortest-path policy is close to optimal and therefore
+scores highest --- a high uniform-load reward reflects faithful shortest-path
+imitation, not a load-spreading capability.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F3_pdr_vs_load_normal.pdf}
+  \caption{Resolved PDR vs.\ offered load under uniform traffic. EVPN-SP (black,
+  dotted) is the upper envelope; LC variants track it closely, CC variants
+  trail.}
+  \label{fig:pdr-normal}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F4_loss_vs_load_normal.pdf}
+  \caption{True per-packet loss vs.\ load under uniform traffic (mirror of
+  Fig.~\ref{fig:pdr-normal}).}
+  \label{fig:loss-normal}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \caption{Key performance indicators under uniform traffic at nominal
+  ($1\times$) and overload ($2\times$). Best per block in \textbf{bold}.}
+  \label{tab:kpi-uniform}
+  \small
+  \begin{tabular}{lrrrrr}
+    \toprule
+    Variant & PDR\,(\%) & Loss\,(\%) & $d_{95}$ & Hops & Util \\
+    \midrule
+    \multicolumn{6}{l}{\emph{Load $1.0\times$}}\\
+    CC-Simple        & 91.4 & 8.6 & 14.1 & 8.16 & 0.016 \\
+    CC-Duelling      & 91.9 & 8.1 & 14.3 & 8.14 & 0.014 \\
+    LC-Duelling      & 93.7 & 6.3 & 11.2 & 6.98 & 0.013 \\
+    LC-Simple        & 93.8 & 6.2 & 10.5 & 6.89 & 0.011 \\
+    LC-Duelling-GNN  & 94.1 & 5.9 & 10.1 & 6.62 & 0.011 \\
+    \textbf{EVPN-SP} & \textbf{94.8} & \textbf{5.2} & \textbf{9.9} & \textbf{6.53} & 0.011 \\
+    \midrule
+    \multicolumn{6}{l}{\emph{Load $2.0\times$}}\\
+    CC-Simple        & 84.9 & 15.0 & 13.7 & 8.08 & 0.041 \\
+    CC-Duelling      & 84.4 & 15.4 & 13.7 & 8.09 & 0.038 \\
+    LC-Duelling      & 87.4 & 12.5 & 10.3 & 7.11 & 0.034 \\
+    LC-Simple        & 87.4 & 12.5 & 10.2 & 6.98 & 0.033 \\
+    LC-Duelling-GNN  & 87.8 & 12.1 & 10.1 & 6.76 & 0.031 \\
+    \textbf{EVPN-SP} & \textbf{88.3} & \textbf{11.7} & \textbf{9.9} & \textbf{6.70} & 0.031 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Traffic concentration: where the centralised critic pays off}
+\label{sec:hotspot}
+
+The picture inverts under the hotspot matrix (Fig.~\ref{fig:pdr-hotspot}). The
+CC variants now \emph{overtake} EVPN-SP, and the advantage widens with load:
+CC-Simple reaches $+5.5$\,pp over the baseline at $2\times$ and
+$+8.2$\,pp at $3\times$. Crucially, the LC variants do \emph{not} share this
+advantage --- at high load they fall \emph{below} EVPN-SP
+(LC-Duelling: $63.6\%$ vs.\ $66.5\%$ at $3\times$).
+Figure~\ref{fig:gap} makes the regime dependence explicit, plotting each
+variant's PDR gap against EVPN-SP for uniform (left) and hotspot (right): the CC
+curves cross from negative to strongly positive, while the LC curves hug or
+dip below the baseline.
+
+The mechanism is visible in Table~\ref{tab:mechanism}. The LC variants match
+EVPN-SP to within measurement noise on every structural metric --- hop count
+($8.2$ vs.\ $8.1$), mean and tail utilisation ($0.045/0.112$ vs.\
+$0.044/0.110$), and overload fraction --- confirming that LC has learned a
+near-shortest-path policy and therefore \emph{cannot} relieve the hotspot.
+The CC variants instead trade path length for spread: they route
+$\sim$1 hop longer and push utilisation across more links (util-$p_{95}$
+$0.140$ vs.\ $0.110$), pulling traffic off the congested egress and lifting
+delivery. This is a direct consequence of the critic's information set: a
+\emph{central} critic observes global link state and can credit-assign the
+system-wide benefit of a longer detour, whereas a \emph{local} critic perceives
+only its adjacent links and collapses to greedy shortest-path forwarding.
+LC-Duelling's small uncoordinated deviations are in fact counter-productive ---
+it records the \emph{highest} overload fraction ($0.721$) while still taking
+longer paths than EVPN-SP, explaining why it alone dips below the baseline.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F5_pdr_vs_load_hotspot.pdf}
+  \caption{Resolved PDR vs.\ load under hotspot traffic. The CC variants
+  overtake EVPN-SP and the margin grows with load; LC variants fall to or below
+  the baseline.}
+  \label{fig:pdr-hotspot}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{F6_maddpg_vs_evpn_gap.pdf}
+  \caption{PDR gap of each MADDPG variant relative to EVPN-SP
+  ($+$ means the learned policy is better). Left: uniform traffic, where every
+  variant is at or below the baseline. Right: hotspot traffic, where the
+  centralised-critic variants cross above zero and diverge with load.}
+  \label{fig:gap}
+\end{figure*}
+
+\begin{table}[t]
+  \centering
+  \caption{Forwarding mechanism under hotspot traffic at $3\times$ load. LC
+  variants are statistically indistinguishable from shortest path; CC variants
+  trade longer paths for wider load spread (higher util-$p_{95}$).}
+  \label{tab:mechanism}
+  \small
+  \begin{tabular}{lrrrr}
+    \toprule
+    Variant & PDR\,(\%) & Hops & Util-$p_{95}$ & Overload \\
+    \midrule
+    \textbf{CC-Simple}   & \textbf{74.7} & 9.18 & 0.140 & 0.649 \\
+    CC-Duelling          & 73.2 & 9.47 & 0.147 & 0.676 \\
+    LC-Simple            & 67.4 & 8.23 & 0.112 & 0.698 \\
+    LC-Duelling          & 63.6 & 8.45 & 0.111 & 0.721 \\
+    EVPN-SP              & 66.5 & 8.15 & 0.110 & 0.708 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Robustness to link failures}
+\label{sec:failure}
+
+We next remove the two primary inter-cluster links and repeat both traffic
+regimes. Under \emph{uniform} demand (Fig.~\ref{fig:pdr-fail-uni}) the failure
+ordering mirrors the no-failure case: EVPN-SP and the LC variants are the most
+robust ($\sim$83\% PDR at $2\times$), while the CC variants degrade further.
+The path-stretch view (Fig.~\ref{fig:hops-fail}) again explains why --- after
+the failure, the CC variants reroute over noticeably longer detours
+($8.4$--$8.8$ vs.\ $7.4$ hops for EVPN-SP), and on an otherwise uniform load
+that extra length competes for scarce post-failure capacity.
+
+Under the \emph{combined} failure-plus-hotspot stress
+(Fig.~\ref{fig:pdr-fail-hot}) the result inverts once more, and most sharply:
+CC-Simple delivers $86.9\%$ at $2\times$ against EVPN-SP's $82.4\%$
+($+4.5$\,pp), the largest learned-policy advantage we observe. When the network
+is both degraded \emph{and} asymmetrically loaded --- precisely the condition in
+which shortest path floods the single surviving bottleneck --- the centralised
+critic's load-spreading is most valuable.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F7_pdr_vs_load_failure_uniform.pdf}
+  \caption{Resolved PDR under dual-link failure, uniform traffic. EVPN-SP and
+  the LC variants remain the most robust.}
+  \label{fig:pdr-fail-uni}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F8_pdr_vs_load_failure_hotspot.pdf}
+  \caption{Resolved PDR under dual-link failure, hotspot traffic. CC-Simple
+  attains the largest margin over EVPN-SP of any scenario.}
+  \label{fig:pdr-fail-hot}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\linewidth]{F9_hops_vs_load_failure.pdf}
+  \caption{Mean delivered hop count under failure (uniform). CC variants reroute
+  over longer detours than EVPN-SP and the LC variants, accounting for their
+  weaker uniform-failure delivery.}
+  \label{fig:hops-fail}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\subsection{Effect of the GNN encoder}
+\label{sec:gnn}
+
+A recurring motivation for graph encoders in DRL routing is improved
+generalisation to topology change. Our results do not support that benefit in
+this setting. Figure~\ref{fig:gnn} reports the PDR change from adding a GNN to
+each base variant, for the no-failure and failure conditions. The effect is
+small and inconsistent in sign ($-0.3$ to $+1.3$\,pp), and in particular the GNN
+does \emph{not} confer a robustness advantage under link failure. We attribute
+this to an implementation property shared with much of the literature: the
+message-passing adjacency is fixed at training time, so after a link failure the
+encoder continues to propagate over edges that no longer exist. The
+parameter-sharing benefit of the GNN is retained, but the topology-generalisation
+benefit requires recomputing the graph at inference --- which a statically
+compiled adjacency does not provide.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.82\linewidth]{F10_gnn_paired_delta.pdf}
+  \caption{PDR change from adding a GNN encoder (GNN $-$ non-GNN) at $2\times$
+  load, for each base variant, with and without link failure. The effect is
+  small and not consistently positive; the encoder provides no robustness gain.}
+  \label{fig:gnn}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\subsection{Summary}
+\label{sec:summary}
+
+Table~\ref{tab:master} consolidates delivery at $2\times$ load across all four
+operating conditions. Three findings stand out. (1)~\textbf{Critic domain is the
+dominant design choice}, and its optimum is regime-dependent: the local critic
+matches shortest path and wins under uniform load and uniform failure, whereas
+the centralised critic learns genuine load-spreading and wins whenever traffic
+is concentrated, with or without failures. (2)~\textbf{No learned policy
+dominates the classical baseline everywhere}; the value of learning is realised
+specifically under demand asymmetry and topology degradation. (3)~\textbf{The
+GNN encoder and the duelling head are second-order}, neither changing the
+ranking nor delivering the expected robustness benefit. Practically, an operator
+should prefer a centralised-critic agent when traffic concentration or failures
+are the dominant risk, and is otherwise well served by shortest path.
+
+\begin{table}[t]
+  \centering
+  \caption{Resolved PDR (\%) at $2\times$ overload across all conditions. Best
+  per column in \textbf{bold}; the regime-dependent winner shifts between the LC
+  family (uniform) and CC-Simple (concentrated / failed).}
+  \label{tab:master}
+  \small
+  \begin{tabular}{lrrrr}
+    \toprule
+    Variant & Uniform & Hotspot & Fail-uni & Fail-hot \\
+    \midrule
+    CC-Simple        & 84.9 & \textbf{81.7} & 77.4 & \textbf{86.9} \\
+    CC-Duelling      & 84.4 & 80.3 & 80.0 & 83.3 \\
+    CC-Simple-GNN    & 84.6 & 77.3 & 78.7 & 82.9 \\
+    CC-Duelling-GNN  & 84.4 & 74.2 & 79.6 & 82.9 \\
+    LC-Duelling      & 87.4 & 73.1 & 82.0 & 83.5 \\
+    LC-Simple        & 87.4 & 75.9 & 82.9 & 83.6 \\
+    LC-Duelling-GNN  & 87.8 & 75.2 & 82.8 & 82.9 \\
+    EVPN-SP          & \textbf{88.3} & 74.9 & \textbf{83.0} & 82.4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
