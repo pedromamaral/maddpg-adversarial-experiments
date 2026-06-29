@@ -157,6 +157,51 @@ class FGSMAttackFramework:
                 agent.actor.train()
 
     # ------------------------------------------------------------------
+    # Action-aligned congestion signal
+    # ------------------------------------------------------------------
+    def _per_action_util(
+        self,
+        state: torch.Tensor,
+        action_probs: torch.Tensor,
+        network_engine,
+    ) -> Optional[torch.Tensor]:
+        """Extract the per-action k-path bottleneck utilisation from the observation.
+
+        The observation contains an n_dest × K_PATHS block of path bottleneck
+        utilisations laid out in the *same order as the action matrix* (for each
+        destination d, K_PATHS consecutive slots). Action i therefore selects the
+        path whose congestion is slot i of this block — a 1:1, environment-grounded
+        congestion signal. (The previous implementation cycled action index over
+        neighbour bandwidth via ``i % num_neighbors``, which mapped congestion to
+        the wrong actions and produced near-random gradients.)
+
+        Returns a detached (1, L) tensor of utilisations aligned to the first L
+        actions, or None if the layout cannot be resolved.
+        """
+        n_dest = getattr(network_engine, 'n_destinations', None)
+        max_neighbors = getattr(network_engine, 'max_neighbors', None)
+        if n_dest is None or max_neighbors is None or n_dest == 0:
+            return None
+        num_actions = action_probs.shape[-1]
+        k_paths = max(1, num_actions // n_dest)
+        block_w = n_dest * k_paths
+        # Layout: [mn bw | 3 queue | n_dest dest-indicator | 3 link-stats | k-path utils | mean-hops]
+        util_start = max_neighbors + n_dest + 6
+        if util_start >= state.shape[-1]:
+            return None
+        # The observation is truncated to state_dims, which drops the final K_PATHS
+        # constructed slots (mean-hops + the last destination's last two path utils),
+        # so the retained k-path block is K*(n_dest-1)+1 slots — action-aligned for
+        # the first L actions. Clamp to whatever is present rather than bail.
+        util_end = min(util_start + block_w, state.shape[-1])
+        # Detach: the congestion target is fixed by the *true* current state; the
+        # attack should only differentiate through the policy (action_probs), not
+        # inflate the utilisation features themselves.
+        util = state[:, util_start:util_end].detach()
+        L = min(util.shape[-1], num_actions)
+        return util[:, :L]
+
+    # ------------------------------------------------------------------
     # Attack objectives
     # ------------------------------------------------------------------
     def _packet_loss_objective(
@@ -166,26 +211,21 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        """Encourage congested-path selection to maximise packet loss."""
-        num_neighbors = network_engine.get_number_neighbors(
-            network_engine.get_all_hosts()[agent_index]
-        )
-        if num_neighbors == 0:
-            # Return zero loss that is still connected to the graph to avoid grad errors
+        """Encourage congested-path selection to maximise packet loss.
+
+        Weights each action by a sharpened (sigmoid) function of its true k-path
+        bottleneck utilisation, then rewards placing probability mass on the most
+        congested paths. Gradient ascent perturbs the observation so the policy
+        prefers congested paths.
+        """
+        util = self._per_action_util(state, action_probs, network_engine)
+        if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
-
-        num_actions = action_probs.shape[-1]  # n_dest × K_PATHS (e.g. 63 = 21 × 3)
-        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
-
-    # Build per-action congestion weight by cycling over neighbor bandwidths.
-    # Action i is associated with the link to neighbor (i % num_neighbors).
-    # This maps each pre-computed path to its first-hop link congestion.
-        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
-        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
-    
-    # High congestion (low bandwidth) → high weight → push agent toward congested paths
-        congestion_weights = torch.sigmoid((1.0 - per_action_bw) * 10.0)
-        congestion_loss = torch.sum(action_probs * congestion_weights)
+        L = util.shape[-1]
+        probs = action_probs[:, :L]
+        # High utilisation → weight ≈ 1 (congested); low utilisation → weight ≈ 0.
+        congestion_weights = torch.sigmoid((util - 0.5) * 10.0)
+        congestion_loss = torch.sum(probs * congestion_weights)
         return congestion_loss  # gradient ascent maximises congestion-path selection
 
     def _reward_minimize_objective(
@@ -195,28 +235,20 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        """Minimise expected routing quality by pushing toward low-bandwidth action choices.
+        """Minimise expected routing quality (a smooth, linear reward proxy).
 
-        Uses the same bandwidth-aware setup as _packet_loss_objective but minimises the
-        expected bandwidth utility directly (a differentiable reward proxy), rather than
-        using uniform weights whose gradient is identically zero.
+        Routing quality is high when chosen paths have low utilisation, so the
+        expected utilisation Σ π(a)·util(a) is a differentiable proxy for *negative*
+        reward. Gradient ascent maximises expected utilisation, steering the policy
+        toward worse (more saturated) paths.
         """
-        num_neighbors = network_engine.get_number_neighbors(
-            network_engine.get_all_hosts()[agent_index]
-        )
-        if num_neighbors == 0:
+        util = self._per_action_util(state, action_probs, network_engine)
+        if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
-
-        num_actions = action_probs.shape[-1]
-        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
-        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
-        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
-
-        # Gradient ascent on expected_bw makes congested links appear to have
-        # high capacity — the agent then selects those links thinking they are
-        # free, but they are actually saturated (spoofing attack).
-        expected_bw = torch.sum(action_probs * per_action_bw)
-        return expected_bw  # gradient ascent inflates perceived bandwidth on congested paths
+        L = util.shape[-1]
+        probs = action_probs[:, :L]
+        expected_util = torch.sum(probs * util)
+        return expected_util  # gradient ascent maximises expected path utilisation
 
     def _confusion_objective(
         self,
@@ -225,27 +257,21 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
     ) -> torch.Tensor:
-        """Targeted misrouting: cross-entropy toward the most-congested (worst) action.
+        """Targeted misrouting toward the single most-congested action.
 
-        Unlike entropy maximisation — which can inadvertently produce load-balancing and
-        improve performance — this forces the agent to assign maximum probability to the
-        single action that routes traffic through the most congested link.
+        Identifies the worst action (highest k-path bottleneck utilisation) from the
+        true current state and maximises the policy's probability of selecting it.
+        Unlike entropy maximisation — which can inadvertently load-balance and improve
+        performance — this concentrates traffic on the single most saturated path.
         """
-        num_neighbors = network_engine.get_number_neighbors(
-            network_engine.get_all_hosts()[agent_index]
-        )
-        if num_neighbors == 0:
+        util = self._per_action_util(state, action_probs, network_engine)
+        if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
-
-        num_actions = action_probs.shape[-1]
-        bandwidth_states = state[:, :num_neighbors]  # shape: (1, num_neighbors)
-        neighbor_indices = torch.arange(num_actions, device=self.device) % num_neighbors
-        per_action_bw = bandwidth_states[:, neighbor_indices]  # shape: (1, num_actions)
-
-        # Most-congested action = lowest bandwidth among first-hop links.
-        worst_action = per_action_bw.argmin(dim=-1).detach()  # shape: (1,)
-        worst_prob = action_probs.gather(1, worst_action.unsqueeze(1))  # shape: (1, 1)
-
+        L = util.shape[-1]
+        probs = action_probs[:, :L]
+        # Worst action = highest path utilisation (most congested).
+        worst_action = util.argmax(dim=-1).detach()  # shape: (1,)
+        worst_prob = probs.gather(1, worst_action.unsqueeze(1))  # shape: (1, 1)
         # Gradient ascent on log(P(worst)) maximises the probability of the worst action.
         return torch.log(worst_prob + 1e-8).mean()
 
