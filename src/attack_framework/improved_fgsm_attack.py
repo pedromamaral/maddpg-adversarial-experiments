@@ -157,6 +157,89 @@ class FGSMAttackFramework:
                 agent.actor.train()
 
     # ------------------------------------------------------------------
+    # Critic-grounded attack
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _straight_through_block_onehot(a_soft: torch.Tensor, block_size: int) -> torch.Tensor:
+        """Per-block argmax one-hot with a straight-through gradient.
+
+        Forward pass is the hard one-hot (one path selected per K_PATHS block, as
+        the environment decodes routing); backward pass passes the gradient of the
+        soft actor output. Matches the block-projected actions the central critic
+        was trained on.
+        """
+        n = a_soft.shape[-1]
+        hard = torch.zeros_like(a_soft)
+        for bs in range(0, n, block_size):
+            be = min(bs + block_size, n)
+            idx = a_soft[:, bs:be].argmax(dim=1)
+            hard[torch.arange(a_soft.shape[0]), bs + idx] = 1.0
+        return (hard - a_soft).detach() + a_soft
+
+    def generate_adversarial_state_critic(
+        self,
+        state: np.ndarray,
+        maddpg,
+        agent_index: int,
+        central_state: np.ndarray,
+        clean_joint_onehot: np.ndarray,
+        block_size: int,
+        bandwidth_indices: Optional[List[int]] = None,
+    ) -> np.ndarray:
+        """Critic-grounded FGSM: perturb agent i's observation to minimise the
+        agent's own central critic value Q(s, a).
+
+        The true central state ``s`` and the other agents' (block-onehot) actions
+        are held fixed; only agent i's action a_i = π_i(o_i+δ) — projected with a
+        straight-through block one-hot — varies through the perturbation. The
+        gradient direction that most *decreases* Q is, by construction, the
+        direction the agent's own value model rates as most harmful, so (unlike the
+        congestion proxy) it cannot accidentally improve routing.
+        """
+        agent = maddpg.agents[agent_index]
+        device = agent.actor.device
+        was_training_a = agent.actor.training
+        was_training_c = agent.critic.training
+        try:
+            with torch.enable_grad():
+                agent.actor.eval()
+                agent.critic.eval()
+                s = torch.tensor(np.asarray(state, dtype=np.float32)[None, :],
+                                 device=device).requires_grad_(True)
+                cs = torch.tensor(np.asarray(central_state, dtype=np.float32)[None, :],
+                                  device=device)                         # fixed true state
+                joint = torch.tensor(np.asarray(clean_joint_onehot, dtype=np.float32),
+                                     device=device)                      # [n_agents, n_actions]
+
+                a_soft = agent.actor(s)                                   # [1, n_actions]
+                a_st = self._straight_through_block_onehot(a_soft, block_size)
+                joint_b = joint.clone()
+                joint_b[agent_index] = a_st.squeeze(0)
+                joint_flat = joint_b.view(1, -1)                         # [1, n_agents*n_actions]
+
+                q = agent.critic(cs, joint_flat)                        # [1, 1]
+                # Ascend (-Q) ⇒ descend Q: steer toward the lowest-value action.
+                loss = -q.sum()
+
+                if s.grad is not None:
+                    s.grad.zero_()
+                loss.backward()
+                if s.grad is None:
+                    raise RuntimeError("Critic-grounded attack produced no gradient.")
+
+                perturbation = self.epsilon * torch.sign(s.grad.data)
+                adv = self._apply_domain_constraints(s + perturbation, bandwidth_indices)
+                return adv.detach().cpu().numpy()[0]
+        except Exception as e:
+            logger.error(f'Critic-grounded FGSM failed for agent {agent_index}: {str(e)}')
+            return state
+        finally:
+            if was_training_a:
+                agent.actor.train()
+            if was_training_c:
+                agent.critic.train()
+
+    # ------------------------------------------------------------------
     # Action-aligned congestion signal
     # ------------------------------------------------------------------
     def _per_action_util(

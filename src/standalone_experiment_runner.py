@@ -1908,6 +1908,39 @@ class StandaloneExperimentRunner:
         logger.info("[P3] evaluation complete")
         return all_results
 
+    def _build_critic_attack_context(self, maddpg, env, states, trainable_indices):
+        """Assemble fixed context for the critic-grounded attack at one timestep.
+
+        Returns the true central state and the clean block-onehot joint action of
+        all trainable agents (the fixed a_{-i} the critic conditions on), plus the
+        per-destination decision-block size. Only valid for central-critic variants.
+        """
+        if getattr(maddpg, 'critic_type', None) != 'central_critic':
+            return None
+        if getattr(maddpg, 'gnn_processor', None) is not None:
+            # GNN actors require jointly-encoded observations; the single-agent
+            # differentiable path is not yet wired for that. Restrict to non-GNN CC.
+            logger.warning("[P3] critic_grounded attack unsupported on GNN variants — skipping context")
+            return None
+        engine = env.engine
+        hosts = engine.get_all_hosts()
+        trainable_hosts = [hosts[i] for i in trainable_indices]
+        # True central state <B, D> (138-dim), held fixed during the attack.
+        central_state = engine.get_central_state(trainable_hosts)
+        # Clean continuous actions for every trainable agent, then block-argmax onehot.
+        t_states = [states[i] for i in trainable_indices]
+        policy_actions = maddpg.choose_action(t_states)        # list of [n_actions] arrays
+        n_actions = maddpg.n_actions
+        n_dest = getattr(engine, 'n_destinations', 1)
+        block_size = max(1, n_actions // max(1, n_dest))
+        joint = np.zeros((len(trainable_indices), n_actions), dtype=np.float32)
+        for ai, pa in enumerate(policy_actions):
+            pa = np.asarray(pa, dtype=np.float32)
+            for bs in range(0, n_actions, block_size):
+                be = min(bs + block_size, n_actions)
+                joint[ai, bs + int(np.argmax(pa[bs:be]))] = 1.0
+        return {'central_state': central_state, 'joint_onehot': joint, 'block_size': block_size}
+
     def _attack_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                          n_eps: int, t_per_ep: int,
                          attack: bool = False,
@@ -1962,6 +1995,13 @@ class StandaloneExperimentRunner:
 
             for _ in range(t_per_ep):
                 if attack:
+                    # The critic-grounded attack needs the true central state and the
+                    # other agents' (block-onehot) actions as fixed context. Assemble
+                    # them once per timestep from the clean observations.
+                    critic_ctx = None
+                    if attack_type == 'critic_grounded' and trainable_indices is not None:
+                        critic_ctx = self._build_critic_attack_context(maddpg, env, states,
+                                                                       trainable_indices)
                     adv = []
                     for topo_idx, (host, s) in enumerate(zip(hosts, states)):
                         # Only attack trainable agents; non-trainable nodes have no actor
@@ -1973,12 +2013,22 @@ class StandaloneExperimentRunner:
                             adv.append(s)  # not compromised this episode
                         else:
                             agent_idx = topo_to_maddpg[topo_idx] if topo_to_maddpg else topo_idx
-                            adv.append(self.attack_framework.generate_adversarial_state(
-                                state=s,
-                                agent_network=maddpg.agents[agent_idx],
-                                network_engine=env.engine,
-                                agent_index=agent_idx,
-                            ))
+                            if critic_ctx is not None:
+                                adv.append(self.attack_framework.generate_adversarial_state_critic(
+                                    state=s,
+                                    maddpg=maddpg,
+                                    agent_index=agent_idx,
+                                    central_state=critic_ctx['central_state'],
+                                    clean_joint_onehot=critic_ctx['joint_onehot'],
+                                    block_size=critic_ctx['block_size'],
+                                ))
+                            else:
+                                adv.append(self.attack_framework.generate_adversarial_state(
+                                    state=s,
+                                    agent_network=maddpg.agents[agent_idx],
+                                    network_engine=env.engine,
+                                    agent_index=agent_idx,
+                                ))
                     states = adv
                 with torch.no_grad():
                     if trainable_indices is not None:
