@@ -164,7 +164,9 @@ def _episode_worker(args):
     # fixed (topology_type, n_nodes, topo_seed) so it never needs rebuilding.
     # NetworkTopology.__init__ runs ~2400 nx.shortest_simple_paths calls; caching
     # this once per worker process eliminates the reconstruction cost every epoch.
-    _traffic_key = tuple(sorted((traffic_cfg or {}).items()))
+    # json.dumps handles nested dicts (e.g. a 'skew' block for hotspot training),
+    # which a tuple(sorted(...)) key cannot hash.
+    _traffic_key = json.dumps(traffic_cfg or {}, sort_keys=True, default=str)
     _topo_key = (topology_type, n_nodes, topo_seed, _traffic_key)
     if _topo_key not in _WORKER_ENV_CACHE:
         engine = NetworkEngine(
