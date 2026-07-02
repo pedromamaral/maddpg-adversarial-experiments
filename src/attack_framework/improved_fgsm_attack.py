@@ -59,6 +59,23 @@ class FGSMAttackFramework:
         Returns:
             Perturbed state as a 1-D numpy array.
         """
+        # Random-noise control: budget-matched L-inf perturbation with a RANDOM
+        # sign per feature and NO gradient information. Same epsilon and same
+        # domain clamping as the gradient attacks, so any effect isolates "does
+        # perturbation direction matter?" from "does jostling an off-optimal
+        # policy help?". Uses numpy RNG only (traffic is driven by Python's
+        # random module), so clean/attacked runs stay paired on the same traffic.
+        if self.attack_type == 'random':
+            adv = np.asarray(state, dtype=np.float32).copy()
+            signs = np.where(np.random.random(adv.shape) < 0.5, -1.0, 1.0).astype(np.float32)
+            adv = adv + self.epsilon * signs
+            if bandwidth_indices is not None:
+                adv[bandwidth_indices] = np.clip(adv[bandwidth_indices], 0.0, 1.0)
+            else:
+                k = min(4, adv.shape[0])
+                adv[:k] = np.clip(adv[:k], 0.0, 1.0)
+            return adv
+
         # Resolve specific agent if the MADDPG orchestrator was passed
         maddpg_ref = agent_network if hasattr(agent_network, 'agents') else None
         if hasattr(agent_network, 'agents'):
