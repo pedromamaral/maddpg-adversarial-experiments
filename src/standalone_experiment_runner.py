@@ -1943,6 +1943,92 @@ class StandaloneExperimentRunner:
                 joint[ai, bs + int(np.argmax(pa[bs:be]))] = 1.0
         return {'central_state': central_state, 'joint_onehot': joint, 'block_size': block_size}
 
+    def _rule_action(self, host, rule, engine, rng):
+        """Build a per-destination one-hot routing action from a fixed rule.
+
+        For each destination, score the K precomputed paths by their true
+        bottleneck utilisation and select one:
+          worst  → most-congested path  (adversarial upper bound on damage)
+          best   → least-congested path (greedy-optimal routing)
+          sp     → k=0 (shortest path; EVPN-SP-like)
+          random → uniform among available paths
+        """
+        access = list(engine.topology.access_nodes)
+        n_dest = len(access)
+        n_actions = engine.n_actions
+        K = max(1, n_actions // n_dest)
+        a = np.zeros(n_actions, dtype=np.float32)
+        for d, dst in enumerate(access):
+            paths = engine.topology.kpath_cache.get((host, dst), [])
+            n_avail = min(len(paths), K)
+            if n_avail == 0:
+                chosen = 0
+            else:
+                utils = []
+                for k in range(n_avail):
+                    p = paths[k]
+                    if len(p) >= 2:
+                        u = max(engine.topology.get_util(p[j], p[j + 1])
+                                for j in range(len(p) - 1))
+                    else:
+                        u = 0.0
+                    utils.append(u)
+                if rule == 'worst':
+                    chosen = int(np.argmax(utils))
+                elif rule == 'best':
+                    chosen = int(np.argmin(utils))
+                elif rule == 'sp':
+                    chosen = 0
+                elif rule == 'random':
+                    chosen = rng.randrange(n_avail)
+                else:
+                    chosen = 0
+            a[d * K + chosen] = 1.0
+        return a
+
+    def measure_damage_ceiling(self) -> Dict:
+        """Bound the achievable-damage envelope at the attack operating point.
+
+        Runs the trained policy plus four fixed routing rules on identical paired
+        traffic, all at the FGSM attack regime (elevated load + hotspot). The
+        clean→worst PDR gap is the ceiling any observation-space attack could ever
+        reach; if it is small, low attack magnitudes are the operating point's
+        limit, not the attack's.
+        """
+        logger.info("══════ DAMAGE-CEILING DIAGNOSTIC ══════")
+        attack_eval = self.config.get('attack_eval', {})
+        attack_load = float(attack_eval.get('offered_load_factor', 1.0))
+        attack_hotspot = attack_eval.get('hotspot')
+        n_eps = int(attack_eval.get('ceiling_episodes', 50))
+        t_per_ep = self.config['training']['timesteps_per_episode']
+        logger.info(f"[CEILING] regime: load={attack_load:.2f}x  hotspot={'on' if attack_hotspot else 'off'}  "
+                    f"eps={n_eps}")
+
+        vcfg = self.config['variants'][0]  # any trained variant provides the clean reference
+        maddpg, engine, env = self._make_variant(vcfg)
+        self._load_variant_checkpoint(maddpg, vcfg['name'])
+        env = self._make_attack_env(attack_hotspot)
+
+        out = {}
+        runs = [('policy', None), ('best', 'best'), ('sp', 'sp'),
+                ('random', 'random'), ('worst', 'worst')]
+        for label, rule in runs:
+            res = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                        offered_load_factor=attack_load, routing_rule=rule)
+            out[label] = res
+            logger.info(f"[CEILING] {label:8s} PDR={res['mean_end_to_end_pdr']:6.2f}%  "
+                        f"loss={res['mean_pkt_loss']:5.2f}%  reward={res['mean_reward']:8.2f}")
+        pol = out['policy']['mean_end_to_end_pdr']
+        worst = out['worst']['mean_end_to_end_pdr']
+        logger.info(f"[CEILING] policy→worst PDR gap = {pol - worst:+.2f}pp  "
+                    f"(max damage an observation attack could extract)")
+        out['_meta'] = {'reference_variant': vcfg['name'], 'attack_load': attack_load,
+                        'hotspot': bool(attack_hotspot), 'n_eps': n_eps,
+                        'policy_minus_worst_pp': pol - worst}
+        self._save(out, 'damage_ceiling.json')
+        logger.info("[CEILING] done")
+        return out
+
     def _attack_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                          n_eps: int, t_per_ep: int,
                          attack: bool = False,
@@ -1951,7 +2037,8 @@ class StandaloneExperimentRunner:
                          targeted_tiers: Optional[List[str]] = None,
                          attack_fraction: float = 1.0,
                          offered_load_factor: float = 1.0,
-                         traffic_seed: int = 20240601) -> Dict:
+                         traffic_seed: int = 20240601,
+                         routing_rule: Optional[str] = None) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         hosts = env.engine.get_all_hosts()
@@ -1980,6 +2067,9 @@ class StandaloneExperimentRunner:
         # from the global RNG so that partial-compromise cases do not desync the
         # traffic sequence relative to the clean baseline.
         _attack_rng = random.Random(traffic_seed)
+        # Dedicated RNG for the 'random' routing rule (damage-ceiling diagnostic),
+        # kept separate so it does not desync the paired traffic sequence.
+        _rule_rng = random.Random(traffic_seed + 999)
 
         for _ in range(n_eps):
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
@@ -2033,7 +2123,16 @@ class StandaloneExperimentRunner:
                                 ))
                     states = adv
                 with torch.no_grad():
-                    if trainable_indices is not None:
+                    if routing_rule is not None and trainable_indices is not None:
+                        # Damage-ceiling diagnostic: bypass the policy and route by a
+                        # fixed rule (worst/best/sp/random) to bound the achievable
+                        # PDR envelope an observation-space attacker could ever reach.
+                        t_hosts = [hosts[i] for i in trainable_indices]
+                        t_actions = [self._rule_action(h, routing_rule, env.engine, _rule_rng)
+                                     for h in t_hosts]
+                        actions = self._build_full_actions(t_actions, n_total_hosts,
+                                                          trainable_indices, n_actions)
+                    elif trainable_indices is not None:
                         t_states = [states[i] for i in trainable_indices]
                         t_actions = maddpg.choose_action(t_states)
                         actions = self._build_full_actions(t_actions, n_total_hosts,
@@ -2065,6 +2164,9 @@ class StandaloneExperimentRunner:
             'mean_delay_p95': float(np.mean(ep_delay_p95)),
             'mean_backlog_end': float(np.mean(ep_backlog)),
             'mean_goodput_per_step': float(np.mean(ep_goodput)),
+            'p95_series':     [float(v) for v in ep_delay_p95],
+            'pdr_series':     [float(v) for v in ep_delivery],
+            'backlog_series': [float(v) for v in ep_backlog],
             'run_config': {
                 'attack': attack,
                 'attack_type': attack_type if attack else 'clean',
@@ -2524,7 +2626,7 @@ def main():
     ap.add_argument('--config',      default='experiment_config.json')
     ap.add_argument('--gpu',         type=int, default=0)
     ap.add_argument('--results-dir', default=None)
-    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot', 'failure'], default='all')
+    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot', 'failure', 'ceiling'], default='all')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--smoke', action='store_true',
                     help='Smoke-test mode: 80 epochs / 3 eps / 64 steps — enough to '
@@ -2569,6 +2671,7 @@ def main():
     elif args.phase == 'train':   runner.run_training()
     elif args.phase == 'paper1':  runner.evaluate_maddpg()
     elif args.phase == 'paper2':  runner.evaluate_fgsm()
+    elif args.phase == 'ceiling': runner.measure_damage_ceiling()
     elif args.phase == 'hotspot':
         tr = runner._load('phase1_training_results.json')
         t_per_ep = runner.config['training']['timesteps_per_episode']
