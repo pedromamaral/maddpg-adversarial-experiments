@@ -1949,7 +1949,8 @@ class StandaloneExperimentRunner:
         For each destination, score the K precomputed paths by their true
         bottleneck utilisation and select one:
           worst  → most-congested path  (adversarial upper bound on damage)
-          best   → least-congested path (greedy-optimal routing)
+          greedy → least-congested path (myopic per-step least-utilised choice;
+                   a heuristic, NOT a flow-optimum — the trained policy can beat it)
           sp     → k=0 (shortest path; EVPN-SP-like)
           random → uniform among available paths
         """
@@ -1975,7 +1976,7 @@ class StandaloneExperimentRunner:
                     utils.append(u)
                 if rule == 'worst':
                     chosen = int(np.argmax(utils))
-                elif rule == 'best':
+                elif rule == 'greedy':
                     chosen = int(np.argmin(utils))
                 elif rule == 'sp':
                     chosen = 0
@@ -1999,10 +2000,16 @@ class StandaloneExperimentRunner:
         attack_eval = self.config.get('attack_eval', {})
         attack_load = float(attack_eval.get('offered_load_factor', 1.0))
         attack_hotspot = attack_eval.get('hotspot')
+        target_links = attack_eval.get('target_links')
+        if target_links:
+            target_links = [list(lp) for lp in target_links]
+        n_link_failures = int(attack_eval.get('n_link_failures', 0))
         n_eps = int(attack_eval.get('ceiling_episodes', 50))
         t_per_ep = self.config['training']['timesteps_per_episode']
+        _fail_desc = (target_links if target_links
+                      else (f'{n_link_failures} random' if n_link_failures else 'none'))
         logger.info(f"[CEILING] regime: load={attack_load:.2f}x  hotspot={'on' if attack_hotspot else 'off'}  "
-                    f"eps={n_eps}")
+                    f"failures={_fail_desc}  eps={n_eps}")
 
         vcfg = self.config['variants'][0]  # any trained variant provides the clean reference
         maddpg, engine, env = self._make_variant(vcfg)
@@ -2010,11 +2017,12 @@ class StandaloneExperimentRunner:
         env = self._make_attack_env(attack_hotspot)
 
         out = {}
-        runs = [('policy', None), ('best', 'best'), ('sp', 'sp'),
+        runs = [('policy', None), ('greedy', 'greedy'), ('sp', 'sp'),
                 ('random', 'random'), ('worst', 'worst')]
         for label, rule in runs:
             res = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
-                                        offered_load_factor=attack_load, routing_rule=rule)
+                                        offered_load_factor=attack_load, routing_rule=rule,
+                                        target_links=target_links, n_link_failures=n_link_failures)
             out[label] = res
             logger.info(f"[CEILING] {label:8s} PDR={res['mean_end_to_end_pdr']:6.2f}%  "
                         f"loss={res['mean_pkt_loss']:5.2f}%  reward={res['mean_reward']:8.2f}")
@@ -2023,8 +2031,9 @@ class StandaloneExperimentRunner:
         logger.info(f"[CEILING] policy→worst PDR gap = {pol - worst:+.2f}pp  "
                     f"(max damage an observation attack could extract)")
         out['_meta'] = {'reference_variant': vcfg['name'], 'attack_load': attack_load,
-                        'hotspot': bool(attack_hotspot), 'n_eps': n_eps,
-                        'policy_minus_worst_pp': pol - worst}
+                        'hotspot': bool(attack_hotspot), 'target_links': target_links,
+                        'n_link_failures': n_link_failures,
+                        'n_eps': n_eps, 'policy_minus_worst_pp': pol - worst}
         self._save(out, 'damage_ceiling.json')
         logger.info("[CEILING] done")
         return out
@@ -2038,7 +2047,9 @@ class StandaloneExperimentRunner:
                          attack_fraction: float = 1.0,
                          offered_load_factor: float = 1.0,
                          traffic_seed: int = 20240601,
-                         routing_rule: Optional[str] = None) -> Dict:
+                         routing_rule: Optional[str] = None,
+                         target_links: Optional[list] = None,
+                         n_link_failures: int = 0) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         hosts = env.engine.get_all_hosts()
@@ -2071,8 +2082,25 @@ class StandaloneExperimentRunner:
         # kept separate so it does not desync the paired traffic sequence.
         _rule_rng = random.Random(traffic_seed + 999)
 
+        # Optional targeted link failures (damage-ceiling under failure). Snapshot
+        # the intact topology so each episode starts from a fresh graph before the
+        # target links are removed and the K-path caches rebuilt on the survivors.
+        _needs_failure = bool(n_link_failures or target_links)
+        _topo_snapshot = (
+            [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
+            if _needs_failure else None
+        )
+
         for _ in range(n_eps):
+            if _topo_snapshot is not None:
+                G = env.engine.topology.graph
+                G.remove_edges_from(list(G.edges()))
+                G.add_edges_from(_topo_snapshot)
+                env.engine.topology.refresh_path_cache()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+            if _needs_failure:
+                self._inject_failures(env.engine, n_link_failures, target_links=target_links)
+                env.engine.topology.refresh_path_cache()
             states = [env.engine.get_state(h) for h in hosts]
             ep_r = ep_sent = ep_dropped = ep_delivered = 0
 
