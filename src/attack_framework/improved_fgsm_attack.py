@@ -30,6 +30,10 @@ class FGSMAttackFramework:
         """
         self.epsilon = epsilon
         self.attack_type = attack_type
+        # PGD controls: n_steps=1 → single-step FGSM (default); n_steps>1 runs
+        # projected gradient descent with per-step size step_alpha (0 → epsilon).
+        self.n_steps = 1
+        self.step_alpha = 0.0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.attack_stats: Dict = {
             'clean_rewards': [],
@@ -90,83 +94,75 @@ class FGSMAttackFramework:
         # Save original training state
         was_training = agent.actor.training
         
+        # PGD generalises FGSM. n_steps=1 (default) reproduces single-step FGSM
+        # exactly; n_steps>1 runs projected gradient descent inside the L-inf
+        # epsilon-ball around the original observation, taking per-step size
+        # step_alpha (defaults to epsilon, which is correct for the single step).
+        n_steps = max(1, int(getattr(self, 'n_steps', 1)))
+        step_alpha = float(getattr(self, 'step_alpha', 0.0)) or self.epsilon
+
+        def _actor_probs(cur):
+            """Forward the (possibly GNN-encoded) working state through the actor."""
+            current_state = cur
+            gnn_proc = getattr(maddpg_ref, 'gnn_processor', None)
+            if gnn_proc is not None and getattr(gnn_proc, 'available', False):
+                # Apply the GNN to a batch where every other agent slot holds a
+                # zero observation and only the target slot carries grad back to
+                # the working state; padded to the full node count if needed.
+                n_agents_gnn = gnn_proc.n_agents
+                obs_dim_gnn = gnn_proc.obs_dim
+                dummy = torch.zeros(n_agents_gnn, obs_dim_gnn, device=self.device)
+                adv_obs = cur.squeeze(0)[:obs_dim_gnn]
+                if adv_obs.shape[0] < obs_dim_gnn:
+                    adv_obs = torch.cat(
+                        [adv_obs,
+                         torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=self.device)]
+                    )
+                batch = dummy.clone()
+                batch[agent_index % n_agents_gnn] = adv_obs
+                n_relay = getattr(gnn_proc, 'n_relay_nodes', 0)
+                if n_relay > 0:
+                    relay_pad = torch.zeros(n_relay, obs_dim_gnn, device=self.device)
+                    batch_full = torch.cat([batch, relay_pad], dim=0)
+                else:
+                    batch_full = batch
+                out = gnn_proc(batch_full, gnn_proc.edge_index)
+                current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
+            return agent.actor(current_state)
+
+        def _objective(cur, probs):
+            if self.attack_type == 'packet_loss':
+                return self._packet_loss_objective(cur, probs, network_engine, agent_index)
+            elif self.attack_type == 'reward_minimize':
+                return self._reward_minimize_objective(cur, probs, network_engine, agent_index)
+            elif self.attack_type == 'confusion':
+                return self._confusion_objective(cur, probs, network_engine, agent_index)
+            raise ValueError(f'Unknown attack type: {self.attack_type}')
+
         try:
             # Force gradient computation (overrides any torch.no_grad context)
             with torch.enable_grad():
-                agent.actor.eval()  # Use eval mode for consistent attack (prevents BN/Dropout noise)
-                
-                # Handle GNN processing differentiably if the variant uses a GNN.
-                # GNN now lives on the MADDPG orchestrator and needs all agents'
-                # observations, but for adversarial input computation we only
-                # have access to the single target agent's state tensor.
-                # Strategy: apply GNN to a batch where all other agents receive
-                # their current (unperturbed) observations; only the target slot
-                # retains the grad_fn back through state_tensor.
-                current_state = state_tensor
-                gnn_proc = getattr(maddpg_ref, 'gnn_processor', None)
-                if gnn_proc is not None and getattr(gnn_proc, 'available', False):
-                    # Build a [n_agents, obs_dim] batch; target agent keeps grad
-                    n_agents_gnn = gnn_proc.n_agents
-                    obs_dim_gnn = gnn_proc.obs_dim
-                    dummy = torch.zeros(n_agents_gnn, obs_dim_gnn,
-                                        device=self.device)
-                    # Overwrite the target agent's slot with the attacked state
-                    # (trimmed/padded to obs_dim to handle shape mismatches)
-                    adv_obs = state_tensor.squeeze(0)[:obs_dim_gnn]
-                    if adv_obs.shape[0] < obs_dim_gnn:
-                        adv_obs = torch.cat(
-                            [adv_obs,
-                             torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=self.device)]
-                        )
-                    batch = dummy.clone()
-                    batch[agent_index % n_agents_gnn] = adv_obs
-                    # Full-graph mode: pad relay (switch) nodes with zeros so the
-                    # edge_index referencing all n_total nodes doesn't crash.
-                    n_relay = getattr(gnn_proc, 'n_relay_nodes', 0)
-                    if n_relay > 0:
-                        relay_pad = torch.zeros(n_relay, obs_dim_gnn, device=self.device)
-                        batch_full = torch.cat([batch, relay_pad], dim=0)
-                    else:
-                        batch_full = batch
-                    out = gnn_proc(batch_full, gnn_proc.edge_index)  # [n_total, obs_dim]
-                    current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
-                action_probs = agent.actor(current_state)
-
-                if self.attack_type == 'packet_loss':
-                    loss = self._packet_loss_objective(
-                        state_tensor, action_probs, network_engine, agent_index
-                    )
-                elif self.attack_type == 'reward_minimize':
-                    loss = self._reward_minimize_objective(
-                        state_tensor, action_probs, network_engine, agent_index
-                    )
-                elif self.attack_type == 'confusion':
-                    loss = self._confusion_objective(
-                        state_tensor, action_probs, network_engine, agent_index
-                    )
-                else:
-                    raise ValueError(f'Unknown attack type: {self.attack_type}')
-
-                # Zero any existing gradients before backward
-                if state_tensor.grad is not None:
-                    state_tensor.grad.zero_()
-                
-                loss.backward()
-
-                # Check if gradients were computed
-                if state_tensor.grad is None:
-                    raise RuntimeError("Gradients not computed. Gradient flow may be broken or model parameters are non-differentiable.")
-
-                perturbation = self.epsilon * torch.sign(state_tensor.grad.data)
-                adversarial_state = state_tensor + perturbation
-                adversarial_state = self._apply_domain_constraints(
-                    adversarial_state, bandwidth_indices
-                )
-                
-                return adversarial_state.detach().cpu().numpy()[0]
+                agent.actor.eval()  # eval mode → no BN/Dropout noise during the attack
+                orig = state_tensor.detach().clone()
+                adv = state_tensor  # requires_grad already set
+                for _step in range(n_steps):
+                    if adv.grad is not None:
+                        adv.grad.zero_()
+                    action_probs = _actor_probs(adv)
+                    loss = _objective(adv, action_probs)
+                    loss.backward()
+                    if adv.grad is None:
+                        raise RuntimeError("Gradients not computed. Gradient flow may be broken.")
+                    with torch.no_grad():
+                        adv = adv + step_alpha * torch.sign(adv.grad.data)
+                        # project the accumulated perturbation back into the L-inf ball
+                        adv = orig + torch.clamp(adv - orig, -self.epsilon, self.epsilon)
+                        adv = self._apply_domain_constraints(adv, bandwidth_indices)
+                    adv = adv.detach().requires_grad_(True)
+                return adv.detach().cpu().numpy()[0]
 
         except Exception as e:
-            logger.error(f'FGSM generation failed for agent {agent_index}: {str(e)}')
+            logger.error(f'FGSM/PGD generation failed for agent {agent_index}: {str(e)}')
             return state
         finally:
             # Restore original training state

@@ -1797,6 +1797,15 @@ class StandaloneExperimentRunner:
                         critical_by_type[atype] = eps
                     continue
                 slo_eval = self._evaluate_attack_slo(clean, attacked)
+                # Per-case observability: emit the paired clean->attacked PDR drop
+                # to the log immediately, so a broken or no-op attack is visible
+                # from the first case rather than only after the whole variant
+                # (which is saved to JSON) completes.
+                _cp = float(clean.get('mean_end_to_end_pdr', 0.0))
+                _ap = float(attacked.get('mean_end_to_end_pdr', 0.0))
+                logger.info(f"[P2]     {key}: clean {_cp:5.1f}% -> attacked {_ap:5.1f}%  "
+                            f"drop {_cp - _ap:+5.1f}pp  "
+                            f"SLO={'ok' if slo_eval['success'] else 'BREAK'}")
                 variant_results[key] = {
                     'clean': clean, 'attacked': attacked,
                     'metrics': self._compare(clean, attacked),
@@ -1993,6 +2002,86 @@ class StandaloneExperimentRunner:
             a[d * K + chosen] = 1.0
         return a
 
+    def fgsm_probe(self) -> Dict:
+        """Diagnostic: does a stronger attack actually flip routing decisions?
+
+        For the reference variant (variants[0]) at the attack regime, sweeps
+        single-step FGSM and multi-step PGD at several budgets, reporting for
+        each the clean->attacked end-to-end PDR AND the action-flip rate (the
+        fraction of per-(agent,destination) argmax path choices the perturbation
+        changes). Interpretation:
+          flip~0 everywhere        -> attack cannot move the policy (under-powered
+                                      or genuinely robust argmax margins)
+          flip high, PDR flat      -> decisions change but routing absorbs them
+                                      (genuine routing robustness at THIS operating
+                                      point — but redundancy may vanish under stress)
+          PDR drops with budget/stress -> exploitable; escalate the real sweep
+
+        Both the attack grid and the operating-CONDITIONS grid are config-driven,
+        so the same method probes (a) attack budget at a fixed condition and
+        (b) a fixed strong attack across load/failure stress, where thinning path
+        redundancy is expected to convert decision-flips into real delivery loss.
+        """
+        logger.info("══════ FGSM PROBE (flip-rate + PGD + stress) ══════")
+        attack_eval = self.config.get('attack_eval', {})
+        attack_load = float(attack_eval.get('offered_load_factor', 2.0))
+        attack_hotspot = attack_eval.get('hotspot') or None
+        t_per_ep = self.config['training']['timesteps_per_episode']
+        n_eps = int(attack_eval.get('probe_episodes', 8))
+
+        vcfg = self.config['variants'][0]
+        maddpg, _, _ = self._make_variant(vcfg)
+        self._load_variant_checkpoint(maddpg, vcfg['name'])
+        env = self._make_attack_env(attack_hotspot)
+
+        # Attack grid: (attack_type, epsilon, n_steps). Default = budget sweep.
+        default_attacks = [
+            ('packet_loss',    0.05, 1), ('packet_loss', 0.10, 1),
+            ('packet_loss',    0.20, 1), ('packet_loss', 0.30, 1),
+            ('packet_loss',    0.20, 10), ('packet_loss', 0.30, 10),
+            ('reward_minimize', 0.30, 10),
+            ('random',         0.30, 1),
+        ]
+        attacks = [tuple(a) for a in attack_eval.get('probe_attacks', default_attacks)]
+        # Operating-conditions grid: list of {load, n_failures}. Default = base only.
+        conditions = attack_eval.get('probe_conditions',
+                                     [{'load': attack_load, 'n_failures': 0}])
+
+        out = {}
+        for cond in conditions:
+            load = float(cond.get('load', attack_load))
+            nf = int(cond.get('n_failures', 0))
+            cond_key = f"load{load:g}_fail{nf}"
+            logger.info(f"[PROBE] === condition {cond_key} "
+                        f"(hotspot={'on' if attack_hotspot else 'off'}, eps/cfg={n_eps}) ===")
+            # Clean baseline at this operating condition (shared across attacks).
+            clean = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
+                                          offered_load_factor=load, n_link_failures=nf)
+            cp = clean['mean_end_to_end_pdr']
+            logger.info(f"[PROBE] {cond_key}  clean PDR = {cp:.1f}%")
+            for atype, eps, nsteps in attacks:
+                self.attack_framework.n_steps = int(nsteps)
+                self.attack_framework.step_alpha = eps if nsteps == 1 else (eps / nsteps * 2.5)
+                att = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
+                                            attack_type=atype, epsilon=eps,
+                                            offered_load_factor=load, n_link_failures=nf,
+                                            measure_flips=True)
+                ap = att['mean_end_to_end_pdr']
+                fr = att.get('action_flip_rate')
+                key = f"{cond_key}__{atype}_eps{eps}_steps{nsteps}"
+                out[key] = {'condition': cond_key, 'load': load, 'n_failures': nf,
+                            'attack_type': atype, 'epsilon': eps, 'n_steps': nsteps,
+                            'clean_pdr': cp, 'attacked_pdr': ap, 'drop_pp': cp - ap,
+                            'action_flip_rate': fr}
+                logger.info(f"[PROBE]   {atype}_eps{eps}_s{nsteps:<2d} "
+                            f"{cp:5.1f}%->{ap:5.1f}%  drop {cp - ap:+5.1f}pp  flips "
+                            f"{(fr * 100 if fr is not None else float('nan')):5.1f}%")
+        self.attack_framework.n_steps = 1
+        self.attack_framework.step_alpha = 0.0
+        self._save(out, 'fgsm_probe_results.json')
+        logger.info("[PROBE] done")
+        return out
+
     def measure_damage_ceiling(self) -> Dict:
         """Bound the achievable-damage envelope at the attack operating point.
 
@@ -2055,9 +2144,13 @@ class StandaloneExperimentRunner:
                          traffic_seed: int = 20240601,
                          routing_rule: Optional[str] = None,
                          target_links: Optional[list] = None,
-                         n_link_failures: int = 0) -> Dict:
+                         n_link_failures: int = 0,
+                         measure_flips: bool = False) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
+        _flip_changed = 0   # per-(agent,destination) argmax decisions the attack flips
+        _flip_total = 0
+        _n_dest_flip = len(env.engine.topology.access_nodes)
         hosts = env.engine.get_all_hosts()
         trainable_indices = getattr(env.engine, 'trainable_host_indices', None)
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
@@ -2121,6 +2214,10 @@ class StandaloneExperimentRunner:
 
             for _ in range(t_per_ep):
                 if attack:
+                    # Snapshot the clean observations before perturbation so the
+                    # action-flip diagnostic can compare clean vs adversarial
+                    # argmax path choices on the SAME step.
+                    _clean_states = list(states) if measure_flips else None
                     # The critic-grounded attack needs the true central state and the
                     # other agents' (block-onehot) actions as fixed context. Assemble
                     # them once per timestep from the clean observations.
@@ -2156,6 +2253,15 @@ class StandaloneExperimentRunner:
                                     agent_index=agent_idx,
                                 ))
                     states = adv
+                    if measure_flips and trainable_indices is not None:
+                        _K_flip = max(1, n_actions // _n_dest_flip)
+                        _cl = maddpg.choose_action([_clean_states[i] for i in trainable_indices])
+                        _av = maddpg.choose_action([adv[i] for i in trainable_indices])
+                        for _cv, _avv in zip(_cl, _av):
+                            _ca = np.asarray(_cv).reshape(_n_dest_flip, _K_flip).argmax(axis=1)
+                            _aa = np.asarray(_avv).reshape(_n_dest_flip, _K_flip).argmax(axis=1)
+                            _flip_changed += int((_ca != _aa).sum())
+                            _flip_total += _n_dest_flip
                 with torch.no_grad():
                     if routing_rule is not None and trainable_indices is not None:
                         # Damage-ceiling diagnostic: bypass the policy and route by a
@@ -2201,6 +2307,7 @@ class StandaloneExperimentRunner:
             'p95_series':     [float(v) for v in ep_delay_p95],
             'pdr_series':     [float(v) for v in ep_delivery],
             'backlog_series': [float(v) for v in ep_backlog],
+            'action_flip_rate': float(_flip_changed / _flip_total) if _flip_total else None,
             'run_config': {
                 'attack': attack,
                 'attack_type': attack_type if attack else 'clean',
@@ -2660,7 +2767,7 @@ def main():
     ap.add_argument('--config',      default='experiment_config.json')
     ap.add_argument('--gpu',         type=int, default=0)
     ap.add_argument('--results-dir', default=None)
-    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot', 'failure', 'ceiling'], default='all')
+    ap.add_argument('--phase', choices=['all', 'train', 'paper1', 'paper2', 'hotspot', 'failure', 'ceiling', 'fgsm_probe'], default='all')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--smoke', action='store_true',
                     help='Smoke-test mode: 80 epochs / 3 eps / 64 steps — enough to '
@@ -2706,6 +2813,7 @@ def main():
     elif args.phase == 'paper1':  runner.evaluate_maddpg()
     elif args.phase == 'paper2':  runner.evaluate_fgsm()
     elif args.phase == 'ceiling': runner.measure_damage_ceiling()
+    elif args.phase == 'fgsm_probe': runner.fgsm_probe()
     elif args.phase == 'hotspot':
         tr = runner._load('phase1_training_results.json')
         t_per_ep = runner.config['training']['timesteps_per_episode']
