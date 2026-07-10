@@ -39,7 +39,7 @@ sys.path.insert(0, 'src/maddpg_clean')
 sys.path.insert(0, 'src/attack_framework')
 sys.path.insert(0, 'tools')
 
-from maddpg_implementation import MADDPG
+from maddpg_implementation import MADDPG, set_global_seeds
 from network_environment import NetworkEngine, NetworkEnv
 from improved_fgsm_attack import FGSMAttackFramework, ThesisVisualizationSuite
 
@@ -600,7 +600,13 @@ class StandaloneExperimentRunner:
 
     def train_variant(self, vcfg: Dict) -> Dict:
         name = vcfg['name']
-        logger.info(f"[TRAIN] {name} — start")
+        # Multi-seed support: training.seed controls BOTH network-weight init
+        # (via the global RNGs, previously unseeded in the main process) and the
+        # per-episode worker streams (via base_seed below).  Re-seeded at every
+        # variant start so results are independent of variant ordering.
+        train_seed = int(self.config.get('training', {}).get('seed', 42))
+        set_global_seeds(train_seed)
+        logger.info(f"[TRAIN] {name} — start (training seed = {train_seed})")
 
         # Always use 'spawn' for the worker pool.  'fork' after CUDA has been
         # initialised in the parent (which happens after the first variant
@@ -694,7 +700,7 @@ class StandaloneExperimentRunner:
                 n_episodes=eps_per_ep, t_per_ep=t_per_ep,
                 epsilon=epoch_epsilon, deterministic_mask=deterministic_mask,
                 decision_block_size=decision_block_size,
-                epoch=epoch, base_seed=42,
+                epoch=epoch, base_seed=train_seed,
             )
             freq = int(cfg_t.get('learn_freq', 25))
             n_learns = (t_per_ep // freq) * eps_per_ep
