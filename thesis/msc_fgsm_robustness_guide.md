@@ -209,11 +209,16 @@ Two architecture-level observations worth a short chapter/section:
   Paper 1 — is also among the most adversarially robust. (Caveat for the student:
   these gaps are real but small; frame them as an architecture *ranking of a minor
   effect*, not a "vulnerability," since absolute loss is ≤2.8pp everywhere.)
-- **GNN decision-level robustness (Figure T6).** The GNN variants flip only **1–3%**
-  of decisions vs 15–26% for non-GNN — the message-passing encoder smooths the
-  observation so per-agent perturbations barely change decisions. The encoder that
-  *cost* delivery in Paper 1 *buys* decision robustness here: a clean
-  security/performance trade-off to discuss.
+- **GNN decision-level robustness (Figure T6), with one exception.** Two of the
+  three GNN variants flip only **1.4–2.6%** of decisions (CC-Simple-GNN 1.4%,
+  LC-Duelling-GNN 2.6%) vs 18–26% for non-GNN — the message-passing encoder smooths
+  the observation so per-agent perturbations barely change decisions. But
+  **CC-Duelling-GNN is an exception: it still flips 12.6%** and carries the small
+  significant adversarial gap noted above, so the GNN's decision-robustness is
+  *base-architecture-dependent, not a property of GNN encoding per se* — warn the
+  student not to state it as universal. Where it does hold, the encoder that *cost*
+  delivery in Paper 1 *buys* decision robustness here: a security/performance
+  trade-off to discuss.
 
 ---
 
@@ -261,7 +266,8 @@ All written by `tools/plot_thesis.py` into `thesis/figures/` as PNG + PDF.
 ## 6. Key numbers to quote (final, from the 15-episode tightening run)
 
 - Flip rate at ε0.3: gradient ~26% vs random ~8% (≈3×). *(CC-Simple, nominal.)*
-  Across variants, non-GNN flip 18–26%, GNN flip 1.4–2.6%.
+  Across variants, non-GNN flip 18–26%; GNN flip 1.4–2.6% **except CC-Duelling-GNN
+  at 12.6%** (GNN robustness is not universal).
 - Nominal absolute PDR loss under FGSM (ε0.3): **≤2.8pp on every architecture**
   (LC-Simple worst at 2.8pp; CC-Simple/CC-Simple-GNN/LC-Duelling ~0).
 - Nominal gradient−random gap (adversarial-specific effect), with 95% CI:
@@ -274,8 +280,9 @@ All written by `tools/plot_thesis.py` into `thesis/figures/` as PNG + PDF.
   0 — random *worse*); **n4 both collapse ~28–33pp, gap n.s.**; **n6 degenerate**
   (clean ≈ 9%, identical for every variant).
 - Architecture takeaway: duelling > simple in exploitability under a central critic;
-  CC-Simple robust; GNN encoder makes decisions near-unflippable (1–3% flips) at the
-  Paper-1 cost of delivery — a clean security/performance trade-off.
+  CC-Simple robust; GNN encoder makes decisions near-unflippable (1.4–2.6% flips) for
+  two of three bases — CC-Duelling-GNN excepted (12.6%) — at the Paper-1 cost of
+  delivery: a base-dependent security/performance trade-off.
 
 ---
 

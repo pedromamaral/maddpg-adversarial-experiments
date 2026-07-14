@@ -1,0 +1,402 @@
+\documentclass[10pt,journal,comsoc]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{float}
+\usepackage{cite}
+\usepackage{color}
+\usepackage{multicol}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{mathtools}
+\newtheorem{definition}{Definition}
+\usepackage{makecell}
+\usepackage{algpseudocode}
+\usepackage{tabularx}
+\usepackage{booktabs}
+% Result figures (T1..T7) are written by tools/plot_thesis.py to
+%   host_data/results/thesis_figures/ and mirrored to thesis/figures/.
+\graphicspath{{./Figures/}{../thesis/figures/}{../host_data/results/thesis_figures/}}
+\renewcommand{\arraystretch}{1.2}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+\setlength{\emergencystretch}{1em}
+\hbadness=10000
+\vbadness=10000
+
+\begin{document}
+
+\title{Changed Decisions, Unchanged Delivery: When Do Adversarial Observation
+Attacks Actually Harm MADDPG Routing?}
+
+\author{
+  Pedro Amaral,~\IEEEmembership{Member,~IEEE,}%
+  \thanks{Pedro Amaral is with the Departamento de Engenharia Electrot\'ecnica e de Computadores, Faculdade de Ci\^encias e Tecnologia, FCT/UNL, Universidade Nova de Lisboa, 2829-516 Caparica, Portugal; and Instituto de Telecomunica\c{c}\~oes, 1049-001 Lisbon, Portugal (e-mail: pfa@fct.unl.pt)}%
+  \\
+  Diogo Raimundo%
+  \thanks{Diogo Raimundo is with the Departamento de Engenharia Electrot\'ecnica e de Computadores, Faculdade de Ci\^encias e Tecnologia, FCT/UNL, Universidade Nova de Lisboa, 2829-516 Caparica, Portugal (e-mail: \{d.raimundo\}@campus.fct.unl.pt)}
+}
+
+\markboth{IEEE Transactions on Network and Service Management}%
+{Amaral and Raimundo: Adversarial Robustness of MADDPG Routing}
+
+\maketitle
+
+\begin{abstract}
+Learned routing policies expose a new attack surface: the observations the agents
+read can be perturbed by a compromised telemetry channel. We study whether a
+gradient-based observation attack (FGSM/PGD) can degrade the delivery performance of
+Multi-Agent Deep Deterministic Policy Gradient (MADDPG) routing policies on a
+realistic 86-node service-provider topology, across the same seven architectural
+variants compared in a companion study. Our central finding separates two things
+that adversarial-robustness studies routinely conflate: whether an attack changes a
+policy's \emph{decisions}, and whether it changes the \emph{outcome}. Under an
+$L_\infty$-bounded observation attack the FGSM gradient reliably flips routing
+decisions --- up to $26\%$ of per-destination path choices at $\epsilon{=}0.3$,
+roughly three times a budget-matched random perturbation --- yet delivery on the
+intact, well-provisioned topology barely moves (at most $2.8$\,pp of an available
+$21$\,pp damage ceiling). $K$-shortest-path redundancy converts changed decisions
+into unchanged outcomes. Against a rigorous non-adversarial control (a budget- and
+domain-matched \emph{random} perturbation) we find that the gradient's advantage is
+real but small and architecture-dependent: four of seven variants show a
+statistically significant gradient-over-random gap of $1$--$3$\,pp at nominal load,
+while the simplest, best-delivering architecture is adversarially robust. Crucially,
+under out-of-distribution link failures --- where redundancy is thin and delivery
+does collapse under perturbation --- the random control is as damaging as, or more
+damaging than, the gradient attack, so the failure-regime fragility is generic
+observation-noise sensitivity rather than adversarial exploitability. We also find
+that a graph-neural-network encoder suppresses decision flips for two of three base
+architectures but not universally. The results argue that, for redundant transport
+networks, telemetry integrity and fast reconvergence matter more than adversarial
+training.
+\end{abstract}
+\begin{IEEEkeywords}
+Adversarial machine learning; deep reinforcement learning; multi-agent systems;
+adaptive routing; observation-space attacks; FGSM; robustness.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+Deep reinforcement learning (DRL) is increasingly proposed for adaptive routing in
+transport networks, and a companion study~\cite{companion} shows that a centralised-critic
+MADDPG policy, trained at a concentrated-demand stress regime, outperforms a
+shortest-path control plane and degrades gracefully under natural link failures.
+That study concerns \emph{natural} stress. This paper asks the adjacent question:
+does the same policy survive \emph{malicious} stress, specifically an adversary that
+perturbs the observations the agents read?
+
+Learned control planes consume telemetry --- per-path utilisation, queue occupancy,
+link state --- to make decisions. If that telemetry channel is compromised, an
+attacker can add a small, bounded perturbation to an agent's observation without
+touching the network, the traffic, or the reward. This is the observation-space
+threat model of adversarial machine learning~\cite{goodfellow2015,huang2017adversarial},
+transplanted from image classification to a networked control loop. The natural
+worry is that a policy which learned to exploit fine utilisation differences is
+exactly a policy that a gradient attacker can fool.
+
+Our contribution is to show that this worry, while mechanically valid, does not
+translate into an operational vulnerability on a redundant transport topology --- and
+to pin down precisely when it would. We make four points.
+\begin{enumerate}
+  \item \textbf{The attack works at the decision level.} FGSM/PGD flip a large
+  fraction of routing decisions (up to $26\%$ at $\epsilon{=}0.3$), far more than a
+  budget-matched random perturbation, confirming the gradient does targeted work
+  (Section~\ref{sec:flips}).
+  \item \textbf{The topology absorbs the flips.} Despite flipping a quarter of
+  decisions, delivery falls by at most $2.8$\,pp against a damage ceiling of
+  ${\sim}21$\,pp: $K$-path redundancy routes the moved flows onward
+  (Section~\ref{sec:absorb}).
+  \item \textbf{The adversarial signal is real but small and architecture-dependent.}
+  Against a rigorous random control, four of seven variants show a significant
+  $1$--$3$\,pp gradient-over-random gap; the simplest architecture and two of three
+  GNN variants do not (Section~\ref{sec:arch}).
+  \item \textbf{Failure-regime fragility is noise, not adversary.} When link
+  failures remove redundancy and delivery does collapse under perturbation, a random
+  perturbation is as damaging as the gradient --- so the collapse is observation-noise
+  sensitivity, not adversarial exploitation (Section~\ref{sec:failures}).
+\end{enumerate}
+
+\section{Threat Model and Attack Methodology}
+\label{sec:threat}
+
+\subsection{System under attack}
+We attack the seven MADDPG variants of the companion study without modification:
+two critic domains (centralised, CC; local, LC) $\times$ two value heads (simple,
+duelling) plus three graph-neural-network (GNN) encoder variants, all trained at the
+$2\times$ concentrated-hotspot operating point on an 86-node service-provider
+topology with a provider-edge, $K{=}3$ shortest-path forwarding model. Each agent,
+for every destination, selects one of its $K$ candidate paths by an $\arg\max$ over
+per-path logits. The decision is therefore \emph{discrete and per-destination}; the
+attack must move a continuous observation far enough to cross an $\arg\max$ boundary.
+
+The perturbed part of the observation is the per-path bottleneck (max-over-hops)
+utilisation $U_i \in [0,1]^{|D|\times K}$ --- the exact signal that lets an agent
+prefer a less-congested path, and therefore the natural target.
+
+\subsection{Threat model}
+The attacker adds a perturbation $\delta$ to an agent's observation, bounded in
+$L_\infty$ norm by a budget $\epsilon$ (no single feature moves by more than
+$\epsilon$), with bandwidth features re-projected into their valid $[0,1]$ range
+after perturbation. The attacker cannot alter the network, the injected traffic, or
+the reward signal. This models a compromised telemetry or monitoring channel and is
+a white-box threat: the gradient attacks require access to the actor network.
+
+\subsection{Attacks}
+\textbf{FGSM.} We build a differentiable \emph{packet-loss objective} whose gradient
+points toward worse routing: it weights each path by a sharpened function of its true
+bottleneck utilisation and rewards placing policy probability mass on congested
+paths, $\mathcal{L}(\delta) = \sum_{\text{paths}} \pi(\text{path})\,
+\sigma\!\big((U-0.5)\cdot 10\big)$. The single-step Fast Gradient Sign Method
+perturbs the observation by $\epsilon\cdot\operatorname{sign}(\nabla_{\text{obs}}
+\mathcal{L})$, moving to the corner of the $\epsilon$-ball that most increases the
+congestion objective. \textbf{PGD} iterates this step with re-projection into the
+$\epsilon$-ball as a stronger upper bound; on this problem it flips a comparable
+fraction of decisions to FGSM, because the $\arg\max$ margins to cross are small.
+
+\textbf{Random control (the non-adversarial baseline).} The single most important
+comparison in this paper is against a budget- and domain-matched \emph{random}
+perturbation: same $\epsilon$, same clamping, but the direction is a random
+$\pm\epsilon$ per feature rather than the gradient. This is the blind, zero-knowledge
+member of the same attacker family; it is \emph{not} an adversarial attack. The
+derived quantity we report throughout is the
+\begin{equation}
+\text{adversarial-specific effect} = \Delta_{\text{grad}} - \Delta_{\text{rand}},
+\label{eq:gap}
+\end{equation}
+the difference between the delivery drop under the gradient attack and under the
+random control. It isolates \emph{the value of gradient knowledge to the attacker}:
+a value near zero means the attack is no better than blind noise; a positive value
+is a genuine targeted vulnerability.
+
+\subsection{Diagnostics and statistics}
+Two diagnostics separate decisions from outcomes. The \textbf{action-flip rate} is
+the fraction of per-(agent, destination) $\arg\max$ path choices that a perturbation
+changes; it measures whether the attack moves the \emph{policy}. The \textbf{damage
+ceiling} replaces the policy by fixed oracle routing rules on identical traffic:
+the \emph{worst}-path rule (always the most-congested candidate) is the maximum
+delivery loss any observation attacker could cause by steering decisions, bounding
+what is at stake at each operating point. Evaluations use paired episodes: clean,
+gradient, and random runs share the same seeded traffic and failure draws, so
+per-episode differences are meaningful and the gap of Eq.~\eqref{eq:gap} carries a
+proper paired $95\%$ confidence interval (CI); we use $15$ paired episodes per cell.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{FGSM changes routing decisions}
+\label{sec:flips}
+The attack is not under-powered. Figure~\ref{fig:flips-eps} reports the action-flip
+rate against the perturbation budget for CC-Simple at the $2\times$ hotspot operating
+point. The gradient flips an increasing share of decisions with $\epsilon$ ---
+${\sim}8\%$ at $\epsilon{=}0.05$, ${\sim}14\%$ at $0.1$, ${\sim}22\%$ at $0.2$, and
+$25.7\%$ at $0.3$ --- while a budget-matched random perturbation at $\epsilon{=}0.3$
+flips only ${\sim}8\%$. The gradient thus flips roughly \emph{three times} as many
+decisions as blind noise, confirming that it is doing targeted work: it locates and
+crosses $\arg\max$ boundaries rather than jostling the observation. Across the
+non-GNN variants the nominal flip rate is $18$--$26\%$. By the standard image-domain
+reading, a policy whose decisions move this much is ``successfully attacked.''
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T1_flip_vs_epsilon.pdf}
+  \caption{Action-flip rate vs.\ perturbation budget $\epsilon$ (CC-Simple, $2\times$
+  hotspot). FGSM (gradient) flips ${\sim}3\times$ more routing decisions than a
+  budget-matched random perturbation, confirming the attack is targeted, not blind.}
+  \label{fig:flips-eps}
+\end{figure}
+
+\subsection{Redundancy absorbs the flips: changed decisions, unchanged delivery}
+\label{sec:absorb}
+The outcome tells a different story from the decisions. Figure~\ref{fig:flips-pdr}
+places, for every variant at nominal load, the fraction of decisions flipped beside
+the delivery lost. Flipping $18$--$26\%$ of decisions costs \emph{at most} $2.8$\,pp
+of end-to-end delivery (worst case LC-Simple), and $\approx 0$ for CC-Simple,
+CC-Simple-GNN, and LC-Duelling. The mechanism is redundancy: a flipped decision moves
+a flow from its chosen $K$-path to a different $K$-shortest path which, on a
+well-provisioned topology with hop-diverse alternatives and spare capacity, still
+delivers. The routing structure converts most changed decisions into identical
+outcomes.
+
+The damage ceiling quantifies how little of the available harm the attack extracts.
+Figure~\ref{fig:ceiling} contrasts, across offered load, the clean policy delivery,
+the \emph{worst}-path floor, and the greedy reference. At the $2\times$ operating
+point roughly $21$\,pp of delivery separates the policy from the worst-path rule ---
+that is what an omniscient decision-steering attacker could destroy --- yet FGSM
+reaches at most $2.8$\,pp of it (${\leq}13\%$ of the ceiling), and $\approx 0$ on the
+robust variants. The vulnerability exists in principle; the topology denies it in
+practice.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T2_flips_vs_pdr_nominal.pdf}
+  \caption{Decisions changed vs.\ delivery lost, all seven variants, $2\times$
+  hotspot, $\epsilon{=}0.3$. Many decisions flip; almost no packets are lost.}
+  \label{fig:flips-pdr}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T7_damage_ceiling_contrast.pdf}
+  \caption{Damage ceiling vs.\ achieved damage across offered load. The shaded band
+  is the delivery an ideal decision-steering attacker could extract (policy minus
+  worst-path); FGSM extracts almost none of it.}
+  \label{fig:ceiling}
+\end{figure}
+
+\subsection{The adversarial signal is real, small, and architecture-dependent}
+\label{sec:arch}
+Absorbing the flips does not mean the gradient is worthless. Because clean, gradient,
+and random runs are paired episode-for-episode, we can test the adversarial-specific
+effect of Eq.~\eqref{eq:gap} with a proper CI. Figure~\ref{fig:gap} reports it for
+all seven variants at nominal load. Four variants show a statistically significant
+positive gap --- LC-Simple $+3.3$\,pp (CI $[+2.0,+4.6]$), CC-Duelling $+2.5$\,pp
+($[+1.1,+3.9]$), LC-Duelling $+1.2$\,pp ($[+0.6,+1.9]$), and CC-Duelling-GNN
+$+1.0$\,pp ($[0.0,+2.0]$) --- so on these architectures the gradient direction does
+buy the attacker a real, if small, delivery loss over blind noise. The other three ---
+CC-Simple ($+0.4$\,pp, CI $[-0.3,+1.0]$), CC-Simple-GNN ($\approx 0$), and
+LC-Duelling-GNN ($\approx 0$) --- have gaps that include zero: on them the gradient
+is no better than random. The pattern is consistent under a central critic the
+\emph{duelling} head is more exploitable than the \emph{simple} head, and CC-Simple ---
+the simplest and best-delivering architecture in the companion study --- is also among
+the most adversarially robust. We stress the effect is minor operationally: absolute
+loss is ${\leq}2.8$\,pp everywhere, so this is a ranking of a small effect, not a
+vulnerability.
+
+The GNN encoder mostly, but not universally, suppresses decision flips
+(Figure~\ref{fig:gnn}). Two of the three GNN variants flip only $1.4\%$
+(CC-Simple-GNN) and $2.6\%$ (LC-Duelling-GNN) of decisions --- roughly a tenth of their
+non-GNN bases --- because message passing smooths the observation so that per-agent
+perturbations rarely change an $\arg\max$. The exception is CC-Duelling-GNN, which
+still flips $12.6\%$ and carries the small significant gap above: GNN decision
+robustness is a property of the specific base architecture, not of GNN encoding as
+such. Where it holds, the encoder that \emph{cost} delivery in the companion study
+\emph{buys} decision robustness here --- a base-dependent security/performance
+trade-off.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T3_adversarial_gap_by_variant.pdf}
+  \caption{Adversarial-specific effect (gradient minus random delivery drop) at
+  nominal load, seven variants, paired $95\%$ CI. Red bars exclude zero (a real
+  targeted signal); grey bars include zero (no better than noise).}
+  \label{fig:gap}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T6_gnn_flip_robustness.pdf}
+  \caption{Action-flip rate by variant (green: GNN). The GNN encoder suppresses flips
+  for the Simple and LC-Duelling bases but not for CC-Duelling.}
+  \label{fig:gnn}
+\end{figure}
+
+\subsection{Under failures, the fragility is noise, not adversary}
+\label{sec:failures}
+Redundancy is what absorbs the flips, so the sharpest test of adversarial
+exploitability is to remove it. Figure~\ref{fig:fragility} sweeps the number of
+random link failures per episode ($n=0,2,4,6$) at $2\times$ hotspot for CC-Simple,
+plotting the delivery drop under the gradient attack and under the random control
+with paired CI bands, and the clean (un-attacked) delivery for reference. Three
+regimes appear. At $n{=}0$ both drops are negligible (Section~\ref{sec:absorb}). At
+$n{=}2$ the network still delivers ${\sim}86\%$ cleanly, but now a perturbation
+bites --- and it bites \emph{harder for random than for gradient}: the random control
+drops delivery by ${\sim}6.5$\,pp while the gradient drops it by only ${\sim}0.3$\,pp,
+a gap of $-6.1$\,pp whose CI excludes zero. At $n{=}4$ both attacks collapse delivery
+together (${\sim}33$\,pp gradient, ${\sim}30$\,pp random); the $+3$\,pp gap is
+\emph{not} significant, lost inside the failure-driven variance. At $n{=}6$ the clean
+network has already self-collapsed to ${\sim}9\%$ delivery, so the attack-induced
+drop shrinks simply because little delivery remains to lose --- the point is
+failure-dominated and identical across all variants, and we exclude it from
+attack conclusions.
+
+The verdict is unambiguous: wherever the gradient's targeting could matter under
+failure, a direction-free random perturbation is as damaging or more. The large
+failure-regime delivery loss is therefore \emph{generic observation-noise
+sensitivity}, not adversarial exploitability. Notably the flip rate \emph{rises}
+under failure (Figure~\ref{fig:flip-fail}) --- post-failure states are more sensitive
+and more decisions change --- yet, cross-referencing Figure~\ref{fig:fragility}, the
+extra flips buy the adversary nothing over random noise: with few surviving paths any
+perturbation that changes a decision can shove a flow onto an overloaded survivor,
+and the gradient's structure confers no advantage.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T4_failure_fragility.pdf}
+  \caption{Delivery drop vs.\ number of failed links (CC-Simple, $2\times$ hotspot),
+  gradient and random with paired $95\%$ CI bands; grey dotted line is clean delivery
+  (right axis). Fragility rises with failures, but random $\geq$ gradient throughout;
+  the $n{=}6$ dip is network self-collapse, not renewed robustness.}
+  \label{fig:fragility}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{T5_flip_vs_failures.pdf}
+  \caption{Action-flip rate vs.\ number of failed links. The attack flips more
+  decisions under failure, yet (cf.\ Fig.~\ref{fig:fragility}) gains no adversarial
+  advantage over random noise.}
+  \label{fig:flip-fail}
+\end{figure}
+
+\section{Discussion}
+\label{sec:discussion}
+The results are organised around a distinction that adversarial-robustness
+evaluations often blur: an attack that changes a policy's \emph{decisions} is not the
+same as an attack that changes the \emph{outcome}. On a redundant transport topology
+these come apart cleanly. FGSM is a competent decision-level attack --- it flips a
+quarter of routing choices, three times blind noise --- and yet the network's
+$K$-path redundancy converts those changed decisions back into delivered packets.
+The damage ceiling makes the point quantitatively: ${\sim}21$\,pp of delivery is at
+stake, and the attack claims at most $2.8$\,pp of it.
+
+The random control is what keeps the interpretation honest. Without it, the
+$25$--$33$\,pp delivery collapse under a few link failures reads as a devastating
+adversarial result; with it, the collapse is revealed as noise sensitivity, because a
+direction-free perturbation of the same budget is equally or more damaging. We
+recommend that observation-space robustness studies for networked control always
+report a budget-matched random control alongside the gradient attack; the
+gradient-minus-random gap, not the raw gradient drop, is the quantity that measures
+adversarial vulnerability.
+
+For operators the guidance is concrete. Adversarial training against FGSM would
+defend a decision boundary that redundancy already protects, at nominal load, while
+doing nothing for the failure regime, where the threat is undirected noise rather
+than a clever adversary. Investment is better placed in \emph{telemetry integrity}
+(so observations cannot be perturbed at all) and \emph{fast reconvergence} (so the
+redundancy the policy relies on is restored quickly after failures). Architecturally,
+the companion study's recommended CC-Simple policy is also the most adversarially
+robust here, so the two studies agree on the same choice.
+
+\section{Conclusion}
+\label{sec:conclusion}
+We asked whether a gradient observation attack can harm MADDPG routing, and found
+that it changes many decisions but almost no outcomes on a redundant
+service-provider topology: FGSM flips up to $26\%$ of routing decisions yet costs at
+most $2.8$\,pp of a $21$\,pp damage ceiling. A rigorous random control shows the
+gradient's advantage is real but small ($1$--$3$\,pp on four of seven architectures,
+zero on the simplest and on two of three GNN variants), and that the large
+failure-regime fragility is generic observation-noise sensitivity, not adversarial
+exploitation. Limitations mirror the companion study: a single topology and one
+family of attacks. Future work includes black-box and transfer attacks, attacks that
+target the worst path directly to close the gap to the damage ceiling, and temporal
+multi-step attacks that exploit the routing dynamics rather than a single
+observation.
+
+\begin{thebibliography}{1}
+\bibitem{companion} P.~Amaral and D.~Raimundo, ``Centralised or Local Critic?
+Mechanism-Grounded Selection of MADDPG Architectures for Adaptive Routing,''
+companion manuscript, 2026.
+\bibitem{goodfellow2015} I.~J. Goodfellow, J.~Shlens, and C.~Szegedy, ``Explaining
+and Harnessing Adversarial Examples,'' in \emph{Proc. ICLR}, 2015.
+\bibitem{huang2017adversarial} S.~Huang, N.~Papernot, I.~Goodfellow, Y.~Duan, and
+P.~Abbeel, ``Adversarial Attacks on Neural Network Policies,'' in \emph{Proc. ICLR
+Workshop}, 2017.
+\end{thebibliography}
+
+\end{document}

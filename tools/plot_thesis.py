@@ -227,7 +227,7 @@ def t6():
         ax.text(fl + 0.4, i, f"{fl:.1f}", va="center", fontsize=8)
     ax.set_yticks(y); ax.set_yticklabels(names, fontsize=9)
     ax.set_xlabel("decisions flipped by FGSM (%), nominal, $\\epsilon$0.3")
-    ax.set_title("GNN encoder makes decisions near-unflippable (green = GNN)")
+    ax.set_title("GNN usually suppresses flips — but not for CC-Duelling (green = GNN)")
     save(fig, "T6_gnn_flip_robustness")
 
 
