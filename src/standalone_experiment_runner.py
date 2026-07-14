@@ -2058,6 +2058,7 @@ class StandaloneExperimentRunner:
             clean = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
                                           offered_load_factor=load, n_link_failures=nf)
             cp = clean['mean_end_to_end_pdr']
+            clean_series = clean.get('pdr_series')
             logger.info(f"[PROBE] {cond_key}  clean PDR = {cp:.1f}%")
             for atype, eps, nsteps in attacks:
                 self.attack_framework.n_steps = int(nsteps)
@@ -2072,7 +2073,12 @@ class StandaloneExperimentRunner:
                 out[key] = {'condition': cond_key, 'load': load, 'n_failures': nf,
                             'attack_type': atype, 'epsilon': eps, 'n_steps': nsteps,
                             'clean_pdr': cp, 'attacked_pdr': ap, 'drop_pp': cp - ap,
-                            'action_flip_rate': fr}
+                            'action_flip_rate': fr,
+                            # per-episode series; clean/gradient/random share the same
+                            # seeded traffic+failures, so these are paired episode-wise
+                            # and support paired CIs on the gradient-minus-random gap.
+                            'clean_pdr_series': clean_series,
+                            'attacked_pdr_series': att.get('pdr_series')}
                 logger.info(f"[PROBE]   {atype}_eps{eps}_s{nsteps:<2d} "
                             f"{cp:5.1f}%->{ap:5.1f}%  drop {cp - ap:+5.1f}pp  flips "
                             f"{(fr * 100 if fr is not None else float('nan')):5.1f}%")
