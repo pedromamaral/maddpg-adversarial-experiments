@@ -15,8 +15,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# default alongside the other Paper 1 figures (F1..F11 from plot_paper1.py)
 ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
-FIG_DIR = os.environ.get("FIG_DIR", os.path.join("paper", "figures"))
+FIG_DIR = os.environ.get("FIG_DIR",
+                         os.path.join("host_data", "results", "reward_fix", "figures"))
 os.makedirs(FIG_DIR, exist_ok=True)
 
 summary = json.load(open(os.path.join(ROOT, "seed_variance_summary.json")))
