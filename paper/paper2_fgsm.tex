@@ -21,9 +21,10 @@
 \usepackage{algpseudocode}
 \usepackage{tabularx}
 \usepackage{booktabs}
-% Result figures (T1..T7) are written by tools/plot_thesis.py to
-%   host_data/results/thesis_figures/ and mirrored to thesis/figures/.
-\graphicspath{{./Figures/}{../thesis/figures/}{../host_data/results/thesis_figures/}}
+% Camera-ready (de-titled) figures are written by
+%   PAPER_MODE=1 FIG_DIR=paper/figures python tools/plot_thesis.py
+% and live in paper/figures/. The titled thesis variants are a fallback only.
+\graphicspath{{./figures/}{./Figures/}{../thesis/figures/}}
 \renewcommand{\arraystretch}{1.2}
 \hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
 \setlength{\emergencystretch}{1em}
@@ -291,8 +292,9 @@ trade-off.
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.92\linewidth]{T6_gnn_flip_robustness.pdf}
-  \caption{Action-flip rate by variant (green: GNN). The GNN encoder suppresses flips
-  for the Simple and LC-Duelling bases but not for CC-Duelling.}
+  \caption{Action-flip rate by variant at nominal load ($\epsilon{=}0.3$; green:
+  GNN). The GNN encoder suppresses flips for the Simple and LC-Duelling bases but not
+  for CC-Duelling.}
   \label{fig:gnn}
 \end{figure}
 

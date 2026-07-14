@@ -21,17 +21,28 @@ import matplotlib.pyplot as plt
 ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
 FIG_DIR = os.environ.get("FIG_DIR", os.path.join("thesis", "figures"))
 os.makedirs(FIG_DIR, exist_ok=True)
+# PAPER_MODE: camera-ready figures for the Paper-2 tex — captions carry the message,
+# so drop the in-figure titles and bump fonts for legibility at single-column width.
+PAPER = bool(os.environ.get("PAPER_MODE"))
 
 VARIANTS = ["CC-Simple", "CC-Duelling", "CC-Simple-GNN", "CC-Duelling-GNN",
             "LC-Simple", "LC-Duelling", "LC-Duelling-GNN"]
 GNN = {v for v in VARIANTS if v.endswith("GNN")}
 COL = {"grad": "#c44e52", "rand": "#4c72b0", "policy": "#1f77b4",
        "worst": "#bbbbbb", "greedy": "#dd8452"}
-plt.rcParams.update({"figure.dpi": 120, "savefig.dpi": 300, "font.size": 11,
-                     "axes.grid": True, "grid.alpha": 0.3, "legend.fontsize": 9})
+plt.rcParams.update({"figure.dpi": 120, "savefig.dpi": 300,
+                     "font.size": 13 if PAPER else 11,
+                     "axes.labelsize": 14 if PAPER else 11,
+                     "xtick.labelsize": 12 if PAPER else 10,
+                     "ytick.labelsize": 12 if PAPER else 10,
+                     "axes.grid": True, "grid.alpha": 0.3,
+                     "legend.fontsize": 11 if PAPER else 9})
 
 
 def save(fig, name):
+    if PAPER:  # captions carry the message in the paper; strip in-figure titles
+        for ax in fig.axes:
+            ax.set_title("")
     for ext in ("png", "pdf"):
         fig.savefig(os.path.join(FIG_DIR, f"{name}.{ext}"), bbox_inches="tight")
     plt.close(fig)
@@ -132,7 +143,7 @@ def t3():
     ax.barh(y, gaps, xerr=xerr, capsize=3, color=colors, error_kw=dict(ecolor="black", lw=1.1))
     ax.axvline(0, color="black", lw=1)
     ax.set_yticks(y); ax.set_yticklabels(names, fontsize=9)
-    ax.set_xlabel("adversarial-specific effect: gradient $-$ random PDR drop (pp)")
+    ax.set_xlabel("gradient $-$ random PDR drop (pp)")
     ax.set_title("Only some architectures show a real adversarial signal (nominal, 95% CI)")
     save(fig, "T3_adversarial_gap_by_variant")
 
@@ -226,7 +237,7 @@ def t6():
     for i, fl in enumerate(flips):
         ax.text(fl + 0.4, i, f"{fl:.1f}", va="center", fontsize=8)
     ax.set_yticks(y); ax.set_yticklabels(names, fontsize=9)
-    ax.set_xlabel("decisions flipped by FGSM (%), nominal, $\\epsilon$0.3")
+    ax.set_xlabel("decisions flipped by FGSM (%)")
     ax.set_title("GNN usually suppresses flips — but not for CC-Duelling (green = GNN)")
     save(fig, "T6_gnn_flip_robustness")
 
