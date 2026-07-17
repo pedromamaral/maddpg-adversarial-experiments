@@ -1,0 +1,435 @@
+\documentclass[10pt,journal,comsoc]{IEEEtran}
+\usepackage{amsmath,amsfonts,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{array}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{mathtools}
+\usepackage{tabularx}
+\newtheorem{definition}{Definition}
+% Camera-ready (de-titled) T1..T7 live in paper/figures (PAPER_MODE=1 plot_thesis.py)
+\graphicspath{{./figures/}{./Figures/}{../thesis/figures/}}
+\renewcommand{\arraystretch}{1.2}
+% Placeholder box for results the follow-up experiments will fill in.
+\newcommand{\tofill}[1]{\begin{center}\fbox{\parbox{0.92\linewidth}{\centering
+  \textcolor{red}{\textbf{[TO COMPLETE — student experiment]}}\\[2pt]
+  \small #1}}\end{center}}
+
+\begin{document}
+
+\title{How Robust Is Multi-Agent Routing to Observation Attacks?\\
+From Myopic Gradients to Learned Worst-Case Adversaries}
+
+\author{Pedro Amaral,~\IEEEmembership{Member,~IEEE,} and Diogo Raimundo%
+\thanks{The authors are with the Departamento de Engenharia Electrot\'ecnica e de Computadores, FCT/UNL, Universidade Nova de Lisboa, 2829-516 Caparica, Portugal, and Instituto de Telecomunica\c{c}\~oes, Lisbon (e-mail: pfa@fct.unl.pt).}}
+
+\markboth{IEEE Transactions on Network and Service Management}%
+{Amaral and Raimundo: Robustness of MADDPG Routing to Observation Attacks}
+\maketitle
+
+\begin{abstract}
+Learned routing policies read network telemetry to make decisions, exposing a new
+attack surface: an adversary who compromises the telemetry channel can perturb the
+observations an agent reads without touching the network, the traffic, or the reward.
+We ask how robust Multi-Agent Deep Deterministic Policy Gradient (MADDPG) routing
+policies are to such observation attacks on a real 86-node service-provider topology,
+and --- crucially --- we separate two things the literature routinely conflates:
+whether an attack changes a policy's \emph{decisions} and whether it changes the
+\emph{delivered outcome}. We study a progression of attackers of increasing power
+within one fixed threat model: (i) a myopic single-step gradient attack (FGSM) and
+its iterated form (PGD); (ii) a \emph{learned worst-case} adversary trained as a
+reinforcement-learning agent whose reward is the victim's packet loss (the optimal
+observation adversary of the state-adversarial MDP); and (iii) structure-aware
+variants that coordinate perturbations across agents and time them to critical
+moments. Every attacker is measured against the same two references: a budget-matched
+\emph{random} (non-adversarial) control that isolates the value of gradient
+knowledge, and a \emph{damage ceiling} (worst-path routing on identical traffic) that
+bounds the delivery any decision-steering attacker could destroy. Our completed
+results show that the myopic gradient attack flips up to $26\%$ of routing decisions
+--- three times the random control --- yet extracts at most $2.8$\,pp of a $21$\,pp
+damage ceiling, because $K$-shortest-path redundancy absorbs the changed decisions;
+under link failures, where delivery does collapse, the random control is as damaging
+as the gradient, so the failure-regime fragility is generic observation-noise
+sensitivity, not adversarial exploitation. The central open question this paper is
+designed to answer is whether that robustness survives a \emph{learned} adversary:
+if a trained, coordinated, well-timed attacker still cannot approach the damage
+ceiling, redundancy is a genuine structural defence; if it can, the myopic result was
+an artefact of a weak attack. We contribute the threat taxonomy, the evaluation
+methodology, the completed myopic-attack study, and an open scaffold for the learned
+adversary.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Adversarial machine learning; deep reinforcement learning; multi-agent systems;
+adaptive routing; observation-space attacks; state-adversarial MDP; robustness.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+Deep reinforcement learning (DRL) is increasingly proposed for adaptive routing, and
+a companion study~\cite{companion} shows that a centralised-critic MADDPG policy,
+trained at a concentrated-demand stress regime on a real service-provider (SP)
+topology, beats a shortest-path control plane and degrades gracefully under
+\emph{natural} link failures. This paper asks the adjacent, security-critical
+question: does the same policy survive \emph{malicious} stress --- an adversary that
+perturbs the observations the agents read?
+
+Learned control planes consume telemetry (per-path utilisation, queue occupancy, link
+state) to decide. A compromised telemetry or monitoring channel lets an attacker add a
+small, bounded perturbation to an agent's observation without touching the network,
+the traffic, or the reward --- the observation-space threat model of adversarial
+machine learning~\cite{goodfellow2015,huang2017adversarial}, transplanted from image
+classification to a networked control loop. The natural worry is that a policy which
+learned to exploit fine utilisation differences is exactly a policy a gradient
+attacker can fool.
+
+The contribution of this paper is to answer that worry rigorously, and to do so with
+attackers of \emph{increasing power} rather than a single method, because a robustness
+claim is only as strong as the strongest attack it survives. We organise the study
+around a distinction that adversarial-robustness evaluations routinely blur: an attack
+that changes a policy's \emph{decisions} is not the same as an attack that changes the
+\emph{outcome}. On a redundant transport topology these come apart cleanly, and
+telling them apart is the key to interpreting every result that follows.
+
+We make four contributions.
+\begin{enumerate}
+  \item A \textbf{threat taxonomy} for observation attacks on multi-agent routing
+  (Section~\ref{sec:threat}), spanning myopic vs.\ learned, per-agent vs.\ coordinated,
+  and untimed vs.\ strategically-timed attackers, under one fixed $L_\infty$ threat
+  model.
+  \item A \textbf{measurement methodology} that separates decisions from outcomes ---
+  the action-flip rate and the delivery drop --- and anchors both to a budget-matched
+  random control and a damage ceiling, so ``robust'' and ``vulnerable'' are quantified
+  rather than asserted (Section~\ref{sec:method}).
+  \item A \textbf{completed myopic-attack study} (FGSM/PGD): the attack flips a quarter
+  of decisions but extracts almost none of the available damage on the intact topology,
+  and the failure-regime fragility is shown to be noise, not adversary
+  (Section~\ref{sec:myopic}).
+  \item A \textbf{learned worst-case adversary} in the state-adversarial MDP framework
+  and its structure-aware variants (Section~\ref{sec:learned}), with an open, reusable
+  training scaffold; this is the attacker that decides whether the redundancy-based
+  robustness is fundamental or merely un-stressed.
+\end{enumerate}
+
+\section{Related Work}
+\label{sec:related}
+\textbf{Adversarial attacks on DRL observations.} Adversarial examples for neural
+network policies were introduced by~\cite{huang2017adversarial}, applying FGSM to the
+policy's observation. Subsequent work established that \emph{timing} matters as much as
+magnitude: strategically-timed attacks perturb only at critical decision
+points~\cite{lin2017tactics,sun2020stealthy}, and enchanting attacks steer an agent
+toward a target state. \cite{zhang2020robust} unified these under the
+\emph{state-adversarial MDP} (SA-MDP), proving that the optimal observation adversary
+can itself be learned as an RL agent, and derived robust regularisers (SA-DQN,
+SA-DDPG, SA-PPO); the alternating-training (ATLA) line~\cite{zhang2021robust} learns
+adversary and agent jointly. Our learned adversary (Section~\ref{sec:learned})
+instantiates the SA-MDP optimal adversary for the routing victim.
+
+\textbf{Attacks on multi-agent RL.} MARL adds an attack surface: an adversary may
+perturb one or several agents' observations, poison rewards or actions, or act as a
+rogue agent~\cite{survey2025}. Recent MARL-specific attacks include camouflage
+perturbations~\cite{camouflage2024} and coordinated ``wolfpack'' adversaries that
+concentrate pressure on the multi-agent system~\cite{wolfpack2025}. Our coordinated
+variant (Section~\ref{sec:learned}) exploits precisely the multi-agent structure: it
+steers several provider edges onto a shared bottleneck, the mechanism that the
+per-agent gradient attack cannot express.
+
+\textbf{Learned routing and its fragility.} DRL routing is typically evaluated for
+performance, not robustness; the companion study~\cite{companion} is unusual in
+stress-testing against natural failures. Work on packet-level routing
+dynamics~\cite{packetlevel2024} argues that sub-second routing must be evaluated with
+realistic dynamics --- a caution we adopt in reading absolute (vs.\ comparative)
+numbers. To our knowledge, no prior work measures the gap between decision-level and
+outcome-level effects of observation attacks on multi-agent routing, nor bounds it
+with a damage ceiling.
+
+\section{Threat Model and Taxonomy}
+\label{sec:threat}
+\subsection{System under attack}
+We attack the seven MADDPG variants of the companion study without modification: two
+critic domains (centralised, CC; local, LC) $\times$ two value heads (simple,
+duelling), plus three graph-neural-network (GNN) encoder variants, trained at the
+$2\times$ concentrated-hotspot operating point on an 86-node SP topology with a
+provider-edge, $K{=}3$ shortest-path forwarding model. Each agent, for every
+destination, selects one of its $K$ candidate paths by an $\arg\max$ over per-path
+logits --- a \emph{discrete, per-destination} decision. The perturbed signal is the
+per-path bottleneck (max-over-hops) utilisation $U_i\in[0,1]^{|D|\times K}$, the exact
+information that lets an agent prefer a less-congested path.
+
+\subsection{Threat model}
+The attacker adds a perturbation $\delta$ to an agent's observation, bounded in
+$L_\infty$ norm by a budget $\epsilon$, with bandwidth/utilisation features
+re-projected to their valid $[0,1]$ range. It cannot alter the network, the injected
+traffic, or the reward. This models a compromised telemetry channel. Unless stated,
+attacks are white-box (they may query the actor); the learned adversary is grey-box
+(it queries actor \emph{outputs} at training time but not weights).
+
+\subsection{A taxonomy of observation attackers}
+The attackers we study occupy three orthogonal axes (Table~\ref{tab:taxonomy}):
+\emph{knowledge/optimisation} (blind random $\rightarrow$ myopic gradient $\rightarrow$
+learned worst-case), \emph{scope} (per-agent $\rightarrow$ coordinated multi-agent),
+and \emph{timing} (every step $\rightarrow$ budgeted, critical-state only). FGSM/PGD is
+myopic, per-agent, untimed. The random control is blind, per-agent, untimed. The
+learned adversary is worst-case and, in its full form, coordinated and timed.
+
+\begin{table}[!t]
+  \centering
+  \caption{Observation-attacker taxonomy. Rows in \textbf{bold} are completed in this
+  paper; the others are the follow-up study the scaffold enables.}
+  \label{tab:taxonomy}
+  \small
+  \begin{tabular}{lccc}
+    \toprule
+    Attacker & Optimisation & Scope & Timing \\
+    \midrule
+    \textbf{Random control} & blind & per-agent & every step \\
+    \textbf{FGSM} & 1-step gradient & per-agent & every step \\
+    \textbf{PGD} & iterated gradient & per-agent & every step \\
+    Learned (SA-MDP) & trajectory RL & per-agent & every step \\
+    ~+ coordinated & trajectory RL & multi-agent & every step \\
+    ~+ timed & trajectory RL & multi-agent & critical-state \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Measurement Methodology}
+\label{sec:method}
+\subsection{Decisions vs.\ outcomes}
+Two diagnostics separate the two effects an attack can have. The \textbf{action-flip
+rate} is the fraction of per-(agent, destination) $\arg\max$ path choices a
+perturbation changes: it measures whether the attack moves the \emph{policy}. The
+\textbf{delivery drop} is the change in end-to-end packet-delivery ratio (PDR): it
+measures whether the attack moves the \emph{outcome}. A high flip rate with a flat PDR
+is \emph{robustness}, not a successful attack.
+
+\subsection{The two references}
+\textbf{Random control.} A budget- and domain-matched perturbation with a random
+$\pm\epsilon$ per feature instead of an optimised direction --- the blind member of the
+same attacker family. The derived quantity we report throughout is the
+\emph{adversarial-specific effect}, $\Delta_\text{grad}-\Delta_\text{rand}$, isolating
+the value of gradient/learned knowledge over blind noise; $\approx0$ means the attack
+is no better than noise.
+
+\textbf{Damage ceiling.} Replacing the policy by fixed oracle rules on identical
+traffic, the \emph{worst}-path rule (always the most-congested candidate) is the
+maximum delivery any decision-steering attacker could destroy. The clean$\rightarrow$
+worst gap bounds what is at stake ($\sim$$21$\,pp at the $2\times$ operating point); it
+is the yardstick against which every attacker's achieved damage is read.
+
+\subsection{Paired protocol and statistics}
+Clean, gradient, random, and (once trained) learned-adversary runs share the same
+seeded traffic and failure draws, so per-episode differences are paired and the
+adversarial-specific effect carries a proper paired $95\%$ confidence interval (CI); we
+use $15$ paired episodes per cell.
+
+\section{Myopic Gradient Attacks (Completed)}
+\label{sec:myopic}
+\subsection{FGSM and PGD}
+We build a differentiable \emph{packet-loss objective} whose gradient points toward
+worse routing --- weighting each path by a sharpened function of its true bottleneck
+utilisation and rewarding policy mass on congested paths,
+$\mathcal{L}(\delta)=\sum_\text{paths}\pi(\text{path})\,\sigma((U-0.5)\cdot10)$. FGSM
+takes one step $\epsilon\cdot\operatorname{sign}(\nabla_\text{obs}\mathcal{L})$; PGD
+iterates with re-projection into the $\epsilon$-ball.
+
+\subsection{The attack changes decisions}
+The flip rate rises with the budget --- ${\sim}8\%$ at $\epsilon{=}0.05$ to $25.7\%$ at
+$\epsilon{=}0.3$ for CC-Simple --- while the random control flips only ${\sim}8\%$ at
+$\epsilon{=}0.3$, so the gradient flips ${\sim}3\times$ more decisions than blind noise
+(Fig.~\ref{fig:flips-eps}). The attack is not under-powered at the decision level.
+
+\subsection{Redundancy absorbs the flips}
+Yet flipping $18$--$26\%$ of decisions costs at most $2.8$\,pp of delivery
+(Fig.~\ref{fig:flips-pdr}), a small fraction of the $\sim$$21$\,pp damage ceiling
+(Fig.~\ref{fig:ceiling}): a flipped decision moves a flow to a different $K$-shortest
+path that, on a well-provisioned topology, still delivers. Against the random control,
+four of seven variants show a small but significant adversarial-specific gap
+($1$--$3$\,pp; Fig.~\ref{fig:gap}), so the gradient direction does buy a real, minor
+advantage on the duelling / LC-simple architectures; CC-Simple and two of three GNN
+variants show no significant gap.
+
+\subsection{Failure-regime fragility is noise, not adversary}
+Removing redundancy with random link failures makes perturbation bite, but a random
+perturbation bites as hard: at two failures the random control drops delivery
+${\sim}6.5$\,pp vs.\ the gradient's ${\sim}0.3$\,pp; at four failures both collapse
+$\sim$$30$\,pp with no significant gap (Fig.~\ref{fig:fragility}). The large
+failure-regime loss is generic observation-noise sensitivity, not adversarial
+exploitation --- the conclusion the random control exists to license.
+
+\begin{figure}[t]\centering
+  \includegraphics[width=0.9\linewidth]{T1_flip_vs_epsilon.pdf}
+  \caption{Action-flip rate vs.\ budget $\epsilon$ (CC-Simple, $2\times$ hotspot).
+  FGSM flips ${\sim}3\times$ more decisions than a budget-matched random perturbation.}
+  \label{fig:flips-eps}
+\end{figure}
+\begin{figure}[t]\centering
+  \includegraphics[width=0.9\linewidth]{T2_flips_vs_pdr_nominal.pdf}
+  \caption{Decisions changed vs.\ delivery lost, seven variants, $\epsilon{=}0.3$.
+  Many decisions flip; almost no packets are lost.}
+  \label{fig:flips-pdr}
+\end{figure}
+\begin{figure}[t]\centering
+  \includegraphics[width=0.9\linewidth]{T3_adversarial_gap_by_variant.pdf}
+  \caption{Adversarial-specific effect (gradient $-$ random drop), paired $95\%$ CI.
+  Red bars exclude zero (a real targeted signal); grey include zero.}
+  \label{fig:gap}
+\end{figure}
+\begin{figure}[t]\centering
+  \includegraphics[width=0.9\linewidth]{T7_damage_ceiling_contrast.pdf}
+  \caption{Damage ceiling vs.\ achieved damage across load. FGSM extracts almost none
+  of the delivery an ideal decision-steering attacker could destroy (shaded band).}
+  \label{fig:ceiling}
+\end{figure}
+\begin{figure}[t]\centering
+  \includegraphics[width=0.9\linewidth]{T4_failure_fragility.pdf}
+  \caption{Delivery drop vs.\ failed links (CC-Simple), gradient and random with paired
+  CI bands; grey clean-PDR line (right axis). Random $\geq$ gradient throughout.}
+  \label{fig:fragility}
+\end{figure}
+
+\section{Learned Worst-Case Adversary (Method + Protocol)}
+\label{sec:learned}
+The myopic result raises one question above all: is the redundancy-based robustness
+\emph{fundamental}, or did FGSM simply fail to find the attack? A single-step,
+per-agent gradient is myopic (it optimises the current step, not the trajectory) and
+uncoordinated (it perturbs each agent independently), yet the damage ceiling is an
+inherently \emph{coordinated, multi-step} outcome --- flows herded onto shared
+bottlenecks over time. We therefore formulate the strongest attacker in the same threat
+model: the optimal observation adversary of the state-adversarial MDP.
+
+\subsection{SA-MDP formulation}
+Fix the victim policy $\pi$. The adversary is a policy $\nu$ that, at each step, maps
+the true observation $o$ to a perturbation $\delta\in\mathcal{B}_\infty(\epsilon)$; the
+victim then acts on $\tilde o = \Pi(o+\delta)$, where $\Pi$ projects into the
+$\epsilon$-ball and the admissible $[0,1]$ range. The adversary's reward is the
+victim's per-step packet loss, $r^\text{adv}_t = L_t$, so maximising the adversary's
+return minimises the victim's delivery over the trajectory. This is exactly the SA-MDP
+optimal adversary of~\cite{zhang2020robust}, and unlike FGSM it optimises the
+\emph{discounted trajectory} return, capturing multi-step herding that a one-step
+gradient cannot.
+
+\subsection{Training algorithm}
+We train $\nu$ by DDPG against the frozen victim (Algorithm~\ref{alg:adv}): a
+deterministic adversary actor emits $\delta$, a critic estimates the adversary's
+action value, and updates ascend the victim's packet loss. The victim's weights are
+never updated. The algorithm is instantiated in the released scaffold
+(\texttt{src/attack\_framework/learned\_adversary.py}, driver
+\texttt{tools/train\_adversary.py}); the trained adversary exposes the same interface
+as the FGSM attacker, so it is scored by the identical paired protocol of
+Section~\ref{sec:method}.
+
+\begin{algorithm}[t]
+\caption{Learned observation adversary (SA-MDP, DDPG)}
+\label{alg:adv}
+\begin{algorithmic}[1]
+\State \textbf{Input:} frozen victim $\pi$, env, budget $\epsilon$
+\State init adversary actor $\nu_\theta$, critic $Q_\phi$, targets, replay $\mathcal{R}$
+\For{each episode}
+  \State reset env; observe $o$
+  \For{each step}
+    \State $\delta \gets \operatorname{clip}(\nu_\theta(o)+\text{noise},-1,1)\cdot\epsilon$
+    \State $\tilde o \gets \Pi_{\epsilon,[0,1]}(o+\delta)$ \Comment{project to ball + domain}
+    \State $a \gets \pi(\tilde o)$; step env; observe $o'$, loss $L$
+    \State store $(o,\delta,L,o')$ in $\mathcal{R}$
+    \State sample batch; update $Q_\phi$ (TD on $L$), $\nu_\theta$ (ascend $Q$)
+    \State soft-update targets; $o\gets o'$
+  \EndFor
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Structure-aware variants}
+\textbf{Coordinated (multi-agent).} A single adversary emits a \emph{joint}
+perturbation over several compromised provider edges, with a critic conditioned on the
+global link state, so it can push multiple flows onto one shared surviving link ---
+the mechanism the per-agent gradient cannot express, and the one most likely to reach
+the ceiling. \textbf{Strategically-timed.} Given an $L_0$ budget (a cap on the fraction
+of steps attacked), the adversary spends perturbations only at high-leverage moments
+--- congestion onset, or immediately after a failure when redundancy is thin --- gated
+by a critical-state score. Both are stubbed as extension points in the scaffold.
+
+\subsection{Evaluation protocol and hypotheses}
+The learned adversary is evaluated exactly as FGSM: paired clean/attacked episodes,
+action-flip and delivery-drop, adversarial-specific gap vs.\ the random control, and
+achieved damage vs.\ the ceiling, at nominal load and across the failure sweep, for all
+seven variants. Two outcomes are scientifically decisive:
+\begin{itemize}
+  \item \textbf{H1 (robustness is fundamental).} If the learned/coordinated/timed
+  adversary still extracts a small fraction of the damage ceiling at nominal load, then
+  redundancy is a genuine structural defence and the myopic result was not an artefact
+  of a weak attack --- the strong, publishable negative.
+  \item \textbf{H2 (myopia hid a vulnerability).} If the learned adversary extracts
+  substantially more than FGSM --- especially the coordinated variant approaching the
+  ceiling --- then observation attacks \emph{can} degrade the policy once they optimise
+  trajectories and coordinate, and the defence recommendation shifts from ``redundancy
+  suffices'' to ``telemetry integrity is required.''
+\end{itemize}
+
+\tofill{Results of the learned adversary go here: (a) a bar of achieved delivery drop
+and adversarial-specific gap for FGSM vs.\ PGD vs.\ learned vs.\ coordinated vs.\
+timed, at nominal load, seven variants, paired 95\% CI; (b) achieved-vs-ceiling as a
+fraction, per attacker; (c) the failure-sweep gap for the learned adversary overlaid on
+Fig.~\ref{fig:fragility}. Produced by \texttt{tools/train\_adversary.py} (train) then
+\texttt{--eval-only} (score), aggregated with a plot script analogous to
+\texttt{tools/plot\_thesis.py}.}
+
+\section{Discussion}
+\label{sec:discussion}
+The organising lesson is the split between changing \emph{decisions} and changing
+\emph{outcomes}. On a redundant transport topology these come apart: a competent
+decision-level attack (FGSM flips a quarter of choices, $3\times$ noise) leaves
+delivery almost untouched because $K$-path redundancy reroutes the moved flows. The
+random control keeps the interpretation honest --- the failure-regime collapse is noise,
+not adversary --- and the damage ceiling quantifies how little of the available harm is
+reached. Whether this robustness is fundamental is exactly what the learned adversary
+tests; the paper is structured so that either answer (H1 or H2) is a result. For
+operators the guidance is already actionable under the completed results: adversarial
+training against FGSM would defend a boundary redundancy already protects, while doing
+nothing for the failure regime, where the threat is undirected noise --- so investment
+belongs in telemetry integrity and fast reconvergence. The learned-adversary study will
+sharpen this into a threat-model-complete recommendation.
+
+\section{Conclusion}
+\label{sec:conclusion}
+We framed observation-attack robustness of multi-agent routing around a progression of
+attackers and two references (a random control and a damage ceiling), and showed that a
+myopic gradient attack changes many decisions but almost no outcomes on a redundant SP
+topology, with the failure-regime fragility exposed as noise rather than adversary. The
+decisive next step --- a learned worst-case adversary, coordinated and timed --- is
+formulated here and released as an open scaffold, so that the question of whether
+redundancy is a genuine adversarial defence can be settled rather than assumed.
+
+\begin{thebibliography}{1}
+\small
+\bibitem{companion} P.~Amaral and D.~Raimundo, ``Centralised or Local Critic?
+Mechanism-Grounded Selection of MADDPG Architectures for Adaptive Routing,'' companion
+manuscript, 2026.
+\bibitem{goodfellow2015} I.~J. Goodfellow, J.~Shlens, and C.~Szegedy, ``Explaining and
+Harnessing Adversarial Examples,'' in \emph{Proc. ICLR}, 2015.
+\bibitem{huang2017adversarial} S.~Huang \emph{et al.}, ``Adversarial Attacks on Neural
+Network Policies,'' in \emph{Proc. ICLR Workshop}, 2017.
+\bibitem{lin2017tactics} Y.-C. Lin \emph{et al.}, ``Tactics of Adversarial Attack on
+Deep Reinforcement Learning Agents,'' in \emph{Proc. IJCAI}, 2017.
+\bibitem{sun2020stealthy} J.~Sun \emph{et al.}, ``Stealthy and Efficient Adversarial
+Attacks against Deep Reinforcement Learning,'' in \emph{Proc. AAAI}, 2020.
+\bibitem{zhang2020robust} H.~Zhang \emph{et al.}, ``Robust Deep Reinforcement Learning
+against Adversarial Perturbations on State Observations,'' in \emph{Proc. NeurIPS},
+2020.
+\bibitem{zhang2021robust} H.~Zhang \emph{et al.}, ``Robust Reinforcement Learning on
+State Observations with Learned Optimal Adversary,'' in \emph{Proc. ICLR}, 2021.
+\bibitem{survey2025} Anon., ``Enhancing Security in Deep Reinforcement Learning: A
+Survey on Adversarial Attacks and Defenses,'' \emph{arXiv:2510.20314}, 2025.
+\bibitem{camouflage2024} Anon., ``Camouflage Adversarial Attacks on Multiple Agent
+Systems,'' \emph{arXiv:2401.17405}, 2024.
+\bibitem{wolfpack2025} Anon., ``Wolfpack Adversarial Attack for Robust Multi-Agent
+Reinforcement Learning,'' \emph{arXiv:2502.02844}, 2025.
+\bibitem{packetlevel2024} Anon., ``Learning Sub-Second Routing Optimization in Computer
+Networks requires Packet-Level Dynamics,'' \emph{arXiv:2410.10377}, 2024.
+\end{thebibliography}
+\end{document}
