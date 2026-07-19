@@ -37,11 +37,52 @@ from learned_adversary import (  # noqa: E402
 )
 
 
-def build_victim_and_env(runner: "StandaloneExperimentRunner", variant_name: str):
+def _link_victim_models(runner: "StandaloneExperimentRunner", victim_models: str):
+    """Make <results_dir>/models resolve to the trained victim weights.
+
+    _make_variant loads each agent from `<results_dir>/models/<variant>/...`, so
+    the trained checkpoints (which live OUTSIDE the repo, e.g. reward_fix/models)
+    must be linked in. Mirrors the symlink guard used by the FGSM run scripts.
+    """
+    victim_models = os.path.abspath(victim_models)
+    if not os.path.isdir(victim_models):
+        raise SystemExit(
+            f"victim weights not found at {victim_models}. The trained MADDPG "
+            "checkpoints are NOT in the repo (host_data/ is gitignored) — obtain "
+            "them from the server/shared drive and pass --victim-models <dir>.")
+    link = os.path.join(runner.results_dir, "models")
+    if os.path.islink(link) or not os.path.exists(link):
+        if os.path.islink(link):
+            os.unlink(link)
+        os.symlink(victim_models, link)
+    elif os.path.realpath(link) != victim_models:
+        raise SystemExit(
+            f"{link} exists and is not a symlink to {victim_models}; refusing to "
+            "overwrite. Remove it or choose a fresh --out directory.")
+
+
+def build_victim_and_env(runner: "StandaloneExperimentRunner", variant_name: str,
+                         victim_models: str):
     """Load the named trained victim + an attack env, mirroring fgsm_probe()."""
+    _link_victim_models(runner, victim_models)
     vcfg = next(v for v in runner.config["variants"] if v["name"] == variant_name)
     maddpg, _, _ = runner._make_variant(vcfg)
+
+    # HARD GUARD: load_checkpoint() no-ops silently if the file is missing, so an
+    # untrained victim would train the adversary against garbage (PDR ~55% vs the
+    # trained ~87%). Verify a checkpoint actually exists before proceeding.
+    a0 = maddpg.agents[0]
+    best = list(getattr(a0, "best_checkpoint_files", {}).values())
+    final = getattr(a0.actor, "checkpoint_file", None)
+    have = (best and all(os.path.exists(p) for p in best)) or \
+           (final and os.path.exists(final))
+    if not have:
+        raise SystemExit(
+            f"No victim checkpoint for '{variant_name}' under "
+            f"{runner.results_dir}/models/{variant_name}. Point --victim-models at "
+            "the directory that contains the trained per-variant weights.")
     runner._load_variant_checkpoint(maddpg, variant_name)
+
     # freeze the victim
     for ag in maddpg.agents:
         ag.actor.eval()
@@ -58,6 +99,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--variant", default="CC-Simple")
+    ap.add_argument("--victim-models", default="host_data/results/reward_fix/models",
+                    help="dir with the trained victim weights (NOT in the repo; "
+                         "get from the server/shared drive). Linked to <out>/models.")
     ap.add_argument("--episodes", type=int, default=300)
     ap.add_argument("--steps", type=int, default=256)
     ap.add_argument("--load", type=float, default=2.0)
@@ -75,7 +119,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     runner = StandaloneExperimentRunner(config_path=args.config,
                                         results_dir=args.out)
-    maddpg, env, trainable, obs_dim = build_victim_and_env(runner, args.variant)
+    maddpg, env, trainable, obs_dim = build_victim_and_env(
+        runner, args.variant, args.victim_models)
     cfg = AdversaryConfig(epsilon=args.epsilon,
                           coordinate=args.coordinate,
                           timing_budget=args.timing_budget)
