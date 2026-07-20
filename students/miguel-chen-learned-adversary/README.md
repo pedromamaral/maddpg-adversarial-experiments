@@ -5,6 +5,10 @@ the FGSM robustness study. The scaffold is written, verified end-to-end on the s
 and waiting for your two research extensions (coordinated + timed). This README is your
 complete brief.
 
+**New here? Read [`ATTACK_EXPLAINER.md`](ATTACK_EXPLAINER.md) first** — a conceptual guide to
+the attack you are building, how it works, and how it relates to FGSM/PGD and the DRL/MADDPG
+machinery. This README is the operational how-to; that document is the "why."
+
 This is the follow-up to the FGSM robustness study. The FGSM result was a *negative*:
 a myopic, per-agent gradient attack flips ~26% of routing decisions but extracts almost
 none of the ~21pp damage ceiling, because the service-provider topology's K-path
