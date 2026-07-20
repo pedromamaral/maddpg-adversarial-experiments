@@ -44,7 +44,10 @@ server / shared drive (they are **gitignored, not in the repo**):
 1. **The trained victim weights** — `reward_fix/models/<variant>/...` (the seven
    trained MADDPG policies). Place them under `host_data/results/reward_fix/models/`.
 2. **The config** — `reward_fix_full_config.json` (now committed to the repo root).
-3. **The runtime** — the `maddpg-exp:latest` docker image (or build from the tracked
+3. **The FGSM baseline results** — `host_data/results/fgsm_tighten/` (~84 KB of JSON,
+   all 7 variants). This is the already-computed baseline your adversary is compared
+   against; copy it, don't recompute it.
+4. **The runtime** — the `maddpg-exp:latest` docker image (or build from the tracked
    `Dockerfile` + `requirements.txt`; local pip has been unreliable).
 
 Note: `MADDPG.load_checkpoint()` fails **silently** if a weight file is missing, so the
@@ -106,16 +109,19 @@ proceed, the guard should have caught it.
 
 ## Run the experiments (via the `maddpg` helper above)
 
-**A. Reproduce the FGSM baseline you are improving on** (the paired probe: damage
-ceiling + random control + action-flip, across the load/failure grid). Symlink the
-canonical weights into the run dir first, then probe:
+**A. Get the FGSM baseline you are compared against — it is ALREADY computed.** The
+paired FGSM probe (damage ceiling + random control + action-flip, across the
+load/failure grid) has been run for all seven variants; the results are ~84 KB of JSON
+in `host_data/results/fgsm_tighten/<variant>/fgsm_probe_results.json`. **You do not need
+to re-run it** — just copy that directory from Pedro's area alongside the weights, and
+read it as your baseline:
 ```bash
-mkdir -p host_data/results/fgsm_repro/CC-Simple
-ln -sfn ../../reward_fix/models host_data/results/fgsm_repro/CC-Simple/models
-maddpg python src/standalone_experiment_runner.py --config reward_fix_full_config.json \
-    --gpu 0 --phase fgsm_probe --results-dir data/results/fgsm_repro/CC-Simple
-maddpg python tools/analyze_fgsm.py     # summarise the probe JSON
+maddpg python tools/analyze_fgsm.py     # summarise the existing probe JSON
 ```
+Your learned adversary's drop / gradient-minus-random gap is compared directly against
+these numbers. (Optional: re-run the probe once as an end-to-end pipeline sanity check,
+or if you change the config — symlink the weights into a run dir and
+`--phase fgsm_probe`. It will reproduce the same numbers, so it is not required.)
 
 **B. Train your learned adversary** against CC-Simple at 2× hotspot (a real run is a few
 hundred episodes; start smaller to sanity-check the reward rises):
