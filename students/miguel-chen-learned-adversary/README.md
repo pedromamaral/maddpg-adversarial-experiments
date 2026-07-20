@@ -53,24 +53,93 @@ with a clear message instead of training against a random-init victim. (You can 
 correctly-loaded victim by its clean PDR ~87% at 2× hotspot; a mis-loaded one sits
 ~55%.)
 
-## Run it (inside the `maddpg-exp` docker image)
-Train an adversary against CC-Simple at 2× hotspot (`--victim-models` defaults to
-`host_data/results/reward_fix/models`, shown explicitly here):
+## Build the container and smoke-test (on the server)
+
+Everything runs inside the `maddpg-exp` Docker image (local pip is unreliable here).
+All commands below are run from the repo root on the server.
+
+**1. Build the image** (once; ~10 min the first time). The `Dockerfile` is at the repo
+root and pins PyTorch 2.1 / CUDA 11.8:
 ```bash
-python tools/train_adversary.py --config reward_fix_full_config.json \
-    --variant CC-Simple --episodes 300 --load 2.0 --epsilon 0.30 \
-    --victim-models host_data/results/reward_fix/models \
-    --out host_data/results/learned_adv/CC-Simple
+cd ~/maddpg-adversarial-experiments
+docker build -t maddpg-exp:latest .
 ```
-Score the trained adversary with the SAME metrics as FGSM (paired clean/attacked PDR,
-drop, action-flip rate):
+
+**2. Check the GPU is visible inside the container:**
 ```bash
-python tools/train_adversary.py --config reward_fix_full_config.json \
+docker run --rm --gpus all maddpg-exp:latest nvidia-smi
+```
+You should see the GPU listed. (If `--gpus all` errors, the host is missing the NVIDIA
+Container Toolkit — ask the admin.)
+
+**3. Define a run helper** so the long `docker run` line isn't repeated. Paste this
+into your shell (it mounts your code, data, and config into the container and requests
+the GPU):
+```bash
+maddpg() {
+  docker run --rm --gpus all \
+    -v "$PWD/host_data:/workspace/data" \
+    -v "$PWD/host_logs:/workspace/logs" \
+    -v "$PWD/src:/workspace/src" \
+    -v "$PWD/tools:/workspace/tools" \
+    -v "$PWD/reward_fix_full_config.json:/workspace/reward_fix_full_config.json" \
+    -w /workspace maddpg-exp:latest "$@"
+}
+```
+Note: the runner reads/writes under `/workspace/data`, which is your `host_data/` — so
+the victim weights you copied to `host_data/results/reward_fix/models/` appear inside
+the container as `data/results/reward_fix/models/`.
+
+**4. Smoke test** — 1 episode, 64 steps. This verifies the whole chain: GPU works, the
+victim weights load, and the adversary training loop runs:
+```bash
+maddpg python tools/train_adversary.py --config reward_fix_full_config.json \
+    --variant CC-Simple --episodes 1 --steps 64 --load 2.0 --epsilon 0.30 \
+    --victim-models data/results/reward_fix/models \
+    --out data/results/learned_adv_smoke
+```
+**Expected:** a line `[CKPT] CC-Simple — loaded best checkpoint`, then
+`[adv] ep 0 victim PDR ~80–87% ...`, then `saved adversary -> ...`. If instead it
+**aborts** with "victim weights not found", your `--victim-models` path is wrong (fix
+the copy). If the victim PDR is ~55%, the weights are missing/mismatched — do not
+proceed, the guard should have caught it.
+
+## Run the experiments (via the `maddpg` helper above)
+
+**A. Reproduce the FGSM baseline you are improving on** (the paired probe: damage
+ceiling + random control + action-flip, across the load/failure grid). Symlink the
+canonical weights into the run dir first, then probe:
+```bash
+mkdir -p host_data/results/fgsm_repro/CC-Simple
+ln -sfn ../../reward_fix/models host_data/results/fgsm_repro/CC-Simple/models
+maddpg python src/standalone_experiment_runner.py --config reward_fix_full_config.json \
+    --gpu 0 --phase fgsm_probe --results-dir data/results/fgsm_repro/CC-Simple
+maddpg python tools/analyze_fgsm.py     # summarise the probe JSON
+```
+
+**B. Train your learned adversary** against CC-Simple at 2× hotspot (a real run is a few
+hundred episodes; start smaller to sanity-check the reward rises):
+```bash
+maddpg python tools/train_adversary.py --config reward_fix_full_config.json \
+    --variant CC-Simple --episodes 300 --load 2.0 --epsilon 0.30 \
+    --victim-models data/results/reward_fix/models \
+    --out data/results/learned_adv/CC-Simple
+```
+
+**C. Score the trained adversary** with the SAME metrics as FGSM (paired clean/attacked
+PDR, drop, action-flip rate) — this is what makes it directly comparable:
+```bash
+maddpg python tools/train_adversary.py --config reward_fix_full_config.json \
     --variant CC-Simple --eval-only \
-    --adv-ckpt host_data/results/learned_adv/CC-Simple/adversary.pt \
+    --adv-ckpt data/results/learned_adv/CC-Simple/adversary.pt \
     --load 2.0 --epsilon 0.30
 ```
-Both commands are verified end-to-end on the server: the driver loads the trained
+
+Long runs: add `-d --name advtrain` to the `docker run` (in the helper) to detach, and
+follow with `docker logs -f advtrain`. Repeat B/C per `--variant` and across
+`--load` / failure conditions to fill the paper's comparison table.
+
+Steps B and C are verified end-to-end on the server: the driver loads the trained
 victim ("loaded best checkpoint"), trains, saves, and `--eval-only` emits the identical
 metric shape as `fgsm_probe`. A real run needs a few hundred episodes to converge.
 
