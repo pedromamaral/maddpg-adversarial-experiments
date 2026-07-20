@@ -99,15 +99,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--variant", default="CC-Simple")
-    ap.add_argument("--victim-models", default="host_data/results/reward_fix/models",
+    # Defaults are CONTAINER-relative: the maddpg-exp helper mounts host_data/ as
+    # /workspace/data, so inside the container the weights are at data/... (not
+    # host_data/...). All documented runs are in-container.
+    ap.add_argument("--victim-models", default="data/results/reward_fix/models",
                     help="dir with the trained victim weights (NOT in the repo; "
-                         "get from the server/shared drive). Linked to <out>/models.")
+                         "get from the server/shared drive). Linked to <out>/models. "
+                         "Path is relative to the container workdir (data/ = host_data/).")
     ap.add_argument("--episodes", type=int, default=300)
     ap.add_argument("--steps", type=int, default=256)
     ap.add_argument("--load", type=float, default=2.0)
     ap.add_argument("--failures", type=int, default=0)
     ap.add_argument("--epsilon", type=float, default=0.30)
-    ap.add_argument("--out", default="host_data/results/learned_adv")
+    ap.add_argument("--out", default="data/results/learned_adv")  # container-relative
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--adv-ckpt", default=None)
     ap.add_argument("--coordinate", action="store_true",

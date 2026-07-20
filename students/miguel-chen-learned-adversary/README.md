@@ -138,8 +138,12 @@ PDR, drop, action-flip rate) — this is what makes it directly comparable:
 maddpg python tools/train_adversary.py --config reward_fix_full_config.json \
     --variant CC-Simple --eval-only \
     --adv-ckpt data/results/learned_adv/CC-Simple/adversary.pt \
+    --victim-models data/results/reward_fix/models \
     --load 2.0 --epsilon 0.30
 ```
+All paths here are **container-relative** (`data/` is your mounted `host_data/`). The
+eval step also needs `--victim-models` — it reloads the frozen victim to score the
+attack.
 
 Long runs: add `-d --name advtrain` to the `docker run` (in the helper) to detach, and
 follow with `docker logs -f advtrain`. Repeat B/C per `--variant` and across
