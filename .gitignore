@@ -76,3 +76,8 @@ Thumbs.db
 
 # Test model artefacts
 test_models/
+
+# Exception: commit the finished FGSM-thesis figures as a student-1 handoff deliverable
+!students/goncalo-martins-fgsm-thesis/figures/
+!students/goncalo-martins-fgsm-thesis/figures/*.png
+!students/goncalo-martins-fgsm-thesis/figures/*.pdf

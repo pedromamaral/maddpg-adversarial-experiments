@@ -1,4 +1,9 @@
-# MSc Project — Learned Worst-Case Observation Adversary for MADDPG Routing
+# Student 2 — Miguel Chen — Learned Worst-Case Observation Adversary
+
+**Task.** Pick up the code as it is and build the *learned* adversary that continues
+the FGSM robustness study. The scaffold is written, verified end-to-end on the server,
+and waiting for your two research extensions (coordinated + timed). This README is your
+complete brief.
 
 This is the follow-up to the FGSM robustness study. The FGSM result was a *negative*:
 a myopic, per-agent gradient attack flips ~26% of routing decisions but extracts almost

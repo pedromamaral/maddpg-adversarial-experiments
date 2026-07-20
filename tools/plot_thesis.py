@@ -1,7 +1,8 @@
 """
 MSc thesis figure generator — FGSM observation-attack robustness of MADDPG routing.
 
-Produces T1..T7 (see thesis/msc_fgsm_robustness_guide.md) into thesis/figures/.
+Produces T1..T7 (see students/goncalo-martins-fgsm-thesis/msc_fgsm_robustness_guide.md)
+into students/goncalo-martins-fgsm-thesis/figures/.
 Prefers the 15-episode "tightening" run (per-episode series -> paired CIs) and
 falls back to the 5-episode "full" run per variant, so it yields a usable draft
 before the tightening run finishes and the final figures after.
@@ -19,7 +20,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
-FIG_DIR = os.environ.get("FIG_DIR", os.path.join("thesis", "figures"))
+FIG_DIR = os.environ.get(
+    "FIG_DIR",
+    os.path.join("students", "goncalo-martins-fgsm-thesis", "figures"))
 os.makedirs(FIG_DIR, exist_ok=True)
 # PAPER_MODE: camera-ready figures for the Paper-2 tex — captions carry the message,
 # so drop the in-figure titles and bump fonts for legibility at single-column width.

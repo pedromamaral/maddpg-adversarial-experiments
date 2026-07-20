@@ -224,7 +224,8 @@ Two architecture-level observations worth a short chapter/section:
 
 ## 4. Figure list (what the plot script produces)
 
-All written by `tools/plot_thesis.py` into `thesis/figures/` as PNG + PDF.
+All written by `tools/plot_thesis.py` into
+`students/goncalo-martins-fgsm-thesis/figures/` as PNG + PDF.
 
 | fig | file | shows | data source |
 |---|---|---|---|
