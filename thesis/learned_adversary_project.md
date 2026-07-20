@@ -33,11 +33,28 @@ Either answer is a paper. The manuscript is drafted at `paper/paper2_robustness.
 | `src/attack_framework/improved_fgsm_attack.py` | the FGSM/PGD attacker + the `random` control you are compared against |
 | `paper/paper2_robustness.tex` | the paper; your results fill Section VI |
 
+## What you need BESIDES cloning the repo
+Cloning gives you the code, not the inputs. You also need, all obtained from the
+server / shared drive (they are **gitignored, not in the repo**):
+1. **The trained victim weights** — `reward_fix/models/<variant>/...` (the seven
+   trained MADDPG policies). Place them under `host_data/results/reward_fix/models/`.
+2. **The config** — `reward_fix_full_config.json` (now committed to the repo root).
+3. **The runtime** — the `maddpg-exp:latest` docker image (or build from the tracked
+   `Dockerfile` + `requirements.txt`; local pip has been unreliable).
+
+Note: `MADDPG.load_checkpoint()` fails **silently** if a weight file is missing, so the
+driver has a hard guard — if you point `--victim-models` at the wrong place it aborts
+with a clear message instead of training against a random-init victim. (You can tell a
+correctly-loaded victim by its clean PDR ~87% at 2× hotspot; a mis-loaded one sits
+~55%.)
+
 ## Run it (inside the `maddpg-exp` docker image)
-Train an adversary against CC-Simple at 2× hotspot:
+Train an adversary against CC-Simple at 2× hotspot (`--victim-models` defaults to
+`host_data/results/reward_fix/models`, shown explicitly here):
 ```bash
 python tools/train_adversary.py --config reward_fix_full_config.json \
     --variant CC-Simple --episodes 300 --load 2.0 --epsilon 0.30 \
+    --victim-models host_data/results/reward_fix/models \
     --out host_data/results/learned_adv/CC-Simple
 ```
 Score the trained adversary with the SAME metrics as FGSM (paired clean/attacked PDR,
@@ -48,8 +65,9 @@ python tools/train_adversary.py --config reward_fix_full_config.json \
     --adv-ckpt host_data/results/learned_adv/CC-Simple/adversary.pt \
     --load 2.0 --epsilon 0.30
 ```
-Both commands are already verified to run end-to-end (a 2-episode smoke run trains,
-saves, and scores). A real run needs a few hundred episodes to converge.
+Both commands are verified end-to-end on the server: the driver loads the trained
+victim ("loaded best checkpoint"), trains, saves, and `--eval-only` emits the identical
+metric shape as `fgsm_probe`. A real run needs a few hundred episodes to converge.
 
 ## Your two research extensions (the actual contribution)
 Both are marked `TODO(student ...)` in `learned_adversary.py`:
