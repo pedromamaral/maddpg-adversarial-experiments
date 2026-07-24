@@ -17,8 +17,10 @@ import matplotlib.pyplot as plt
 
 # default alongside the other Paper 1 figures (F1..F11 from plot_paper1.py)
 ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
-FIG_DIR = os.environ.get("FIG_DIR",
-                         os.path.join("host_data", "results", "reward_fix", "figures"))
+# Canonical run directory name — keep in step with tools/plot_paper1.py so F12 lands
+# alongside F1..F11. host_data/results/canonical is a symlink to the current value.
+CANONICAL = os.environ.get("CANONICAL_RUN", "reward_fix")
+FIG_DIR = os.environ.get("FIG_DIR", os.path.join(ROOT, CANONICAL, "figures"))
 os.makedirs(FIG_DIR, exist_ok=True)
 
 summary = json.load(open(os.path.join(ROOT, "seed_variance_summary.json")))

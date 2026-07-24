@@ -10,7 +10,13 @@ if [[ ! "$PHASE" =~ ^(train|paper1|paper2|hotspot|failure|all)$ ]]; then
   exit 1
 fi
 
+# Must be a path relative to the repo root: it is both mounted into the container
+# at the same relative location and passed to the runner as --config.
 CONFIG_PATH="${CONFIG_PATH:-experiment_config.json}"
+if [[ "$CONFIG_PATH" = /* || ! -f "$CONFIG_PATH" ]]; then
+  echo "CONFIG_PATH must be a repo-relative path to an existing config; got '$CONFIG_PATH'"
+  exit 1
+fi
 RESULTS_DIR="${RESULTS_DIR:-data/results/main_run}"
 GPU_ID="${GPU_ID:-0}"
 IMAGE_NAME="${IMAGE_NAME:-maddpg-exp:latest}"
@@ -37,7 +43,7 @@ fi
 docker run -d --gpus all --name "$CONTAINER_NAME" \
   -v "$(pwd)/host_data":/workspace/data \
   -v "$(pwd)/host_logs":/workspace/logs \
-  -v "$(pwd)/experiment_config.json":/workspace/experiment_config.json \
+  -v "$(pwd)/$CONFIG_PATH":"/workspace/$CONFIG_PATH" \
   -v "$(pwd)/src":/workspace/src \
   "$IMAGE_NAME" "${CMD[@]}"
 

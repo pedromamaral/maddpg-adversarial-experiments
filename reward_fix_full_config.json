@@ -341,7 +341,19 @@
         "CS1",
         "CS2"
       ]
-    }
+    },
+    "_comment_probe": "Grid for --phase fgsm_probe. These three keys reproduce the 'tightening' run behind thesis figures T3-T7 (host_data/results/fgsm_tighten): the gradient attack and its budget-matched random control at eps=0.30, across a failure-severity sweep at 2x hotspot load, with 15 paired episodes per cell so the per-episode series support confidence intervals. Omitting them falls back to the runner's hardcoded defaults (an epsilon budget sweep at a single condition), which is what produced host_data/results/fgsm_full.",
+    "probe_episodes": 15,
+    "probe_attacks": [
+      ["packet_loss", 0.3, 1],
+      ["random", 0.3, 1]
+    ],
+    "probe_conditions": [
+      {"load": 2.0, "n_failures": 0},
+      {"load": 2.0, "n_failures": 2},
+      {"load": 2.0, "n_failures": 4},
+      {"load": 2.0, "n_failures": 6}
+    ]
   },
   "attack_configs": [
     {

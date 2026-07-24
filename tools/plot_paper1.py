@@ -37,7 +37,11 @@ import matplotlib.pyplot as plt
 from scipy import stats
 
 ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
-FIG_DIR = os.path.join(ROOT, "reward_fix", "figures")
+# Name of the canonical run directory under ROOT. Hoisted (and env-overridable) so
+# renaming the result set is a one-line change instead of a hunt through the file;
+# host_data/results/canonical is a symlink to the current value.
+CANONICAL = os.environ.get("CANONICAL_RUN", "reward_fix")
+FIG_DIR = os.path.join(ROOT, CANONICAL, "figures")
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # ── Variant styling (family colour; GNN dashed) ─────────────────────────────
@@ -98,7 +102,7 @@ def rolling_mean(y, window=41):
 
 # ═════ F1 / F2 — training convergence ════════════════════════════════════════
 def f1_f2():
-    tr = jload("reward_fix", "phase1_training_results.json")
+    tr = jload(CANONICAL, "phase1_training_results.json")
     for name, key, ylab, loc in [
             ("F1_training_reward", "rewards", "Episode reward (shared flow reward)", "lower right"),
             ("F2_training_pkt_loss", "pkt_losses", "Packet loss (%)", "upper right")]:
@@ -116,7 +120,7 @@ def f1_f2():
 
 # ═════ F3 / F4 — hotspot load sweep, variants vs EVPN-SP ═════════════════════
 def f3_f4():
-    sw = jload("reward_fix", "phase2_hotspot_sweep_results.json")
+    sw = jload(CANONICAL, "phase2_hotspot_sweep_results.json")
     loads = sw["meta"]["loads"]
 
     def series(m):
@@ -148,13 +152,13 @@ def f3_f4():
 
 # ═════ F5 — baseline envelope (oracle rules) + CC-Simple policy ══════════════
 def f5():
-    sw = jload("reward_fix", "phase2_hotspot_sweep_results.json")
+    sw = jload(CANONICAL, "phase2_hotspot_sweep_results.json")
     loads = sw["meta"]["loads"]
     pol = [sw["methods"]["CC-Simple"][f"load_{l:.2f}"][PDR] for l in loads]
 
     rules = {r: [] for r in ("greedy", "random", "sp", "worst")}
     for l in loads:
-        d = jload("reward_fix", "sweep_baselines", f"load_{l:.2f}", "damage_ceiling.json")
+        d = jload(CANONICAL, "sweep_baselines", f"load_{l:.2f}", "damage_ceiling.json")
         for r in rules:
             rules[r].append(d[r][PDR])
 

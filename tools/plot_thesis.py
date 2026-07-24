@@ -20,6 +20,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
+# Run directory names under ROOT, hoisted (and env-overridable) so renaming a result
+# set is a one-line change here. TIGHTEN is the 15-episode paired-CI probe, FULL the
+# earlier epsilon/load sweep, CANONICAL the Paper-1 victim run these attack.
+CANONICAL = os.environ.get("CANONICAL_RUN", "reward_fix")
+TIGHTEN = os.environ.get("TIGHTEN_RUN", "fgsm_tighten")
+FULL = os.environ.get("FULL_RUN", "fgsm_full")
 FIG_DIR = os.environ.get(
     "FIG_DIR",
     os.path.join("students", "goncalo-martins-fgsm-thesis", "figures"))
@@ -59,8 +65,8 @@ def jload(*p):
 
 def variant_probe(v):
     """Prefer tightening (CI series) else full-experiment results for a variant."""
-    return (jload("fgsm_tighten", v, "fgsm_probe_results.json"),
-            jload("fgsm_full", v, "fgsm_probe_results.json"))
+    return (jload(TIGHTEN, v, "fgsm_probe_results.json"),
+            jload(FULL, v, "fgsm_probe_results.json"))
 
 
 def cell(d, cond, atype, eps):
@@ -90,7 +96,7 @@ def t1():
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     ax.plot(eps, gf, "o-", color=COL["grad"], lw=2.2, ms=6, label="FGSM (gradient)")
     # random control flip points from full experiment (eps 0.1, 0.3, nominal)
-    full = jload("fgsm_full", "CC-Simple", "fgsm_probe_results.json")
+    full = jload(FULL, "CC-Simple", "fgsm_probe_results.json")
     rpts = []
     for e in (0.1, 0.3):
         c = cell(full, "load2_fail0", "random", e)
@@ -153,7 +159,7 @@ def t3():
 
 # ─── T4: PDR drop vs #failures, gradient vs random, CI bands (CC-Simple) ─────
 def t4(variant="CC-Simple"):
-    t = jload("fgsm_tighten", variant, "fgsm_probe_results.json")
+    t = jload(TIGHTEN, variant, "fgsm_probe_results.json")
     if not t:
         print(f"  T4 skipped ({variant} tightening not done)"); return
     ns = [0, 2, 4, 6]
@@ -209,7 +215,7 @@ def t4(variant="CC-Simple"):
 
 # ─── T5: flip rate vs #failures (CC-Simple) ──────────────────────────────────
 def t5(variant="CC-Simple"):
-    t = jload("fgsm_tighten", variant, "fgsm_probe_results.json")
+    t = jload(TIGHTEN, variant, "fgsm_probe_results.json")
     if not t:
         print(f"  T5 skipped ({variant} tightening not done)"); return
     ns = [0, 2, 4, 6]
@@ -250,7 +256,7 @@ def t7():
     loads = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0]
     pol, worst, greedy = [], [], []
     for l in loads:
-        d = jload("reward_fix", "sweep_baselines", f"load_{l:.2f}", "damage_ceiling.json")
+        d = jload(CANONICAL, "sweep_baselines", f"load_{l:.2f}", "damage_ceiling.json")
         if not d:
             pol.append(np.nan); worst.append(np.nan); greedy.append(np.nan); continue
         pol.append(d["policy"]["mean_end_to_end_pdr"])
