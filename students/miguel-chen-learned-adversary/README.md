@@ -120,10 +120,12 @@ in `host_data/results/fgsm_tighten/<variant>/fgsm_probe_results.json`. **You do 
 to re-run it** — just copy that directory from Pedro's area alongside the weights, and
 read it as your baseline:
 ```bash
-maddpg python tools/analyze_fgsm.py     # summarise the existing probe JSON
+maddpg python tools/analyze_fgsm.py fgsm_tighten   # text summary of the probe JSON
 ```
-Your learned adversary's drop / gradient-minus-random gap is compared directly against
-these numbers. (Optional: re-run the probe once as an end-to-end pipeline sanity check,
+`analyze_fgsm.py` reads the `fgsm_probe_results.json` files (per-variant drop,
+random control, net gradient-minus-random gap with a paired CI, and flip rate);
+`plot_thesis.py` renders the same numbers as T3-T7. Your learned adversary's drop /
+gradient-minus-random gap is compared directly against these numbers. (Optional: re-run the probe once as an end-to-end pipeline sanity check,
 or if you change the config — symlink the weights into a run dir and
 `--phase fgsm_probe`. It will reproduce the same numbers, so it is not required.)
 

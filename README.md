@@ -130,8 +130,8 @@ the canonical models in first (the FGSM run scripts do this):
 
 Analyse and plot:
 ```bash
-python tools/analyze_fgsm.py           # stdlib summary of the probe JSON
-python tools/plot_thesis.py            # T1..T7 -> students/goncalo-martins-fgsm-thesis/figures/
+python tools/analyze_fgsm.py fgsm_tighten   # stdlib text summary of the probe JSON
+python tools/plot_thesis.py                 # T1..T7 -> students/goncalo-martins-fgsm-thesis/figures/
 ```
 
 ### Learned adversary — with weights already present (Student 2)
