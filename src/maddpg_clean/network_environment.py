@@ -745,8 +745,9 @@ class NetworkEngine:
         B ∈ [0,1]^|E|  — normalised available bandwidth on every graph edge.
         D ∈ [0,1]^|A|  — modal destination index (normalised) per trainable agent.
 
-        Total dims = |E| + len(trainable_hosts) = 106 + 32 = 138 for the
-        service_provider_real topology with degree_ge_3 filter.
+        Total dims = |E| + len(trainable_hosts) = 106 + 14 = 120 for the
+        service_provider_real topology with the dist_nodes filter (14 dist-node
+        agents; the 21 endpoints are the traffic sources/destinations).
         """
         # B: available bandwidth on all edges (ordered by graph.edges())
         b = np.array(

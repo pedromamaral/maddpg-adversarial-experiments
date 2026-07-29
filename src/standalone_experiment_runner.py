@@ -376,7 +376,7 @@ class StandaloneExperimentRunner:
         projection_cfg = training_cfg.get('learn_action_projection', {})
         engine = NetworkEngine(
             topology_type=topology_cfg.get('type', 'service_provider'),
-            n_nodes=int(topology_cfg.get('nodes', vcfg.get('n_agents', 65))),
+            n_nodes=int(topology_cfg.get('nodes', 65)),
             reward_config=reward_cfg,
             topology_config=topology_cfg,
             traffic_config=traffic_cfg,
@@ -384,9 +384,11 @@ class StandaloneExperimentRunner:
         env = NetworkEnv(engine)
 
         # ── Trainable-host filter ─────────────────────────────────────────────
-        # Reduces the RL agent set from all topology nodes to a meaningful subset
-        # (e.g. only switches with degree ≥ 3) to shrink critic dimensions and
-        # speed up training without losing routing expressiveness.
+        # Reduces the RL agent set from all topology nodes to a meaningful subset.
+        # The configured filter is 'dist_nodes': the ingress PE switches that make
+        # k-path decisions on behalf of the endpoints attached to them (14 for the
+        # service_provider_real topology). Other filters exist (see
+        # get_trainable_hosts) but are not used by the shipped configs.
         filter_mode = self.config.get('training', {}).get('trainable_host_filter', 'all')
         trainable_hosts = engine.get_trainable_hosts(filter_mode)
         all_hosts = engine.get_all_hosts()
@@ -423,7 +425,8 @@ class StandaloneExperimentRunner:
         else:
             adjacency = None
             # CC critic uses compact <B, D> central state instead of all local obs.
-            # central_state_dims = |E| + n_trainable_agents = 106 + 32 = 138.
+            # central_state_dims = |E| + n_trainable_agents = 106 + 14 = 120 for
+            # the service_provider_real topology with the dist_nodes filter.
             _n_edges = engine.topology.graph.number_of_edges()
             central_state_dims = _n_edges + n_agents
             critic_dims = central_state_dims
