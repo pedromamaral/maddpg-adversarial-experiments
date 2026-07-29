@@ -103,7 +103,19 @@ class CriticNetwork(nn.Module):
         self.fc2 = nn.Linear(fc1_dims, fc2_dims)
 
         if network_type == 'duelling_q_network':
-            # Duelling streams: value V(s) and advantage A(s, a)
+            # Duelling streams: value V(s) and advantage A(s, a).
+            #
+            # DEGENERATE HERE (do not read as textbook duelling): this is a DDPG
+            # critic, so the action is concatenated to the input and forward()
+            # returns a single scalar Q(s, a). There is therefore NO action
+            # dimension to spread an advantage over and NO mean-advantage
+            # centring (Q = V + (A - mean_a A)). Both heads emit a scalar and are
+            # summed, so Q = (W_v + W_a)·x + (b_v + b_a) -- algebraically the same
+            # function class as the simple head's single Linear. The two variants
+            # differ only by an over-parametrised head (init/optimisation noise),
+            # which is why Paper 1 found the simple-vs-duelling axis non-decisive
+            # and seed-unstable, while the critic domain (central vs local) was
+            # the axis that mattered.
             self.value_stream = nn.Linear(fc2_dims, 1)
             self.advantage_stream = nn.Linear(fc2_dims, 1)
         else:  # simple_q_network
