@@ -656,6 +656,15 @@ class NetworkEngine:
           per-destination K-path first-hop utils (n_destinations × K_PATHS),
           mean hops remaining (1)
         Removed from previous version: bucket fractions (3) and global mean util (1).
+
+        KNOWN QUIRK (do not "fix" without retraining): this formula evaluates to
+        94 for the SP topology (max_neighbors=6), but get_state() actually
+        assembles 97 features, so the tail 3 slots (the last destination's k1/k2
+        path utils and the mean-hops signal) are truncated away in get_state. The
+        stray ``- K_PATHS`` term is what under-counts by 3. The shipped victim
+        checkpoints were trained on this 94-dim observation, so correcting the
+        formula to 97 would change the actor input dim and break checkpoint
+        loading. Left as-is deliberately; only the trained-on width (94) matters.
         """
         return self.max_neighbors + self.n_destinations + 7 - K_PATHS + K_PATHS * self.n_destinations
 
@@ -732,7 +741,10 @@ class NetworkEngine:
         _mean_hops = float(np.mean([p.get('hops', 0) for p in _q])) if _q else 0.0
         state.append(max(0.0, 1.0 - _mean_hops / TTL_INIT))
 
-        # guarantee exactly state_dims elements
+        # Guarantee exactly state_dims elements. NB: the assembled list has 97
+        # entries but state_dims == 94 (see the property's KNOWN QUIRK note), so
+        # this slice silently drops the tail 3 features. Preserved intentionally
+        # to keep the actor input at the width the trained checkpoints expect.
         total = self.state_dims
         state = state[:total]
         while len(state) < total:
