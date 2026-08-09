@@ -743,8 +743,8 @@ class MADDPG:
 
         if self.critic_type == 'central_critic':
             if central_states_np is not None:
-                # Use compact <B, D> central state (106+32=138 dims) instead of
-                # concatenating all local obs (32×36=1152 dims).
+                # Use compact <B, D> central state (106+14=120 dims) instead of
+                # concatenating all local obs (14×94=1316 dims).
                 all_states = torch.tensor(
                     central_states_np, dtype=torch.float
                 ).to(device)                                     # [B, central_state_dims]
