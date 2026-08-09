@@ -130,13 +130,18 @@ class FGSMAttackFramework:
                 current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
             return agent.actor(current_state)
 
+        clean_util = None  # congestion target, pinned to the clean observation below
+
         def _objective(cur, probs):
             if self.attack_type == 'packet_loss':
-                return self._packet_loss_objective(cur, probs, network_engine, agent_index)
+                return self._packet_loss_objective(cur, probs, network_engine,
+                                                   agent_index, util_override=clean_util)
             elif self.attack_type == 'reward_minimize':
-                return self._reward_minimize_objective(cur, probs, network_engine, agent_index)
+                return self._reward_minimize_objective(cur, probs, network_engine,
+                                                       agent_index, util_override=clean_util)
             elif self.attack_type == 'confusion':
-                return self._confusion_objective(cur, probs, network_engine, agent_index)
+                return self._confusion_objective(cur, probs, network_engine,
+                                                 agent_index, util_override=clean_util)
             raise ValueError(f'Unknown attack type: {self.attack_type}')
 
         try:
@@ -145,6 +150,19 @@ class FGSMAttackFramework:
                 agent.actor.eval()  # eval mode → no BN/Dropout noise during the attack
                 orig = state_tensor.detach().clone()
                 adv = state_tensor  # requires_grad already set
+
+                # Pin the congestion target to the CLEAN observation. The objectives
+                # weight each action by its true k-path bottleneck utilisation, which
+                # lives in the observation itself; re-deriving it from `adv` would let
+                # a multi-step attack raise its own loss by editing the utilisation
+                # features instead of changing the policy's decisions, and would make
+                # the objective non-stationary across PGD iterations (measured: the
+                # loss DEcreases over steps, and the attack spends ~half its epsilon
+                # budget). Single-step FGSM is unaffected — at step 0 adv == orig — so
+                # every previously reported FGSM result reproduces exactly.
+                with torch.no_grad():
+                    clean_util = self._per_action_util(
+                        orig, _actor_probs(orig), network_engine)
                 for _step in range(n_steps):
                     if adv.grad is not None:
                         adv.grad.zero_()
@@ -306,6 +324,7 @@ class FGSMAttackFramework:
         action_probs: torch.Tensor,
         network_engine,
         agent_index: int,
+        util_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Encourage congested-path selection to maximise packet loss.
 
@@ -313,8 +332,13 @@ class FGSMAttackFramework:
         bottleneck utilisation, then rewards placing probability mass on the most
         congested paths. Gradient ascent perturbs the observation so the policy
         prefers congested paths.
+
+        util_override pins the congestion target to the clean observation (see
+        generate_adversarial_state); without it a multi-step attack would re-read
+        the target out of its own perturbation.
         """
-        util = self._per_action_util(state, action_probs, network_engine)
+        util = (util_override if util_override is not None
+                else self._per_action_util(state, action_probs, network_engine))
         if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
         L = util.shape[-1]
@@ -330,6 +354,7 @@ class FGSMAttackFramework:
         action_probs: torch.Tensor,
         network_engine,
         agent_index: int,
+        util_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Minimise expected routing quality (a smooth, linear reward proxy).
 
@@ -338,7 +363,8 @@ class FGSMAttackFramework:
         reward. Gradient ascent maximises expected utilisation, steering the policy
         toward worse (more saturated) paths.
         """
-        util = self._per_action_util(state, action_probs, network_engine)
+        util = (util_override if util_override is not None
+                else self._per_action_util(state, action_probs, network_engine))
         if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
         L = util.shape[-1]
@@ -352,6 +378,7 @@ class FGSMAttackFramework:
         action_probs: torch.Tensor,
         network_engine,
         agent_index: int,
+        util_override: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Targeted misrouting toward the single most-congested action.
 
@@ -360,7 +387,8 @@ class FGSMAttackFramework:
         Unlike entropy maximisation — which can inadvertently load-balance and improve
         performance — this concentrates traffic on the single most saturated path.
         """
-        util = self._per_action_util(state, action_probs, network_engine)
+        util = (util_override if util_override is not None
+                else self._per_action_util(state, action_probs, network_engine))
         if util is None:
             return (state.sum() * 0.0) + (action_probs.sum() * 0.0)
         L = util.shape[-1]
