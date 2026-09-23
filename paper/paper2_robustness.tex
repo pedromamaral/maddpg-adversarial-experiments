@@ -279,11 +279,19 @@ $\epsilon{=}0.3$, so the gradient flips ${\sim}3\times$ more decisions than blin
 Yet flipping $18$--$26\%$ of decisions costs at most $2.8$\,pp of delivery
 (Fig.~\ref{fig:flips-pdr}), a small fraction of the $\sim$$21$\,pp damage ceiling
 (Fig.~\ref{fig:ceiling}): a flipped decision moves a flow to a different $K$-shortest
-path that, on a well-provisioned topology, still delivers. Against the random control,
-four of seven variants show a small but significant adversarial-specific gap
-($1$--$3$\,pp; Fig.~\ref{fig:gap}), so the gradient direction does buy a real, minor
-advantage on the duelling / LC-simple architectures; CC-Simple and two of three GNN
-variants show no significant gap.
+path that, on a well-provisioned topology, still delivers. Against the random control the gradient direction does buy a real but minor advantage,
+of the order of $1$--$3$\,pp (Fig.~\ref{fig:gap}).
+
+That advantage cannot be attributed to any particular architecture. Repeating the
+measurement on three independently trained victims per variant (Section~\ref{sec:seeds})
+shows the between-variant ordering does not survive retraining: \texttt{CC-Simple}, which
+on the canonical victim shows no significant gap at $+0.37$\,pp, reaches $+2.70$ and
+$+5.11$\,pp on the other two seeds. Every variant's mean $\pm$ one standard deviation
+overlaps every other, and the spread between variant means ($1.3$\,pp) is smaller than the
+spread between seeds of the same variant ($0.8$--$2.4$\,pp). We therefore report the
+adversarial-specific effect as small across the family --- a mean of $+2.4$ to $+3.6$\,pp
+against a ceiling near $21$\,pp --- and make no claim that one critic domain, value head or
+encoder is more robust than another.
 
 \subsection{Failure-regime fragility is noise, not adversary}
 Removing redundancy with random link failures makes perturbation bite, but a random
@@ -402,14 +410,108 @@ seven variants. Two outcomes are scientifically decisive:
   suffices'' to ``telemetry integrity is required.''
 \end{itemize}
 
-\tofill{Results of the learned adversary go here: (a) a bar of achieved delivery drop
-and adversarial-specific gap for FGSM vs.\ learned vs.\ coordinated vs.\
-timed, at nominal load, seven variants, paired 95\% CI (FGSM stands in for the myopic
-attacker per Section~\ref{sec:iterated}); (b) achieved-vs-ceiling as a
-fraction, per attacker; (c) the failure-sweep gap for the learned adversary overlaid on
-Fig.~\ref{fig:fragility}. Produced by \texttt{tools/train\_adversary.py} (train) then
-\texttt{--eval-only} (score), aggregated with a plot script analogous to
-\texttt{tools/plot\_thesis.py}.}
+\subsection{Results: the stronger attacker does not extract more}
+\label{sec:learned-results}
+Twenty-eight adversaries were trained, one per combination of victim variant, attack
+scope (independent or coordinated) and domain constraint, and each was evaluated at four
+timing budgets and without one, giving 140 configurations. All runs use $\epsilon{=}0.30$
+with every agent compromised, the $2\times$ hotspot regime and no link failures, scored
+on 30 paired episodes against an unperturbed arm and a random control drawn from the same
+admissible set. Because the earlier study clamped only the first four observation features
+after projection, results are reported under that same \emph{FGSM-parity} constraint and,
+separately, under a stricter clamp in which every feature is re-projected; only the former
+is directly comparable with the baseline.
+
+The comparison is made on the 15 episodes the two evaluations share, and it is decisive in
+the negative. \textbf{The learned adversary did more total damage than FGSM in one of the
+70 comparable configurations} --- the ungated independent attack on \texttt{LC-Simple}, by
+$2.21$\,pp. Everywhere else it matched the baseline or fell short of it, significantly so
+on four variants at every timing budget. Part of that shortfall is by construction, since a
+gated attack acts on 10--25\% of steps while FGSM acts on all of them; normalising by the
+realised attack rate, the learned attack does buy more damage \emph{per attacked step} on
+individual variants, but this never carries through to more damage in total.
+
+Coordination changes which victims are harmed rather than how much: under the parity clamp
+it significantly increased the damage to \texttt{LC-Duelling} and \texttt{CC-Duelling} while
+\emph{reducing} it on \texttt{LC-Simple}, the variant the independent attack harmed most,
+and under the stricter clamp the pattern reversed again. No single property of the victim
+predicts the direction. The timing gate realises its budget accurately and fires on
+genuinely congested states, and on some variants concentrating the budget buys up to
+$2.6\times$ the damage per attacked step; it does not buy more damage overall, and for
+almost every attackable victim the ungated attack remains the most damaging.
+
+Three findings hold across the evaluation. The fraction of routing decisions an attack
+changes does not predict the damage it does: attacks that changed 13--15\% of decisions
+produced gaps spanning more than seven percentage points, which is the decision--outcome
+split of Section~\ref{sec:myopic} appearing again inside a single attacker family.
+\texttt{CC-Simple-GNN} and \texttt{LC-Duelling-GNN} were not harmed by any attack in any
+setting, for different reasons --- the first barely changes its routing under perturbation
+at all, the second changes it and delivers regardless --- yet GNN encoding is not
+protective in itself, since \texttt{CC-Duelling-GNN} suffered the largest gap of the
+stricter-clamp independent attack. And one trained adversary steered \texttt{LC-Duelling}
+to deliver \emph{more} than it did unattacked, which shows a learned attacker can fail to
+find damage that exists.
+
+This favours \textbf{H1} in its weaker form. An attacker whose policy class contains FGSM's
+per-step rule, and which can additionally coordinate across agents and choose when to act,
+ends up doing about as much damage as a single gradient step. That is what one expects of a
+controller whose redundancy absorbs decision-level perturbation, and not what one expects if
+the myopic result had merely reflected a weak attack. It does not, however, establish
+robustness, for two reasons that Section~\ref{sec:threats-to-validity} develops: the effects
+are of the order of one or two percentage points on a delivery ratio near $77\%$, comparable
+to what an undirected perturbation of the same size moves; and each configuration was
+trained once, so the reported intervals capture variation between evaluation episodes but
+not between training runs. What the evidence supports is the weaker statement that no attack
+in this family, as trained here, did substantial damage to these controllers.
+
+\section{Threats to Validity}
+\label{sec:threats-to-validity}
+The claims this study can support are bounded by four things, and we state them because
+several are large relative to the effects reported.
+
+\textbf{Training-run variation.}
+\label{sec:seeds}
+Every number in Sections~\ref{sec:myopic} and~\ref{sec:learned-results} describes particular
+trained networks. On the victim side we retrained the four non-GNN variants under three
+independent seeds and re-ran the nominal probe on each: the adversarial-specific gap moves
+by more between seeds of one architecture than between architectures, so per-variant
+comparisons are not attributable to design (Section~\ref{sec:myopic}). The three GNN variants
+were trained once and are reported as such. On the attacker side each of the 28 learned
+adversaries was likewise trained once, so the intervals of
+Section~\ref{sec:learned-results} cover variation between evaluation episodes and not
+between training runs; a significant gap there shows that \emph{the adversary that was
+trained} beat its control on those episodes, not that the configuration would do so
+reliably if trained again. Comparisons between separately trained adversaries --- the
+effect of coordination, the effect of the domain clamp, the comparison with FGSM --- are
+the most exposed to this, and the aggregate conclusion, that no attacker in the family
+extracts a large share of the ceiling, is the least exposed.
+
+\textbf{Effect sizes against uncontrolled variation.} Almost every reported difference is
+one or two percentage points on a delivery ratio near $77\%$. A perturbation of the same
+magnitude with no adversarial direction moves delivery by a comparable amount and in either
+direction, which is why the budget-matched random control, not the clean arm, is the
+reference throughout. A paired interval can resolve a difference this small between two arms
+on the same episodes, but resolving a difference is not the same as attributing it.
+
+\textbf{Sampling.} All evaluations draw on a single traffic seed, so variation between
+traffic patterns is sampled only by the episodes within it. Several hundred confidence
+intervals are reported at the 95\% level without correction for multiple comparisons, so a
+few cells can be expected to exclude zero by chance; the conclusions rest on patterns that
+hold across conditions rather than on individual cells.
+
+\textbf{Measurement.} The action-flip rate overstates an attack's reach. Candidate paths are
+$K$-shortest routes deduplicated by first hop, and pairs with fewer than $K$ genuinely
+distinct routes are padded by repeating the shortest one, so a flip between two padded slots
+changes the decision and routes the packet identically. Measured directly, $8$--$22\%$ of
+flips are vacuous in this sense, and the share differs by variant, so flip rates are not
+strictly comparable across architectures. This reinforces rather than weakens the central
+finding: the decision-level effect of these attacks is smaller still than the raw rates
+suggest, while the delivery effect is unchanged.
+
+\textbf{Scope.} One topology, one stressed traffic regime, one perturbation budget for the
+learned attacker, and a simulator rather than a testbed. The redundancy mechanism we
+advance is a property of a well-provisioned service-provider graph with $K$ disjoint-ish
+paths per destination; we do not claim it holds where path diversity is thin.
 
 \section{Discussion}
 \label{sec:discussion}
