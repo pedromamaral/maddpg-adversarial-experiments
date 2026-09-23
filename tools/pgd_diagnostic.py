@@ -37,6 +37,7 @@ Usage (inside the container, from the repo root):
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -76,7 +77,43 @@ def collect_observations(runner, maddpg, env, load, n_warmup, n_collect):
     return collected
 
 
-def instrumented_pgd(framework, agent, engine, state, agent_index, epsilon,
+def make_probs_fn(framework, maddpg, agent, agent_index):
+    """Return cur -> action_probs, mirroring generate_adversarial_state's forward.
+
+    For GNN variants the production attack encodes a batch in which only the target
+    agent's slot carries the (perturbed) observation and every other agent and relay
+    node is zero-filled, then reads the target's row back out. That approximation is
+    part of the attack under test, so the diagnostic reproduces it rather than
+    substituting the agents' true observations.
+    """
+    gnn_proc = getattr(maddpg, 'gnn_processor', None)
+    if gnn_proc is None or not getattr(gnn_proc, 'available', False):
+        return lambda cur: agent.actor(cur)
+
+    device = framework.device
+    n_agents_gnn = gnn_proc.n_agents
+    obs_dim_gnn = gnn_proc.obs_dim
+    n_relay = getattr(gnn_proc, 'n_relay_nodes', 0)
+    slot = agent_index % n_agents_gnn
+
+    def probs(cur):
+        adv_obs = cur.squeeze(0)[:obs_dim_gnn]
+        if adv_obs.shape[0] < obs_dim_gnn:
+            adv_obs = torch.cat(
+                [adv_obs,
+                 torch.zeros(obs_dim_gnn - adv_obs.shape[0], device=device)])
+        batch = torch.zeros(n_agents_gnn, obs_dim_gnn, device=device)
+        batch[slot] = adv_obs
+        if n_relay > 0:
+            batch = torch.cat(
+                [batch, torch.zeros(n_relay, obs_dim_gnn, device=device)], dim=0)
+        out = gnn_proc(batch, gnn_proc.edge_index)
+        return agent.actor(out[slot].unsqueeze(0))
+
+    return probs
+
+
+def instrumented_pgd(framework, maddpg, agent, engine, state, agent_index, epsilon,
                      n_steps, step_alpha, freeze_weights=False,
                      momentum=0.0, random_start=False):
     """Replicate generate_adversarial_state's PGD loop with instrumentation.
@@ -105,14 +142,16 @@ def instrumented_pgd(framework, agent, engine, state, agent_index, epsilon,
     # handed -- which during PGD is the ALREADY-PERTURBED observation. The weights
     # therefore move under the attacker every step. freeze_weights pins them to the
     # clean observation once, making the objective stationary across iterations.
+    probs_fn = make_probs_fn(framework, maddpg, agent, agent_index)
+
     frozen_w = None
     if freeze_weights:
         with torch.no_grad():
-            u = framework._per_action_util(orig, agent.actor(orig), engine)
+            u = framework._per_action_util(orig, probs_fn(orig), engine)
             frozen_w = None if u is None else torch.sigmoid((u - 0.5) * 10.0)
 
     def objective(cur):
-        probs = agent.actor(cur)
+        probs = probs_fn(cur)
         if frozen_w is None:
             return framework._packet_loss_objective(cur, probs, engine, agent_index)
         L = frozen_w.shape[-1]
@@ -159,12 +198,12 @@ def instrumented_pgd(framework, agent, engine, state, agent_index, epsilon,
     }
 
 
-def decision_flips(agent, clean_state, adv_state, n_dest, k_paths, device):
+def decision_flips(probs_fn, clean_state, adv_state, n_dest, k_paths, device):
     """Count per-destination argmax decisions changed by the perturbation."""
     with torch.no_grad():
         def decode(s):
             t = torch.tensor(np.asarray(s, dtype=np.float32), device=device).unsqueeze(0)
-            out = agent.actor(t).squeeze(0).cpu().numpy()
+            out = probs_fn(t).squeeze(0).cpu().numpy()
             usable = n_dest * k_paths
             return out[:usable].reshape(n_dest, k_paths).argmax(axis=1)
         return int((decode(clean_state) != decode(adv_state)).sum()), n_dest
@@ -180,6 +219,9 @@ def main():
     ap.add_argument('--warmup', type=int, default=24)
     ap.add_argument('--collect-steps', type=int, default=3)
     ap.add_argument('--max-samples', type=int, default=60)
+    ap.add_argument('--json-out', default=None,
+                    help='write the measured rows here so plots read data, not '
+                         'numbers transcribed from a terminal')
     args = ap.parse_args()
 
     runner = StandaloneExperimentRunner(args.config, args.gpu, args.results_dir)
@@ -188,10 +230,6 @@ def main():
     vcfg = next((v for v in cfg['variants'] if v['name'] == args.variant), None)
     if vcfg is None:
         sys.exit(f"variant {args.variant} not in {args.config}")
-    if vcfg.get('use_gnn', False):
-        sys.exit("this diagnostic covers non-GNN variants only "
-                 "(the GNN attack path needs the full multi-agent batch)")
-
     attack_eval = cfg.get('attack_eval', {})
     load = float(attack_eval.get('offered_load_factor', 2.0))
     hotspot = attack_eval.get('hotspot') or None
@@ -241,12 +279,13 @@ def main():
           f"{'spend':>7} {'bound%':>7} {'flip%':>7}")
     print('-' * 82)
 
+    rows = []
     for label, n_steps, alpha, freeze, mu, rand in configs:
         gains, g1, gn, spends, bounds = [], [], [], [], []
         flips = total = 0
         for agent_idx, obs in samples:
             agent = maddpg.agents[agent_idx]
-            r = instrumented_pgd(framework, agent, engine, obs, agent_idx,
+            r = instrumented_pgd(framework, maddpg, agent, engine, obs, agent_idx,
                                  eps, n_steps, alpha, freeze_weights=freeze,
                                  momentum=mu, random_start=rand)
             gains.append(r['obj_gain'])
@@ -254,12 +293,32 @@ def main():
             gn.append(r['grad_last'])
             spends.append(r['mean_abs_delta'] / eps)
             bounds.append(r['frac_at_boundary'])
-            c, t = decision_flips(agent, obs, r['adv'], n_dest, k_paths, device)
+            c, t = decision_flips(make_probs_fn(framework, maddpg, agent, agent_idx),
+                                  obs, r['adv'], n_dest, k_paths, device)
             flips += c
             total += t
         print(f"{label:<30} {np.mean(gains):>9.4f} {np.mean(g1):>8.4f} "
               f"{np.mean(gn):>8.4f} {np.mean(spends):>7.3f} "
               f"{np.mean(bounds) * 100:>6.1f}% {flips / max(1, total) * 100:>6.2f}%")
+        rows.append({
+            'label': label, 'n_steps': n_steps, 'step_alpha': alpha,
+            'freeze_weights': freeze, 'momentum': mu, 'random_start': rand,
+            'obj_gain': float(np.mean(gains)),
+            'grad_first': float(np.mean(g1)), 'grad_last': float(np.mean(gn)),
+            'budget_spend': float(np.mean(spends)),
+            'frac_at_boundary': float(np.mean(bounds)),
+            'flip_rate': flips / max(1, total),
+        })
+
+    if args.json_out:
+        os.makedirs(os.path.dirname(args.json_out) or '.', exist_ok=True)
+        with open(args.json_out, 'w') as fh:
+            json.dump({'variant': args.variant, 'epsilon': eps,
+                       'n_observations': len(samples),
+                       'load': load, 'hotspot': bool(hotspot),
+                       'use_gnn': bool(vcfg.get('use_gnn', False)),
+                       'rows': rows}, fh, indent=2)
+        print(f"\nwrote {args.json_out}")
 
     print("\nspend  = mean |delta| / epsilon  (1.000 = full budget on every coordinate)")
     print("bound% = coordinates pinned to the +/-epsilon boundary")

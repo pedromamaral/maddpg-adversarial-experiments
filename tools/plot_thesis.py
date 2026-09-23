@@ -275,9 +275,84 @@ def t7():
     save(fig, "T7_damage_ceiling_contrast")
 
 
+# ─── T8: iterated attacks (PGD / MI-FGSM) against single-step FGSM ───────────
+def _pgd_pick(rows, kind):
+    """Select one attack configuration from a pgd_diagnostic row list.
+
+    Matched on the parameters rather than the display label so the figure does
+    not break if a label is reworded.
+    """
+    for r in rows:
+        if kind == "fgsm" and r["n_steps"] == 1:
+            return r
+        # The shipped PGD: 10 steps, no momentum, objective re-read each step.
+        if (kind == "pgd" and r["n_steps"] == 10 and r["momentum"] == 0
+                and not r["freeze_weights"]
+                and abs(r["step_alpha"] - 0.3 / 10 * 2.5) < 1e-9):
+            return r
+        # Best-tuned iterated attack: momentum, 20 steps, no random restart.
+        if (kind == "mi" and r["momentum"] > 0 and r["n_steps"] == 20
+                and not r["random_start"]):
+            return r
+    return None
+
+
+def t8():
+    data = {}
+    for v in VARIANTS:
+        d = jload("pgd_diagnostic", f"{v}.json")
+        if d:
+            data[v] = d
+    if not data:
+        print("  T8 skipped (no pgd_diagnostic/*.json)"); return
+
+    order = [v for v in VARIANTS if v in data]
+    spend = {k: [] for k in ("fgsm", "pgd", "mi")}
+    dflip = {k: [] for k in ("pgd", "mi")}
+    for v in order:
+        rows = data[v]["rows"]
+        picks = {k: _pgd_pick(rows, k) for k in ("fgsm", "pgd", "mi")}
+        for k in spend:
+            spend[k].append(picks[k]["budget_spend"] if picks[k] else np.nan)
+        base = picks["fgsm"]["flip_rate"] if picks["fgsm"] else np.nan
+        for k in ("pgd", "mi"):
+            dflip[k].append((picks[k]["flip_rate"] - base) * 100 if picks[k] else np.nan)
+
+    y = np.arange(len(order))
+    h = 0.26
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11.0, 4.6))
+
+    # Left: how much of the epsilon budget each attack actually spends.
+    axL.barh(y + h, spend["fgsm"], h, color=COL["grad"], label="FGSM (1 step)")
+    axL.barh(y, spend["pgd"], h, color=COL["rand"], label="PGD (10 steps)")
+    axL.barh(y - h, spend["mi"], h, color=COL["greedy"], label="MI-FGSM (20, momentum)")
+    axL.axvline(1.0, color="0.4", lw=1.0, ls=":")
+    axL.set_yticks(y); axL.set_yticklabels(order)
+    axL.set_xlabel(r"budget actually spent  ($\overline{|\delta|}/\epsilon$)")
+    axL.set_xlim(0, 1.08)
+    axL.legend(loc="lower right", fontsize=9)
+    if not PAPER:
+        axL.set_title("Plain PGD wastes half its budget; momentum recovers it")
+
+    # Right: flips relative to FGSM. Within-variant differences only -- the
+    # absolute rates are not comparable to T2/T6 because the GNN attack path
+    # decodes through a zero-filled batch (see the diagnostic's docstring).
+    axR.barh(y + h / 2, dflip["pgd"], h, color=COL["rand"], label="PGD (10 steps)")
+    axR.barh(y - h / 2, dflip["mi"], h, color=COL["greedy"],
+             label="MI-FGSM (20, momentum)")
+    axR.axvline(0.0, color=COL["grad"], lw=1.6)
+    axR.set_yticks(y); axR.set_yticklabels([])
+    axR.set_xlabel("decisions flipped vs FGSM (pp;  0 = FGSM)")
+    axR.legend(loc="lower left", fontsize=9)
+    if not PAPER:
+        axR.set_title("No iterated attack beats the single step")
+
+    save(fig, "T8_iterated_vs_fgsm")
+
+
 if __name__ == "__main__":
     print(f"ROOT={ROOT}  FIG_DIR={FIG_DIR}")
-    for fn in (t1, t2, t3, t4, t5, t6, t7):
+    for fn in (t1, t2, t3, t4, t5, t6, t7, t8):
         try:
             fn()
         except Exception as e:
