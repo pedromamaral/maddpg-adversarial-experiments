@@ -17,10 +17,14 @@ A história tem de se ler nesta ordem, porque cada secção responde à pergunta
 1. O ataque **muda decisões**? → sim (8.2)
 2. Isso **muda a entrega**? → quase nada (8.3)
 3. Então **quanto dano havia para fazer**? → muito mais do que o ataque consegue (8.4)
-4. O pouco efeito que há é **mesmo adversarial** ou é ruído? → só em algumas arquiteturas (8.5)
+4. O pouco efeito que há é **mesmo adversarial** ou é ruído? → é pequeno em todas as
+   arquiteturas, e a diferença entre elas não se reproduz entre sementes (8.5)
 5. E **sob falhas**, onde a rede é frágil? → a fragilidade é ruído, não ataque (8.6)
 6. O **GNN** muda alguma coisa? → suprime inversões, com uma excepção (8.7)
 7. O ataque não estaria simplesmente **mal afinado**? → não, o FGSM é o melhor ataque míope (8.8)
+
+8. (opcional) Quantos agentes precisa o atacante de controlar? → o dano cresce com o número
+   deles, e um só agente quase não chega (8.9)
 
 O ponto 7 é o que protege todo o capítulo. Sem ele, qualquer arguente pergunta
 "o seu resultado negativo não será só porque o ataque é fraco?".
@@ -104,13 +108,24 @@ perder e que o ataque não lá chegou.
 
 ---
 
-## 8.5 Que arquiteturas têm sinal adversarial real — **Figura T3** (a tua 8.6)
+## 8.5 O efeito adversarial é pequeno em todas as arquiteturas — **Figura T3b** (nova)
 
-> **Promove esta figura**, mas **não como um ranking de arquiteturas** — lê o aviso a seguir à
-> tabela. Está agora enterrada na secção do GNN; o sítio dela é aqui, logo a seguir ao dano
-> disponível, a mostrar que o efeito adversarial é pequeno em *todas* as variantes.
+> **Usa a `T3b_gap_across_seeds`, não a T3.** A T3 (a tua 8.6) ordena as arquiteturas a
+> partir de **uma só** vítima treinada por variante, e essa ordenação **não se reproduz**
+> quando se treina outra vez. A T3b mostra um marcador por vítima treinada: vê-se que o
+> efeito é pequeno em todas, que a dispersão entre sementes engole as diferenças entre
+> variantes, e quais as variantes que ainda só têm uma semente (marcador vazio). Tira a T3
+> do capítulo — se quiseres manter a versão com intervalos de confiança, põe-na em anexo.
 
-**Números** — efeito adversarial específico = queda com gradiente − queda com aleatório, nominal:
+**Legenda sugerida para a T3b.** *Efeito adversarial específico (gradiente − aleatório) no
+ponto nominal, ε = 0.30, com um marcador por vítima treinada independentemente. As quatro
+variantes sem GNN foram treinadas com três sementes; as três variantes GNN têm apenas uma
+(marcador vazio). A banda é ±1 desvio-padrão entre sementes. A dispersão entre sementes é
+maior do que a diferença entre arquiteturas, pelo que os dados não sustentam uma ordenação
+de robustez entre variantes.*
+
+**Números da vítima canónica** (a que está na T3) — efeito = queda com gradiente − queda com
+aleatório, nominal. Serve para referência; a leitura por variante está corrigida logo a seguir:
 
 | Variante | efeito (pp) | leitura |
 |---|---|---|
@@ -337,6 +352,35 @@ Como são duas contas diferentes, dão números diferentes — em qualquer varia
 Nenhum dos dois está errado: medem coisas ligeiramente diferentes. O que se mantém válido na T8 é
 **a diferença entre FGSM, PGD e MI-FGSM dentro de cada variante** — e é exactamente essa
 diferença que a figura serve para mostrar.
+
+---
+
+## 8.9 (opcional) Quantos agentes tem o atacante de comprometer?
+
+Resultado novo, ainda não está na tese. Mede-se o mesmo efeito adversarial, mas variando a
+**fracção de agentes comprometidos** (1, 4, 7 e os 14). Cada célula foi repetida com **quatro
+sorteios independentes** do conjunto comprometido, com o tráfego fixo, para separar "*quais*
+os agentes" de "*quais* os episódios".
+
+| Variante | 1 agente | 4 agentes | 7 agentes | 14 agentes |
+|---|---|---|---|---|
+| CC-Simple | +0.15 ± 0.16 | +0.09 ± 0.12 | +0.20 ± 0.11 | +0.37 |
+| CC-Duelling | +0.11 ± 0.20 | +0.56 ± 0.22 | +1.26 ± 0.43 | +2.53 |
+| LC-Simple | +0.34 ± 0.17 | +0.67 ± 0.25 | +1.93 ± 0.33 | +3.27 |
+
+(± é o desvio-padrão entre os quatro sorteios do conjunto comprometido.)
+
+**Como explicar.** O dano cresce com o número de agentes comprometidos, de forma regular e
+reprodutível. E o desvio entre sorteios (0.11–0.43 pp) é pequeno face ao efeito (até 3.3 pp),
+o que quer dizer que, nas fracções maiores, importa muito mais **quantos** agentes o atacante
+controla do que **quais**.
+
+**O que NÃO podes dizer.** ⚠️ Não escrevas que "basta comprometer um agente". Com um único
+sorteio parecia haver um efeito significativo com 1 agente (+1.02 pp no LC-Simple); repetindo
+com quatro sorteios, a média é **+0.34 ± 0.17 pp**, ou seja, aquele valor era o extremo de
+uma distribuição. Com 1 agente o efeito é pequeno e pouco distinguível de zero em todas as
+variantes. Também não digas que há "retornos decrescentes": o dano por agente é
+aproximadamente constante (no CC-Duelling até **sobe**, de +0.11 para +0.18 pp por agente).
 
 ---
 

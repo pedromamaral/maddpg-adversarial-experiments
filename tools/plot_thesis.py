@@ -157,6 +157,83 @@ def t3():
     save(fig, "T3_adversarial_gap_by_variant")
 
 
+# ─── T3b: the same gap across independently trained victims ─────────────────
+SEED_RUNS = [("canonical", None), ("s1042", "seed_probe/s1042"),
+             ("s2042", "seed_probe/s2042")]
+
+
+def _gap_at_nominal(d):
+    """Paired gradient-minus-random gap (pp) at the nominal cell, or None."""
+    g = cell(d, "load2_fail0", "packet_loss", 0.3)
+    r = cell(d, "load2_fail0", "random", 0.3)
+    if not g or not r:
+        return None
+    return g["drop_pp"] - r["drop_pp"]
+
+
+def t3_seeds():
+    """Replaces T3. T3 ranks architectures by a single trained victim each, and
+    that ranking does not replicate: CC-Simple spans +0.37 to +5.11 pp across three
+    training seeds. Plotting one marker per seed shows the effect is small
+    everywhere, that the seed spread swamps the differences between variants, and
+    — because the GNN variants have only one trained seed — exactly which rows
+    carry replication and which do not.
+    """
+    rows = []
+    for v in VARIANTS:
+        gaps = []
+        for _label, sub in SEED_RUNS:
+            d = (jload(TIGHTEN, v, "fgsm_probe_results.json") if sub is None
+                 else jload(sub, v, "fgsm_probe_results.json"))
+            if not d:
+                continue
+            g = _gap_at_nominal(d)
+            if g is not None:
+                gaps.append(g)
+        if gaps:
+            rows.append((v, gaps))
+    if not rows:
+        print("  T3b skipped (no data)"); return
+
+    y = np.arange(len(rows))
+    fig, ax = plt.subplots(figsize=(7.4, 4.4))
+    for i, (v, gaps) in enumerate(rows):
+        replicated = len(gaps) > 1
+        if replicated:
+            m = float(np.mean(gaps))
+            sd = float(np.std(gaps, ddof=1))
+            ax.barh(i, 2 * sd, left=m - sd, height=0.52,
+                    color=COL["grad"], alpha=0.16, zorder=1)
+            ax.plot([m, m], [i - 0.26, i + 0.26], color=COL["grad"], lw=2.4, zorder=3)
+        ax.scatter(gaps, [i] * len(gaps),
+                   s=46 if replicated else 64,
+                   facecolor=COL["grad"] if replicated else "none",
+                   edgecolor=COL["grad"], linewidth=1.6, zorder=4,
+                   label=None)
+    ax.axvline(0, color="black", lw=1, zorder=2)
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{v}" if len(g) > 1 else f"{v}  (1 seed)"
+                        for v, g in rows], fontsize=9)
+    # Keep the label short: at PAPER font sizes a longer one is clipped. The
+    # "one marker per trained victim" reading belongs in the caption.
+    ax.set_xlabel("gradient $-$ random PDR drop (pp)")
+    if not PAPER:
+        ax.set_title("The per-architecture ordering does not survive reseeding")
+    # Legend built by hand: filled = three seeds, hollow = single seed. Anchored
+    # upper-right, where the single-seed GNN rows leave the axes empty; lower-right
+    # would cover CC-Simple's +5.11 pp seed.
+    from matplotlib.lines import Line2D
+    ax.legend(handles=[
+        Line2D([], [], marker='o', ls='none', color=COL["grad"],
+               label='trained victim (3 seeds)'),
+        Line2D([], [], marker='o', ls='none', markerfacecolor='none',
+               markeredgecolor=COL["grad"], label='single seed — not replicated'),
+        Line2D([], [], color=COL["grad"], lw=2.4, label='mean; band = $\\pm$1 sd'),
+    ], loc="upper right", fontsize=8, framealpha=0.9)
+    ax.margins(x=0.06)
+    save(fig, "T3b_gap_across_seeds")
+
+
 # ─── T4: PDR drop vs #failures, gradient vs random, CI bands (CC-Simple) ─────
 def t4(variant="CC-Simple"):
     t = jload(TIGHTEN, variant, "fgsm_probe_results.json")
@@ -352,7 +429,7 @@ def t8():
 
 if __name__ == "__main__":
     print(f"ROOT={ROOT}  FIG_DIR={FIG_DIR}")
-    for fn in (t1, t2, t3, t4, t5, t6, t7, t8):
+    for fn in (t1, t2, t3, t3_seeds, t4, t5, t6, t7, t8):
         try:
             fn()
         except Exception as e:
