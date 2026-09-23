@@ -489,11 +489,32 @@ class StandaloneExperimentRunner:
         return maddpg, engine, env
 
     def _load_variant_checkpoint(self, maddpg: MADDPG, name: str):
+        # Fail loudly when there are no weights to load. The per-network loaders
+        # silently no-op on a missing file (ActorNetwork.load_checkpoint guards on
+        # os.path.exists), so an evaluation pointed at a results directory without
+        # models would otherwise run RANDOMLY INITIALISED policies and report
+        # plausible-looking numbers. That produced one invalid probe sweep before
+        # this guard existed; the tell was a clean PDR that did not match the
+        # canonical run.
+        ckpt_dir = os.path.join(self.results_dir, 'models', name)
+        n_ckpt = 0
+        if os.path.isdir(ckpt_dir):
+            for _root, _dirs, files in os.walk(ckpt_dir):
+                n_ckpt += sum(1 for f in files if f.endswith('.pth'))
+        if n_ckpt == 0:
+            raise FileNotFoundError(
+                f"No checkpoints for variant '{name}' under {ckpt_dir}. "
+                f"Evaluation would run on untrained weights. Point --results-dir at "
+                f"the run holding the trained models, or symlink its models/ "
+                f"directory into this one."
+            )
+
         if maddpg.load_best_checkpoint():
-            logger.info(f"[CKPT] {name} — loaded best checkpoint")
+            logger.info(f"[CKPT] {name} — loaded best checkpoint ({n_ckpt} files)")
         else:
             maddpg.load_checkpoint()
-            logger.info(f"[CKPT] {name} — loaded final checkpoint (best not found)")
+            logger.info(f"[CKPT] {name} — loaded final checkpoint, best not found "
+                        f"({n_ckpt} files)")
 
     @staticmethod
     def _build_full_actions(
@@ -2063,28 +2084,49 @@ class StandaloneExperimentRunner:
             cp = clean['mean_end_to_end_pdr']
             clean_series = clean.get('pdr_series')
             logger.info(f"[PROBE] {cond_key}  clean PDR = {cp:.1f}%")
-            for atype, eps, nsteps in attacks:
+            # Repeat each partial-compromise cell over several independent draws of
+            # the compromised set. Full compromise has only one possible subset, so
+            # it is never repeated.
+            subset_seeds = attack_eval.get('probe_subset_seeds') or [None]
+            for entry in attacks:
+                # (type, epsilon, n_steps[, attack_fraction]) — the optional fourth
+                # element is the fraction of agents the adversary compromises, so a
+                # partial-compromise sweep reuses the paired clean/random protocol
+                # (and therefore the CIs) rather than the older phase-3 path.
+                atype, eps, nsteps = entry[0], entry[1], entry[2]
+                frac = float(entry[3]) if len(entry) > 3 else 1.0
                 self.attack_framework.n_steps = int(nsteps)
                 self.attack_framework.step_alpha = eps if nsteps == 1 else (eps / nsteps * 2.5)
-                att = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
-                                            attack_type=atype, epsilon=eps,
-                                            offered_load_factor=load, n_link_failures=nf,
-                                            measure_flips=True)
-                ap = att['mean_end_to_end_pdr']
-                fr = att.get('action_flip_rate')
-                key = f"{cond_key}__{atype}_eps{eps}_steps{nsteps}"
-                out[key] = {'condition': cond_key, 'load': load, 'n_failures': nf,
-                            'attack_type': atype, 'epsilon': eps, 'n_steps': nsteps,
-                            'clean_pdr': cp, 'attacked_pdr': ap, 'drop_pp': cp - ap,
-                            'action_flip_rate': fr,
-                            # per-episode series; clean/gradient/random share the same
-                            # seeded traffic+failures, so these are paired episode-wise
-                            # and support paired CIs on the gradient-minus-random gap.
-                            'clean_pdr_series': clean_series,
-                            'attacked_pdr_series': att.get('pdr_series')}
-                logger.info(f"[PROBE]   {atype}_eps{eps}_s{nsteps:<2d} "
-                            f"{cp:5.1f}%->{ap:5.1f}%  drop {cp - ap:+5.1f}pp  flips "
-                            f"{(fr * 100 if fr is not None else float('nan')):5.1f}%")
+                for sseed in (subset_seeds if frac < 1.0 else [None]):
+                    att = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=True,
+                                                attack_type=atype, epsilon=eps,
+                                                attack_fraction=frac,
+                                                compromise_seed=sseed,
+                                                offered_load_factor=load, n_link_failures=nf,
+                                                measure_flips=True)
+                    ap = att['mean_end_to_end_pdr']
+                    fr = att.get('action_flip_rate')
+                    key = f"{cond_key}__{atype}_eps{eps}_steps{nsteps}"
+                    if frac < 1.0:
+                        key += f"_frac{frac:.2f}"
+                        if sseed is not None:
+                            key += f"_sub{sseed}"
+                    out[key] = {'condition': cond_key, 'load': load, 'n_failures': nf,
+                                'attack_type': atype, 'epsilon': eps, 'n_steps': nsteps,
+                                'attack_fraction': frac, 'compromise_seed': sseed,
+                                'clean_pdr': cp, 'attacked_pdr': ap, 'drop_pp': cp - ap,
+                                'action_flip_rate': fr,
+                                # per-episode series; clean/gradient/random share the same
+                                # seeded traffic+failures, so these are paired episode-wise
+                                # and support paired CIs on the gradient-minus-random gap.
+                                'clean_pdr_series': clean_series,
+                                'attacked_pdr_series': att.get('pdr_series')}
+                    logger.info(
+                        f"[PROBE]   {atype}_eps{eps}_s{nsteps:<2d}"
+                        f"{f' frac{frac:.2f}' if frac < 1.0 else ''}"
+                        f"{f' sub{sseed}' if (frac < 1.0 and sseed is not None) else ''}  "
+                        f"{cp:5.1f}%->{ap:5.1f}%  drop {cp - ap:+5.1f}pp  flips "
+                        f"{(fr * 100 if fr is not None else float('nan')):5.1f}%")
         self.attack_framework.n_steps = 1
         self.attack_framework.step_alpha = 0.0
         self._save(out, 'fgsm_probe_results.json')
@@ -2154,6 +2196,7 @@ class StandaloneExperimentRunner:
                          routing_rule: Optional[str] = None,
                          target_links: Optional[list] = None,
                          n_link_failures: int = 0,
+                         compromise_seed: Optional[int] = None,
                          measure_flips: bool = False) -> Dict:
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
@@ -2185,7 +2228,15 @@ class StandaloneExperimentRunner:
         # Dedicated RNG for choosing the compromised agent subset, kept separate
         # from the global RNG so that partial-compromise cases do not desync the
         # traffic sequence relative to the clean baseline.
-        _attack_rng = random.Random(traffic_seed)
+        # The compromised subset is re-drawn every episode, so a partial-compromise
+        # cell already averages over n_episodes different agent subsets, and the
+        # gradient and random arms draw the SAME sequence (this RNG is deliberately
+        # separate from the traffic one). Seeding it independently of traffic_seed
+        # lets the subset be varied while the traffic is held fixed, which separates
+        # "which agents were compromised" from "which episodes were sampled" --
+        # otherwise both land in the same confidence interval.
+        _attack_rng = random.Random(
+            traffic_seed if compromise_seed is None else compromise_seed)
         # Dedicated RNG for the 'random' routing rule (damage-ceiling diagnostic),
         # kept separate so it does not desync the paired traffic sequence.
         _rule_rng = random.Random(traffic_seed + 999)
