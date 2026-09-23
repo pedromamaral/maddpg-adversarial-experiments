@@ -42,8 +42,8 @@ policies are to such observation attacks on a real 86-node service-provider topo
 and --- crucially --- we separate two things the literature routinely conflates:
 whether an attack changes a policy's \emph{decisions} and whether it changes the
 \emph{delivered outcome}. We study a progression of attackers of increasing power
-within one fixed threat model: (i) a myopic single-step gradient attack (FGSM) and
-its iterated form (PGD); (ii) a \emph{learned worst-case} adversary trained as a
+within one fixed threat model: (i) a myopic gradient attack, single-step (FGSM) and
+in its iterated forms; (ii) a \emph{learned worst-case} adversary trained as a
 reinforcement-learning agent whose reward is the victim's packet loss (the optimal
 observation adversary of the state-adversarial MDP); and (iii) structure-aware
 variants that coordinate perturbations across agents and time them to critical
@@ -107,10 +107,14 @@ We make four contributions.
   the action-flip rate and the delivery drop --- and anchors both to a budget-matched
   random control and a damage ceiling, so ``robust'' and ``vulnerable'' are quantified
   rather than asserted (Section~\ref{sec:method}).
-  \item A \textbf{completed myopic-attack study} (FGSM/PGD): the attack flips a quarter
-  of decisions but extracts almost none of the available damage on the intact topology,
+  \item A \textbf{completed myopic-attack study}: the attack flips a quarter of
+  decisions but extracts almost none of the available damage on the intact topology,
   and the failure-regime fragility is shown to be noise, not adversary
-  (Section~\ref{sec:myopic}).
+  (Section~\ref{sec:myopic}). We further establish that single-step FGSM is at or near
+  the \emph{strongest} myopic attacker available under this threat model --- iterated
+  variants, tuned over step size, iteration count, momentum and random restarts, do not
+  exceed it (Section~\ref{sec:iterated}) --- so the negative result is not an artefact
+  of an under-powered attack.
   \item A \textbf{learned worst-case adversary} in the state-adversarial MDP framework
   and its structure-aware variants (Section~\ref{sec:learned}), with an open, reusable
   training scaffold; this is the attacker that decides whether the redundancy-based
@@ -174,8 +178,8 @@ attacks are white-box (they may query the actor); the learned adversary is grey-
 The attackers we study occupy three orthogonal axes (Table~\ref{tab:taxonomy}):
 \emph{knowledge/optimisation} (blind random $\rightarrow$ myopic gradient $\rightarrow$
 learned worst-case), \emph{scope} (per-agent $\rightarrow$ coordinated multi-agent),
-and \emph{timing} (every step $\rightarrow$ budgeted, critical-state only). FGSM/PGD is
-myopic, per-agent, untimed. The random control is blind, per-agent, untimed. The
+and \emph{timing} (every step $\rightarrow$ budgeted, critical-state only). The gradient
+attack is myopic, per-agent, untimed. The random control is blind, per-agent, untimed. The
 learned adversary is worst-case and, in its full form, coordinated and timed.
 
 \begin{table}[!t]
@@ -190,7 +194,7 @@ learned adversary is worst-case and, in its full form, coordinated and timed.
     \midrule
     \textbf{Random control} & blind & per-agent & every step \\
     \textbf{FGSM} & 1-step gradient & per-agent & every step \\
-    \textbf{PGD} & iterated gradient & per-agent & every step \\
+    \textbf{Iterated (PGD, MI-FGSM)} & iterated gradient & per-agent & every step \\
     Learned (SA-MDP) & trajectory RL & per-agent & every step \\
     ~+ coordinated & trajectory RL & multi-agent & every step \\
     ~+ timed & trajectory RL & multi-agent & critical-state \\
@@ -230,13 +234,40 @@ use $15$ paired episodes per cell.
 
 \section{Myopic Gradient Attacks (Completed)}
 \label{sec:myopic}
-\subsection{FGSM and PGD}
+\subsection{The gradient attack}
 We build a differentiable \emph{packet-loss objective} whose gradient points toward
 worse routing --- weighting each path by a sharpened function of its true bottleneck
 utilisation and rewarding policy mass on congested paths,
-$\mathcal{L}(\delta)=\sum_\text{paths}\pi(\text{path})\,\sigma((U-0.5)\cdot10)$. FGSM
-takes one step $\epsilon\cdot\operatorname{sign}(\nabla_\text{obs}\mathcal{L})$; PGD
-iterates with re-projection into the $\epsilon$-ball.
+$\mathcal{L}(\delta)=\sum_\text{paths}\pi(\text{path})\,\sigma((U-0.5)\cdot10)$. The
+path-utilisation weights are read from the \emph{clean} observation and held fixed, so
+the attack differentiates only through the policy and cannot raise its own objective by
+perturbing the utilisation features themselves. FGSM takes one step
+$\epsilon\cdot\operatorname{sign}(\nabla_\text{obs}\mathcal{L})$; the iterated variants
+take $n$ steps of size $\alpha$ with re-projection into the $\epsilon$-ball after each,
+optionally with a momentum term (MI-FGSM) and a uniform random start.
+
+\subsection{Single-step is the strongest myopic attack here}
+\label{sec:iterated}
+A negative robustness result is only as strong as the attack behind it, so we verify
+that the myopic attacker is not merely under-tuned. For each of the seven architectures
+we compare FGSM against iterated variants at a matched budget ($\epsilon{=}0.3$),
+sweeping the step size
+($\alpha\in\{\epsilon,\epsilon/2,\epsilon/4,\epsilon/8\}$), the iteration count
+($n\in\{10,20\}$), momentum, and a uniform random start, and we instrument each run with
+the achieved objective, the gradient norm, and the \emph{budget spend}
+$\overline{|\delta|}/\epsilon$.
+
+Two findings matter. First, plain iterated descent is self-defeating in this landscape:
+the per-coordinate gradient sign oscillates between steps, so the signed increments
+partially cancel and the attack terminates strictly inside the $\epsilon$-ball, spending
+only $20$--$68\%$ of its budget against FGSM's $98\%$. Momentum removes the oscillation
+and restores the spend to $82$--$90\%$ on every variant. Second, and despite that repair,
+no iterated configuration meaningfully out-flips the single step on any of the seven
+architectures: FGSM is the strongest on five of them --- by $2.2$--$9.5$\,pp of flip rate
+on four, and by $0.1$\,pp, a tie, on the fifth --- while the iterated attack edges ahead
+only on the two non-GNN local-critic variants, by at most $1.1$\,pp, a margin far below
+what would be needed to move delivery, given the flip-to-delivery gap established below. Single-step FGSM is therefore a fair upper bound on the myopic
+attacker, and we report it throughout.
 
 \subsection{The attack changes decisions}
 The flip rate rises with the budget --- ${\sim}8\%$ at $\epsilon{=}0.05$ to $25.7\%$ at
@@ -372,8 +403,9 @@ seven variants. Two outcomes are scientifically decisive:
 \end{itemize}
 
 \tofill{Results of the learned adversary go here: (a) a bar of achieved delivery drop
-and adversarial-specific gap for FGSM vs.\ PGD vs.\ learned vs.\ coordinated vs.\
-timed, at nominal load, seven variants, paired 95\% CI; (b) achieved-vs-ceiling as a
+and adversarial-specific gap for FGSM vs.\ learned vs.\ coordinated vs.\
+timed, at nominal load, seven variants, paired 95\% CI (FGSM stands in for the myopic
+attacker per Section~\ref{sec:iterated}); (b) achieved-vs-ceiling as a
 fraction, per attacker; (c) the failure-sweep gap for the learned adversary overlaid on
 Fig.~\ref{fig:fragility}. Produced by \texttt{tools/train\_adversary.py} (train) then
 \texttt{--eval-only} (score), aggregated with a plot script analogous to
