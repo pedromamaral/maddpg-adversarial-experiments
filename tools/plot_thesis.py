@@ -12,6 +12,8 @@ Run (server docker, matplotlib available):
         python tools/plot_thesis.py
 Locally (if matplotlib present):
     python tools/plot_thesis.py
+Naming figure functions regenerates only those, e.g.:
+    PAPER_MODE=1 python tools/plot_thesis.py t2 t6 t9
 """
 import json, os, math
 import numpy as np
@@ -26,6 +28,11 @@ ROOT = os.environ.get("RESULTS_ROOT", os.path.join("host_data", "results"))
 CANONICAL = os.environ.get("CANONICAL_RUN", "reward_fix")
 TIGHTEN = os.environ.get("TIGHTEN_RUN", "fgsm_tighten")
 FULL = os.environ.get("FULL_RUN", "fgsm_full")
+# On GNN victims TIGHTEN took the attack gradient through the actor alone,
+# bypassing the encoder the victim decides through. LOGIT re-ran every variant
+# with the attack aimed through the real decision path (faithful_gnn), plus the
+# two logit-margin objectives; on non-GNN variants it reproduces TIGHTEN exactly.
+LOGIT = os.environ.get("LOGIT_RUN", "logit_attack")
 FIG_DIR = os.environ.get(
     "FIG_DIR",
     os.path.join("students", "goncalo-martins-fgsm-thesis", "figures"))
@@ -64,9 +71,19 @@ def jload(*p):
 
 
 def variant_probe(v):
-    """Prefer tightening (CI series) else full-experiment results for a variant."""
-    return (jload(TIGHTEN, v, "fgsm_probe_results.json"),
-            jload(FULL, v, "fgsm_probe_results.json"))
+    """Prefer tightening (CI series) else full-experiment results for a variant.
+
+    GNN variants read the faithful re-run instead: their TIGHTEN attack never
+    went through the encoder, so its numbers describe a different function.
+    """
+    t = jload(TIGHTEN, v, "fgsm_probe_results.json")
+    if v in GNN:
+        faithful = jload(LOGIT, v, "fgsm_probe_results.json")
+        if faithful:
+            t = faithful
+        else:
+            print(f"  WARNING: no {LOGIT} run for {v}; its FGSM numbers bypass the encoder")
+    return t, jload(FULL, v, "fgsm_probe_results.json")
 
 
 def cell(d, cond, atype, eps):
@@ -75,12 +92,26 @@ def cell(d, cond, atype, eps):
     return d.get(f"{cond}__{atype}_eps{eps}_steps1")
 
 
+# Two-sided 95% Student-t quantiles by degrees of freedom. The probes pair 15
+# episodes (df = 14), where the normal 1.96 understates the interval by ~9%.
+_T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+         8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+         15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+         21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056,
+         27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
+
+
+def t975(n):
+    """95% two-sided t quantile for the mean of n paired differences."""
+    return _T975.get(n - 1, 1.96)
+
+
 def paired_ci(series_a, series_b):
     """95% CI half-width of mean(a-b); paired episodes."""
     if not series_a or not series_b or len(series_a) != len(series_b) or len(series_a) < 2:
         return None
     d = np.array(series_a) - np.array(series_b)
-    return 1.96 * float(d.std(ddof=1)) / math.sqrt(len(d))
+    return t975(len(d)) * float(d.std(ddof=1)) / math.sqrt(len(d))
 
 
 # ─── T1: flip rate vs epsilon, gradient vs random (CC-Simple) ────────────────
@@ -128,7 +159,9 @@ def t2():
     ax.set_yticks(y); ax.set_yticklabels(names, fontsize=9)
     ax.set_xlabel("percent / percentage points")
     ax.set_title("Many decisions change, almost no packets lost (2$\\times$ hotspot, $\\epsilon$0.3)")
-    ax.legend(loc="lower right")
+    # Upper right: the top (LC-Duelling-GNN) row is short, whereas lower right
+    # would sit on CC-Simple's 25.7% bar.
+    ax.legend(loc="upper right")
     save(fig, "T2_flips_vs_pdr_nominal")
 
 
@@ -177,13 +210,14 @@ def t3_seeds():
     training seeds. Plotting one marker per seed shows the effect is small
     everywhere, that the seed spread swamps the differences between variants, and
     — because the GNN variants have only one trained seed — exactly which rows
-    carry replication and which do not.
+    carry replication and which do not. The canonical GNN markers come from the
+    faithful re-run, as everywhere else (variant_probe).
     """
     rows = []
     for v in VARIANTS:
         gaps = []
         for _label, sub in SEED_RUNS:
-            d = (jload(TIGHTEN, v, "fgsm_probe_results.json") if sub is None
+            d = (variant_probe(v)[0] if sub is None
                  else jload(sub, v, "fgsm_probe_results.json"))
             if not d:
                 continue
@@ -248,7 +282,7 @@ def t4(variant="CC-Simple"):
             cs, as_ = (c or {}).get("clean_pdr_series"), (c or {}).get("attacked_pdr_series")
             if cs and as_:
                 d = np.array(cs) - np.array(as_)
-                mu = d.mean(); ci = 1.96 * d.std(ddof=1) / math.sqrt(len(d))
+                mu = d.mean(); ci = t975(len(d)) * d.std(ddof=1) / math.sqrt(len(d))
             else:
                 mu = c["drop_pp"] if c else np.nan; ci = 0
             m.append(mu); lo.append(mu - ci); hi.append(mu + ci)
@@ -308,46 +342,99 @@ def t5(variant="CC-Simple"):
     save(fig, "T5_flip_vs_failures")
 
 
-# ─── T6: flip rate GNN vs non-GNN @ nominal ──────────────────────────────────
+# ─── T6: what the GNN encoder does to noise and to the attack @ nominal ──────
+def _flip_pct(c):
+    return (c["action_flip_rate"] or 0) * 100 if c else None
+
+
 def t6():
-    names, flips = [], []
+    """Decisions flipped by the random control and by FGSM, per variant.
+
+    Replaces the old T6 ("GNN suppresses flips"), which plotted the canonical
+    attack only. On GNN victims that attack bypassed the encoder, so its low flip
+    rates said nothing about an attacker who knows the encoder. Showing the
+    random control, the bypassing attack and the attack through the encoder side
+    by side separates the three things the old figure conflated.
+    """
+    rows = []
     for v in VARIANTS:
-        t, f = variant_probe(v)
-        c = cell(t, "load2_fail0", "packet_loss", 0.3) or cell(f, "load2_fail0", "packet_loss", 0.3)
-        if not c: continue
-        names.append(v); flips.append((c["action_flip_rate"] or 0) * 100)
-    colors = ["#55a868" if v in GNN else "#8172b3" for v in names]
-    y = np.arange(len(names))
-    fig, ax = plt.subplots(figsize=(6.6, 4.0))
-    ax.barh(y, flips, color=colors)
-    for i, fl in enumerate(flips):
-        ax.text(fl + 0.4, i, f"{fl:.1f}", va="center", fontsize=8)
-    ax.set_yticks(y); ax.set_yticklabels(names, fontsize=9)
-    ax.set_xlabel("decisions flipped by FGSM (%)")
-    ax.set_title("GNN usually suppresses flips — but not for CC-Duelling (green = GNN)")
-    save(fig, "T6_gnn_flip_robustness")
+        d = variant_probe(v)[0]
+        rnd = _flip_pct(cell(d, "load2_fail0", "random", 0.3))
+        aimed = _flip_pct(cell(d, "load2_fail0", "packet_loss", 0.3))
+        bypass = (_flip_pct(cell(jload(TIGHTEN, v, "fgsm_probe_results.json"),
+                                 "load2_fail0", "packet_loss", 0.3))
+                  if v in GNN else None)
+        if rnd is None or aimed is None:
+            continue
+        rows.append((v, rnd, bypass, aimed))
+    if not rows:
+        print("  T6 skipped (no data)"); return
+
+    h = 0.26
+    fig, ax = plt.subplots(figsize=(7.4, 5.0))
+    for i, (v, rnd, bypass, aimed) in enumerate(rows):
+        if v in GNN:
+            ax.axhspan(i - 0.5, i + 0.5, color="#55a868", alpha=0.07, zorder=0)
+            bars = [(i + h, rnd, dict(color=COL["rand"])),
+                    (i, bypass, dict(color="white", edgecolor="0.45", hatch="///")),
+                    (i - h, aimed, dict(color=COL["grad"]))]
+        else:
+            bars = [(i + h / 2, rnd, dict(color=COL["rand"])),
+                    (i - h / 2, aimed, dict(color=COL["grad"]))]
+        for yy, val, style in bars:
+            ax.barh(yy, val, h, zorder=2, **style)
+            ax.text(val + 0.4, yy, f"{val:.1f}", va="center", fontsize=8)
+    ax.set_yticks(np.arange(len(rows)))
+    ax.set_yticklabels([r[0] for r in rows], fontsize=9)
+    ax.set_xlabel(r"decisions flipped (%), $\epsilon$ = 0.3")
+    ax.margins(x=0.08)
+    from matplotlib.patches import Patch
+    ax.legend(handles=[
+        Patch(color=COL["rand"], label="random control"),
+        Patch(facecolor="white", edgecolor="0.45", hatch="///",
+              label="FGSM, encoder bypassed (original attack)"),
+        Patch(color=COL["grad"], label="FGSM through the victim's decision path"),
+    ], loc="upper right", fontsize=8, framealpha=0.95)
+    ax.set_title("GNN damps noise, not an attack aimed through it (shaded = GNN)")
+    save(fig, "T6_gnn_noise_vs_attack")
 
 
 # ─── T7: damage ceiling vs achieved damage, vs load ──────────────────────────
 def t7():
     loads = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0]
-    pol, worst, greedy = [], [], []
+    # The policy line comes from the phase-2 load sweep, as in Paper 1's F5. The
+    # "policy" rows of sweep_baselines must not be used: their models/ folders
+    # are empty (broken symlink), so no trained weights were loaded. Only the
+    # rule rows there, which never touch the policy, are valid.
+    sw = jload(CANONICAL, "phase2_hotspot_sweep_results.json")
+    pol_by_load = (sw or {}).get("methods", {}).get("CC-Simple", {})
+    pol, worst, greedy, rnd = [], [], [], []
     for l in loads:
         d = jload(CANONICAL, "sweep_baselines", f"load_{l:.2f}", "damage_ceiling.json")
+        p = pol_by_load.get(f"load_{l:.2f}")
+        pol.append(p["mean_end_to_end_pdr"] if p else np.nan)
         if not d:
-            pol.append(np.nan); worst.append(np.nan); greedy.append(np.nan); continue
-        pol.append(d["policy"]["mean_end_to_end_pdr"])
+            for s in (worst, greedy, rnd):
+                s.append(np.nan)
+            continue
         worst.append(d["worst"]["mean_end_to_end_pdr"])
         greedy.append(d["greedy"]["mean_end_to_end_pdr"])
+        rnd.append(d["random"]["mean_end_to_end_pdr"])
     fig, ax = plt.subplots(figsize=(6.6, 4.2))
-    ax.plot(loads, greedy, ":", color=COL["greedy"], lw=1.8, label="greedy (benign best)")
+    ax.plot(loads, greedy, ":", color=COL["greedy"], lw=1.8,
+            label="greedy (least-congested path)")
+    # The random rule is the reference the victim should at least match: it
+    # delivers more than the trained policy at every load.
+    ax.plot(loads, rnd, "--", color=COL["rand"], lw=1.6, label="random path (per step)")
     ax.plot(loads, pol, "o-", color=COL["policy"], lw=2.2, label="policy (clean)")
     ax.plot(loads, worst, "-", color=COL["worst"], lw=1.8, label="worst-path (max damage)")
     ax.fill_between(loads, worst, pol, color=COL["grad"], alpha=0.12,
                     label="damage an ideal obs. attacker could extract")
     ax.set_xlabel("offered load factor (hotspot)")
     ax.set_ylabel("end-to-end PDR (%)")
-    ax.set_title("At stake vs achieved: FGSM extracts ~0 of the available damage")
+    ax.set_title("At stake: the policy sits between random routing and the worst path")
+    # Headroom under the worst-path curve so the five-entry legend clears it.
+    ax.set_ylim(np.nanmin(worst) - 12, 101)
     ax.legend(loc="lower left", fontsize=8)
     save(fig, "T7_damage_ceiling_contrast")
 
@@ -427,9 +514,98 @@ def t8():
     save(fig, "T8_iterated_vs_fgsm")
 
 
+# ─── T9: single-step attack on the logits against FGSM ───────────────────────
+def t9():
+    """FGSM's objective reads the actor's sigmoid outputs, which the trained
+    policy saturates, so its gradient nearly vanishes. The two logit objectives
+    act on the pre-sigmoid scores instead. Same epsilon, one sign step, same 15
+    paired episodes, GNN variants attacked through their real decision path.
+
+    Left: decisions flipped by each attack and by the random control. Right: the
+    delivery each logit attack removed beyond what FGSM removed, paired on the
+    same episodes (positive = more damage than FGSM).
+    """
+    attacks = [("random", "random control", COL["rand"]),
+               ("packet_loss", "FGSM", COL["grad"]),
+               ("logit_congestion", "logits: push the most congested path up",
+                COL["greedy"]),
+               ("logit_margin", "logits: push the best alternative up", "#8172b3")]
+    rows = []
+    for v in VARIANTS:
+        d = jload(LOGIT, v, "fgsm_probe_results.json")
+        cells = {a: cell(d, "load2_fail0", a, 0.3) for a, _, _ in attacks}
+        if any(c is None for c in cells.values()):
+            continue
+        extra = {}
+        for a in ("logit_congestion", "logit_margin"):
+            base = np.array(cells["packet_loss"]["attacked_pdr_series"])
+            att = np.array(cells[a]["attacked_pdr_series"])
+            diff = base - att          # positive: the logit attack delivered less
+            ci = t975(len(diff)) * float(diff.std(ddof=1)) / math.sqrt(len(diff))
+            extra[a] = (float(diff.mean()), ci)
+        rows.append((v, {a: _flip_pct(c) for a, c in cells.items()}, extra))
+    if not rows:
+        print(f"  T9 skipped (no {LOGIT} run)"); return
+
+    y = np.arange(len(rows))
+    names = [r[0] for r in rows]
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11.6, 5.0), sharey=True,
+                                   gridspec_kw=dict(width_ratios=[1.15, 1]))
+
+    # Left: flips, four bars per variant.
+    h = 0.2
+    for j, (a, label, color) in enumerate(attacks):
+        axL.barh(y + (1.5 - j) * h, [r[1][a] for r in rows], h,
+                 color=color, label=label)
+    axL.set_yticks(y); axL.set_yticklabels(names, fontsize=9)
+    axL.set_xlabel(r"decisions flipped (%), $\epsilon$ = 0.3")
+    if not PAPER:
+        axL.set_title("The logit objectives flip more decisions everywhere")
+
+    # Right: extra delivery lost vs FGSM, with paired 95% CIs. Hollow bars have an
+    # interval that includes zero.
+    h = 0.32
+    for j, (a, label, color) in enumerate(attacks[2:]):
+        yy = y + (0.5 - j) * h
+        means = [r[2][a][0] for r in rows]
+        cis = [r[2][a][1] for r in rows]
+        sig = [abs(m) > c for m, c in zip(means, cis)]
+        axR.barh(yy, means, h, xerr=cis, capsize=2.5,
+                 color=[color if s else "white" for s in sig],
+                 edgecolor=color, linewidth=1.4,
+                 error_kw=dict(ecolor="0.3", lw=1.0))
+    axR.axvline(0.0, color=COL["grad"], lw=1.6)
+    axR.text(0.15, len(rows) - 0.45, "FGSM", color=COL["grad"], fontsize=9, va="center")
+    axR.set_ylim(-0.6, len(rows) - 0.3)
+    axR.set_xlabel("extra delivery lost vs FGSM (pp)")
+    if not PAPER:
+        axR.set_title("…but cost more delivery only on some victims")
+
+    # The result splits by critic: mark the boundary between the two groups.
+    lc = [i for i, v in enumerate(names) if v.startswith("LC")]
+    if lc and lc[0] > 0:
+        cut = lc[0] - 0.5
+        for ax in (axL, axR):
+            ax.axhline(cut, color="0.45", lw=0.9, ls="--")
+        axR.text(0.98, cut + 0.06, "local critic", transform=axR.get_yaxis_transform(),
+                 ha="right", va="bottom", fontsize=8, color="0.35")
+        axR.text(0.98, cut - 0.06, "central critic", transform=axR.get_yaxis_transform(),
+                 ha="right", va="top", fontsize=8, color="0.35")
+
+    # One legend for both panels, below them: every in-axes spot covers a bar.
+    handles, labels = axL.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=9,
+               bbox_to_anchor=(0.5, -0.06), frameon=False)
+    save(fig, "T9_logit_vs_fgsm")
+
+
 if __name__ == "__main__":
+    import sys
+    wanted = set(sys.argv[1:])
     print(f"ROOT={ROOT}  FIG_DIR={FIG_DIR}")
-    for fn in (t1, t2, t3, t3_seeds, t4, t5, t6, t7, t8):
+    for fn in (t1, t2, t3, t3_seeds, t4, t5, t6, t7, t8, t9):
+        if wanted and fn.__name__ not in wanted:
+            continue
         try:
             fn()
         except Exception as e:

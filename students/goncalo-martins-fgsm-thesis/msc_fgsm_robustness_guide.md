@@ -1,5 +1,11 @@
 # MSc Thesis Guide — Adversarial Robustness of MADDPG Routing under FGSM Observation Attacks
 
+> **Superseded (24/09/2026).** Kept as background. For Chapter 8 follow
+> `RESULTS_OUTLINE.md`. Three statements below no longer hold:
+> - the GNN "decision-robustness" of T6: it came from an attack that bypassed the encoder;
+> - the single 21 pp damage ceiling: each victim has its own, 7–21 pp;
+> - FGSM as the strongest myopic attack: its objective is gradient-masked.
+
 *A working guide for the student. It gives the story arc, the concepts to explain,
 the results to report, and how to read each figure. All numbers below are from the
 final 15-episode "tightening" run (paired episodes, 7 variants, failure sweep
