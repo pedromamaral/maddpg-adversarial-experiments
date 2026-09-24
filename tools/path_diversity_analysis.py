@@ -113,6 +113,12 @@ def main():
     flips_by_div = defaultdict(int)       # decision changed
     eff_by_div = defaultdict(int)         # ... and the hop sequence changed too
     seen_by_div = defaultdict(int)
+    worse_by_div = defaultdict(int)       # ... onto a MORE congested path
+    dutil_by_div = defaultdict(list)      # utilisation delta of effective flips
+
+    # Offset of the per-destination K-path bottleneck-utilisation block inside the
+    # observation: max_neighbors bandwidth + 3 queue + n_dest presence + 3 link stats.
+    u0 = engine.max_neighbors + 3 + n_dest + 3
     for t in range(args.warmup + args.steps):
         with torch.no_grad():
             t_states = [states[i] for i in trainable]
@@ -142,23 +148,45 @@ def main():
                     if (c_idx[di] < len(paths) and a_idx[di] < len(paths)
                             and paths[c_idx[di]] != paths[a_idx[di]]):
                         eff_by_div[lvl] += 1
+                        # Did the flip move traffic onto a MORE congested path?
+                        # Utilisations are read from the CLEAN observation, so these
+                        # are the true bottleneck loads the victim faced, not the
+                        # perturbed ones the attack showed it.
+                        ic = u0 + di * k_paths + c_idx[di]
+                        ia = u0 + di * k_paths + a_idx[di]
+                        if max(ic, ia) < len(clean_obs):
+                            du = float(clean_obs[ia] - clean_obs[ic])
+                            dutil_by_div[lvl].append(du)
+                            if du > 0:
+                                worse_by_div[lvl] += 1
         states, _, _ = env.step(actions)
 
     print("\nFGSM decision flips, by genuine path diversity:")
     print(f"  {'diversity':>9}  {'decisions':>10}  {'flips':>8}  {'flip%':>7}  "
-          f"{'effective':>9}  {'eff%offlips':>11}")
+          f"{'effective':>9}  {'eff%':>6}  {'->worse':>8}  {'mean du':>8}")
     rows = []
-    tot_f = tot_e = 0
+    tot_f = tot_e = tot_w = 0
+    all_du = []
     for lvl in sorted(seen_by_div):
         s, f, e = seen_by_div[lvl], flips_by_div[lvl], eff_by_div[lvl]
-        tot_f += f; tot_e += e
+        w, dus = worse_by_div[lvl], dutil_by_div[lvl]
+        tot_f += f; tot_e += e; tot_w += w
+        all_du.extend(dus)
+        mdu = sum(dus) / len(dus) if dus else float('nan')
         print(f"  {lvl:>9}  {s:>10}  {f:>8}  {f/max(1,s)*100:6.2f}%  {e:>9}  "
-              f"{e/max(1,f)*100:10.1f}%")
+              f"{e/max(1,f)*100:5.1f}%  {w/max(1,e)*100:7.1f}%  {mdu:>+8.4f}")
         rows.append({'diversity': lvl, 'decisions': s, 'flips': f, 'effective_flips': e,
-                     'flip_rate': f / max(1, s), 'effective_share': e / max(1, f)})
+                     'flip_rate': f / max(1, s), 'effective_share': e / max(1, f),
+                     'worse_share': w / max(1, e), 'mean_delta_util': mdu})
     print(f"\n  overall: {tot_f} flips, {tot_e} effective "
           f"({tot_e/max(1,tot_f)*100:.1f}%) — the rest land on duplicate path slots "
           f"and route identically.")
+    if all_du:
+        mean_du = sum(all_du) / len(all_du)
+        print(f"  of the effective flips, {tot_w/max(1,tot_e)*100:.1f}% moved traffic onto a "
+              f"MORE congested path;")
+        print(f"  mean utilisation change {mean_du:+.4f} (positive = attack chose a worse "
+              f"path, on the true clean state).")
 
     if args.json_out:
         os.makedirs(os.path.dirname(args.json_out) or '.', exist_ok=True)

@@ -34,6 +34,15 @@ class FGSMAttackFramework:
         # projected gradient descent with per-step size step_alpha (0 → epsilon).
         self.n_steps = 1
         self.step_alpha = 0.0
+        # Faithful GNN forward (opt-in). The victim decides through
+        # actor(GNN(all agents' real observations)[i]), but the evaluation loop
+        # passes a single Agent, so the attack's GNN branch is never reached and the
+        # gradient is taken through actor(raw observation) — a function the GNN
+        # victim never uses. When True and the orchestrator plus the other agents'
+        # observations are supplied, the attack differentiates through exactly the
+        # victim's decision path instead. Off by default so every previously
+        # reported result reproduces bit-for-bit.
+        self.faithful_gnn = False
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.attack_stats: Dict = {
             'clean_rewards': [],
@@ -51,9 +60,15 @@ class FGSMAttackFramework:
         network_engine,
         agent_index: int,
         bandwidth_indices: Optional[List[int]] = None,
+        maddpg=None,
+        context_observations: Optional[List[np.ndarray]] = None,
     ) -> np.ndarray:
         """
         Generate adversarial state using FGSM with proper attack objective.
+
+        maddpg / context_observations are only used when self.faithful_gnn is set:
+        the orchestrator and every agent's clean observation (MADDPG agent order),
+        so the GNN batch can be rebuilt exactly as the victim builds it.
         Args:
             state: Original 1-D state vector.
             agent_network: MADDPG Agent or MADDPG orchestrator.
@@ -101,8 +116,11 @@ class FGSMAttackFramework:
         n_steps = max(1, int(getattr(self, 'n_steps', 1)))
         step_alpha = float(getattr(self, 'step_alpha', 0.0)) or self.epsilon
 
-        def _actor_probs(cur):
-            """Forward the (possibly GNN-encoded) working state through the actor."""
+        def _legacy_encode(cur):
+            """The original encoding. NB: maddpg_ref is only set when the orchestrator
+            is passed, and the evaluation loop passes a single Agent, so in practice
+            this returns cur unchanged — GNN victims are attacked through the actor on
+            the raw observation. Kept as-is so existing results reproduce exactly."""
             current_state = cur
             gnn_proc = getattr(maddpg_ref, 'gnn_processor', None)
             if gnn_proc is not None and getattr(gnn_proc, 'available', False):
@@ -128,9 +146,50 @@ class FGSMAttackFramework:
                     batch_full = batch
                 out = gnn_proc(batch_full, gnn_proc.edge_index)
                 current_state = out[agent_index % n_agents_gnn].unsqueeze(0)
-            return agent.actor(current_state)
+            return current_state
+
+        # Faithful path: rebuild the GNN batch exactly as the victim does at decision
+        # time (MADDPG.choose_action -> GNNProcessor.process_observations): every
+        # agent's REAL observation, zero-feature relay nodes, and only the target
+        # slot replaced by the working state so gradient flows back through it.
+        faithful_gnn = None
+        if self.faithful_gnn and maddpg is not None and context_observations is not None:
+            gp = getattr(maddpg, 'gnn_processor', None)
+            if gp is not None and getattr(gp, 'available', False):
+                faithful_gnn = gp
+                ctx = torch.tensor(
+                    np.stack([np.asarray(o, dtype=np.float32)[:gp.obs_dim]
+                              for o in context_observations]),
+                    dtype=torch.float, device=self.device)
+
+        def _encode(cur):
+            if faithful_gnn is None:
+                return _legacy_encode(cur)
+            slot = agent_index
+            rows = [ctx[j] if j != slot else cur.squeeze(0)[:faithful_gnn.obs_dim]
+                    for j in range(ctx.shape[0])]
+            batch = torch.stack(rows)
+            if faithful_gnn.n_relay_nodes > 0:
+                batch = torch.cat(
+                    [batch, torch.zeros(faithful_gnn.n_relay_nodes, faithful_gnn.obs_dim,
+                                        device=self.device)], dim=0)
+            return faithful_gnn(batch, faithful_gnn.edge_index)[slot].unsqueeze(0)
+
+        def _actor_probs(cur):
+            """Forward the (possibly GNN-encoded) working state through the actor."""
+            return agent.actor(_encode(cur))
+
+        def _actor_logits(cur):
+            """Pre-sigmoid actor outputs. The trained policy is near-deterministic --
+            the chosen output exceeds 0.99 in 82-96% of decisions, where the
+            sigmoid's derivative is below 0.01 -- so gradients taken through the
+            probabilities vanish (gradient masking). Logits carry no saturation."""
+            x = F.relu(agent.actor.fc1(_encode(cur)))
+            x = F.relu(agent.actor.fc2(x))
+            return agent.actor.action_out(x)
 
         clean_util = None  # congestion target, pinned to the clean observation below
+        clean_choice = None  # per-destination decision on the clean observation
 
         def _objective(cur, probs):
             if self.attack_type == 'packet_loss':
@@ -142,6 +201,10 @@ class FGSMAttackFramework:
             elif self.attack_type == 'confusion':
                 return self._confusion_objective(cur, probs, network_engine,
                                                  agent_index, util_override=clean_util)
+            elif self.attack_type in ('logit_congestion', 'logit_margin'):
+                return self._logit_margin_objective(
+                    _actor_logits(cur), clean_choice, clean_util, network_engine,
+                    targeted=(self.attack_type == 'logit_congestion'))
             raise ValueError(f'Unknown attack type: {self.attack_type}')
 
         try:
@@ -163,6 +226,10 @@ class FGSMAttackFramework:
                 with torch.no_grad():
                     clean_util = self._per_action_util(
                         orig, _actor_probs(orig), network_engine)
+                    # The logit objectives push a fixed decision, not a moving one,
+                    # so pin the per-destination choice on the clean observation.
+                    if self.attack_type in ('logit_congestion', 'logit_margin'):
+                        clean_choice = _actor_logits(orig)
                 for _step in range(n_steps):
                     if adv.grad is not None:
                         adv.grad.zero_()
@@ -347,6 +414,56 @@ class FGSMAttackFramework:
         congestion_weights = torch.sigmoid((util - 0.5) * 10.0)
         congestion_loss = torch.sum(probs * congestion_weights)
         return congestion_loss  # gradient ascent maximises congestion-path selection
+
+    def _logit_margin_objective(
+        self,
+        logits: torch.Tensor,
+        clean_logits: Optional[torch.Tensor],
+        clean_util: Optional[torch.Tensor],
+        network_engine,
+        targeted: bool,
+    ) -> torch.Tensor:
+        """Margin objective on the pre-sigmoid logits (Carlini-Wagner style).
+
+        The probability-weighted packet-loss objective differentiates through
+        saturated sigmoids and so has almost no leverage over a confident policy.
+        This one works on the logits directly, where the gradient does not vanish,
+        and it targets the routing decision itself: the per-destination argmax.
+
+        For every destination d with clean decision c_d it ascends
+          targeted   (logit_congestion): z[d, worst_d] - z[d, c_d], where worst_d is
+                     the most congested of d's candidate paths on the clean state,
+                     skipping d when the policy already sits on it;
+          untargeted (logit_margin):     max_{k != c_d} z[d, k] - z[d, c_d].
+        A positive margin means the decision has flipped.
+        """
+        if clean_logits is None:
+            return logits.sum() * 0.0
+        n_dest = int(getattr(network_engine, 'n_destinations', 0) or 0)
+        if n_dest <= 0 or logits.shape[-1] % n_dest:
+            return logits.sum() * 0.0
+        K = logits.shape[-1] // n_dest
+        z = logits.view(n_dest, K)
+        chosen = clean_logits.view(n_dest, K).argmax(dim=1)
+        L = clean_util.shape[-1] if clean_util is not None else 0
+
+        terms = []
+        for d in range(n_dest):
+            c = int(chosen[d])
+            if targeted:
+                if clean_util is None or (d + 1) * K > L:
+                    continue   # no target, or block lost to the 94-dim truncation
+                u = clean_util[0, d * K:(d + 1) * K]
+                w = int(torch.argmax(u))
+                if float(u[w]) <= float(u[c]) + 1e-9:
+                    continue   # already on the most congested path
+                terms.append(z[d, w] - z[d, c])
+            else:
+                others = [k for k in range(K) if k != c]
+                terms.append(z[d, others].max() - z[d, c])
+        if not terms:
+            return logits.sum() * 0.0
+        return torch.stack(terms).sum()
 
     def _reward_minimize_objective(
         self,

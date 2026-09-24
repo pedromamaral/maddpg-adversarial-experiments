@@ -2052,6 +2052,10 @@ class StandaloneExperimentRunner:
         attack_hotspot = attack_eval.get('hotspot') or None
         t_per_ep = self.config['training']['timesteps_per_episode']
         n_eps = int(attack_eval.get('probe_episodes', 8))
+        # Opt-in: attack GNN victims through their real decision path (see
+        # FGSMAttackFramework.faithful_gnn). Off by default, so earlier probes
+        # reproduce exactly.
+        self.attack_framework.faithful_gnn = bool(attack_eval.get('faithful_gnn', False))
 
         vcfg = self.config['variants'][0]
         maddpg, _, _ = self._make_variant(vcfg)
@@ -2129,6 +2133,7 @@ class StandaloneExperimentRunner:
                         f"{(fr * 100 if fr is not None else float('nan')):5.1f}%")
         self.attack_framework.n_steps = 1
         self.attack_framework.step_alpha = 0.0
+        self.attack_framework.faithful_gnn = False
         self._save(out, 'fgsm_probe_results.json')
         logger.info("[PROBE] done")
         return out
@@ -2306,11 +2311,19 @@ class StandaloneExperimentRunner:
                                     block_size=critic_ctx['block_size'],
                                 ))
                             else:
+                                # The orchestrator and every agent's clean observation
+                                # are passed so that, when faithful_gnn is set, a GNN
+                                # victim is attacked through its real decision path.
+                                # Ignored otherwise, keeping earlier results exact.
                                 adv.append(self.attack_framework.generate_adversarial_state(
                                     state=s,
                                     agent_network=maddpg.agents[agent_idx],
                                     network_engine=env.engine,
                                     agent_index=agent_idx,
+                                    maddpg=maddpg,
+                                    context_observations=(
+                                        [states[i] for i in trainable_indices]
+                                        if trainable_indices is not None else None),
                                 ))
                     states = adv
                     if measure_flips and trainable_indices is not None:
