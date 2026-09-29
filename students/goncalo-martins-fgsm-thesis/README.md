@@ -54,8 +54,9 @@ server if you need to re-derive numbers; see the root `README.md` §Attacks.
 ## What you do NOT need
 - No GPU, no docker, and no server access are needed **just to write** — the figures
   and numbers are here. You only need them if you want to regenerate or extend.
-- No new attack runs. The companion paper `paper/paper2_fgsm.tex` is the reference
-  write-up of the same results; align terminology with it.
+- No new attack runs. `RESULTS_OUTLINE.md` is the reference for numbers and claims;
+  the journal draft `paper/paper2_robustness.tex` uses the same terminology but is
+  still being corrected, so where the two disagree the outline wins.
 
 ## Related
 - Root `README.md` — how the whole pipeline works, where weights/results live.

@@ -1,19 +1,20 @@
 # MADDPG Adversarial Routing Experiments
 
 MADDPG routing policies on a real 86-node service-provider (SP) topology, and their
-robustness to observation-space adversarial attacks. The repository backs two papers
-and two ongoing MSc projects:
+robustness to observation-space adversarial attacks. The repository holds the code,
+configs and result-generation tooling behind two papers and two MSc theses:
 
-- **Paper 1** (`paper/paper1_revised.tex`) — architecture comparison: centralised vs.
-  local critic, GNN encoding, against shortest-path / random-spreading / greedy
-  baselines, with a failure-severity sweep and a 3-seed variance check.
-- **Paper 2** (`paper/paper2_fgsm.tex`, and the broader `paper/paper2_robustness.tex`)
-  — do observation attacks (FGSM/PGD, and a learned adversary) actually degrade the
-  policy?
-- **Student 1 — Gonçalo Martins** (`students/goncalo-martins-fgsm-thesis/`) — MSc
-  thesis on the FGSM results that already exist.
-- **Student 2 — Miguel Chen** (`students/miguel-chen-learned-adversary/`) — continues
-  the code with a learned worst-case adversary.
+- **Paper 1** — architecture comparison: centralised vs. local critic, GNN encoding,
+  against shortest-path / random-spreading / greedy baselines, with a failure-severity
+  sweep and a 3-seed variance check. The manuscript lives **outside this repo**; the
+  code, configs and figure scripts that produce its results are here.
+- **Paper 2** (`paper/paper2_robustness.tex`, target IEEE TNSM) — how robust are these
+  policies to observation attacks, from a myopic gradient (FGSM, iterated, logit-margin)
+  to a learned worst-case adversary? Work still to do before submission is tracked in
+  [`paper/PAPER2_ROADMAP.md`](paper/PAPER2_ROADMAP.md).
+- **MSc theses** (handoffs complete): Gonçalo Martins on the FGSM results
+  (`students/goncalo-martins-fgsm-thesis/`) and Miguel Chen on the learned adversary
+  (`students/miguel-chen-learned-adversary/`).
 
 ---
 
@@ -24,24 +25,21 @@ src/
   standalone_experiment_runner.py   # the pipeline: train / evaluate / attack
   maddpg_clean/                     # MADDPG, networks, environment, topology
   attack_framework/
-    improved_fgsm_attack.py         # FGSM/PGD + the random control
-    learned_adversary.py            # SA-MDP learned adversary (student 2 scaffold)
-tools/
-  plot_paper1.py  plot_seed_variance.py   # Paper 1 figures (F1..F12)
-  plot_thesis.py                          # Paper 2 / FGSM-thesis figures (T1..T7)
-  analyze_fgsm.py  topo_invariants.py     # Paper 2 analysis, Paper 1 topology table
-  train_adversary.py                      # learned-adversary trainer (student 2)
-  plot_topology.py  plot_traffic_matrix.py  plot_results.py
-paper/                                # LaTeX + committed figures (in writing)
-students/                             # per-student handoff dirs (see below)
-experiment_config.json                # base config (training, baselines, sweeps)
-reward_fix_full_config.json           # canonical stress-trained config + attack grid
-run_phase.sh check_progress.sh clean_outputs.sh save_weights.sh load_weights.sh
+    improved_fgsm_attack.py         # FGSM/PGD, logit objectives, random control
+    learned_adversary.py            # SA-MDP learned adversary
+tools/                              # analysis and figure scripts (see below)
+configs/                            # one-off experiment configs (seeds, logit, partial compromise)
+paper/                              # Paper 2 LaTeX + roadmap; figures are generated
+students/                           # per-student handoff dirs
+experiment_config.json              # base config (training, baselines, sweeps)
+reward_fix_full_config.json         # canonical stress-trained config + attack grid
+run_phase.sh check_progress.sh clean_outputs.sh save_weights.sh load_weights.sh run_smoke.sh
 Dockerfile requirements.txt pyproject.toml
 ```
 
 **Not in the repo (gitignored, obtained out-of-band):** trained weights and raw
-results under `host_data/`, and container logs under `host_logs/`. See
+results under `host_data/`, container logs under `host_logs/`, and generated figures
+(`*.png`, `*.pdf`, except the committed thesis figures). See
 [Weights & results](#weights--results).
 
 ---
@@ -57,7 +55,8 @@ docker build -t maddpg-exp:latest .      # or docker pull, if you have the image
 
 The image provides torch, numpy, networkx, matplotlib, scipy. The shell scripts wrap
 `docker run` with the right volume mounts; the raw runner is
-`src/standalone_experiment_runner.py`.
+`src/standalone_experiment_runner.py` (phases: `train`, `paper1`, `paper2`, `hotspot`,
+`failure`, `ceiling`, `fgsm_probe`, `all`).
 
 ---
 
@@ -67,13 +66,27 @@ The image provides torch, numpy, networkx, matplotlib, scipy. The shell scripts 
 
 ```text
 host_data/results/
-  reward_fix/          models/<variant>/...   # CANONICAL stress-trained victims
-  reward_fix/          <phase JSONs>, figures/
-  fgsm_tighten/        <variant>/fgsm_probe_results.json   # Paper 2 attack results
-  seeds/               s1042/ s2042/ ...       # Paper 1 multi-seed
+  reward_fix/                <phase JSONs>, models/<variant>/   # CANONICAL stress-trained victims
+  ceil2x/<variant>/          damage_ceiling.json                # per-victim damage ceilings, 2x hotspot
+  seeds/s1042 s2042/         models/, ceil_<variant>/           # extra training seeds (non-GNN)
+  fgsm_tighten/<variant>/    fgsm_probe_results.json            # 15-episode paired FGSM probe
+  fgsm_full/<variant>/       fgsm_probe_results.json            # earlier epsilon/load sweep
+  logit_attack/<variant>/    fgsm_probe_results.json            # GNN-faithful FGSM + logit objectives
+  seed_probe/s1042 s2042/    <variant>/...                      # FGSM probe on the seed victims
+  partial_compromise_multi/  <variant>/...                      # 1/4/7/14 agents, 4 draws each
+  pgd_diagnostic/            <variant>.json                     # iterated-attack tuning (T8)
+  mchen/                     learned_adv_parity/, ...           # learned-adversary evaluations
 ```
 
-The canonical trained victims live in `host_data/results/reward_fix/models/<variant>/`.
+Two traps, both of which have produced wrong numbers before:
+- **GNN victims.** `fgsm_tighten` took the attack gradient through the actor alone,
+  bypassing the encoder the victim decides through. Use `logit_attack` (run with
+  `faithful_gnn: true`) for any GNN FGSM number.
+- **Empty model folders.** A run whose `models/` holds no checkpoints evaluates an
+  untrained network. The rule rows of `reward_fix/sweep_baselines/` are valid, its
+  `policy` rows are not; take per-load policy PDR from
+  `reward_fix/phase2_hotspot_sweep_results.json`.
+
 Move weights between machines with:
 
 ```bash
@@ -85,11 +98,11 @@ After pulling weights you can run evaluation and attacks **without retraining**.
 
 ---
 
-## Paper 1 — training & evaluation
+## Training & clean evaluation (Paper 1)
 
 `run_phase.sh <phase> [comma,separated,variants]` wraps the runner; monitor with
-`check_progress.sh <container> follow`. Phases: `train`, `paper1` (clean eval),
-`paper2` (FGSM eval), `hotspot`, `failure`, `all`.
+`check_progress.sh <container> follow`. Select a config with `CONFIG_PATH` (repo-relative,
+e.g. `CONFIG_PATH=configs/gnn_seed_1042_config.json`) and an output dir with `RESULTS_DIR`.
 
 **Train** (writes checkpoints to `host_data/results/<run>/models/<variant>/`):
 ```bash
@@ -104,77 +117,80 @@ exist). Best-validation checkpoints are used for all downstream evaluation.
 ./run_phase.sh paper1
 ```
 
-**Figures** (from the result JSON, rendered in the Docker image):
+**Figures:**
 ```bash
 python tools/plot_paper1.py            # F1..F11
 python tools/plot_seed_variance.py     # F12 (3-seed variance)
 python tools/topo_invariants.py        # SP-class representativeness table
 ```
-Paper 1 figures are written to `host_data/results/reward_fix/figures/`.
 
 ---
 
-## Attacks
+## Attacks (Paper 2)
 
-### FGSM / PGD — with weights already present (Paper 2, Student 1)
-No retraining. Point the runner at a config whose variants have trained checkpoints
-(the canonical `reward_fix_full_config.json`), then:
+### Gradient attacks: FGSM, iterated, logit objectives
+No retraining. Point the runner at a config whose variants have trained checkpoints:
 ```bash
-# damage-ceiling + random-control + action-flip probe across the load/failure grid
 python src/standalone_experiment_runner.py --config reward_fix_full_config.json \
     --phase fgsm_probe --results-dir data/results/fgsm_tighten/CC-Simple
 ```
 The runner resolves victim weights from `<results-dir>/models/<variant>/`, so symlink
-the canonical models in first (the FGSM run scripts do this):
-`ln -sfn ../../reward_fix/models <results-dir>/models`.
+the canonical models in first: `ln -sfn ../../reward_fix/models <results-dir>/models`.
+The probe refuses to run if it finds no trained weights.
 
-Analyse and plot:
+The `attack_eval` block of the config selects the grid. Keys that matter:
+- `faithful_gnn: true` — differentiate GNN victims through their real decision path
+  (encoder included, other agents' clean observations as context). Always set it.
+- attack types `packet_loss` (FGSM objective), `logit_congestion` and `logit_margin`
+  (single step on the pre-sigmoid logits; the FGSM objective is gradient-masked),
+  `random` (budget-matched control).
+- `configs/` holds the configs of each reported run: `logit_attack_config.json`,
+  `seed_probe_config.json`, `partial_compromise_config.json`, `gnn_seed_*_config.json`.
+
+Analysis (stdlib unless noted):
 ```bash
-python tools/analyze_fgsm.py fgsm_tighten   # stdlib text summary of the probe JSON
-python tools/plot_thesis.py                 # T1..T7 -> students/goncalo-martins-fgsm-thesis/figures/
+python tools/analyze_fgsm.py fgsm_tighten        # probe summary
+python tools/analyze_logit_attack.py             # FGSM vs logit, GNN faithful vs original
+python tools/analyze_seed_variance.py            # adversarial gap across training seeds
+python tools/analyze_partial_compromise.py       # damage vs number of compromised agents
+python tools/path_diversity_analysis.py          # vacuous flips from padded K-paths (torch)
+python tools/gradient_signal_analysis.py         # why flips don't reach worse paths (torch)
+python tools/pgd_diagnostic.py                   # iterated-attack budget spend (torch)
+python tools/recompute_learned_vs_fgsm.py        # learned-adversary vs FGSM tables
 ```
 
-### Learned adversary — with weights already present (Student 2)
-The scaffold trains a SA-MDP adversary against a **frozen** victim and scores it with
-the same metrics as FGSM. See `students/miguel-chen-learned-adversary/README.md`.
+Figures (T1–T9). The thesis copies go to the student dir; the paper copies drop the
+in-figure titles:
 ```bash
-# train
+python tools/plot_thesis.py                                  # -> students/goncalo-martins-fgsm-thesis/figures/
+PAPER_MODE=1 FIG_DIR=paper/figures python tools/plot_thesis.py   # -> paper/figures/
+```
+
+### Learned adversary
+Trains an SA-MDP adversary against a **frozen** victim and scores it with the same
+paired protocol as FGSM. See `students/miguel-chen-learned-adversary/README.md`.
+```bash
 python tools/train_adversary.py --config reward_fix_full_config.json \
     --variant CC-Simple --episodes 300 --load 2.0 --epsilon 0.30 \
     --victim-models host_data/results/reward_fix/models \
     --out host_data/results/learned_adv/CC-Simple
-# score the trained adversary (paired clean/attacked PDR, drop, flip-rate)
 python tools/train_adversary.py --config reward_fix_full_config.json \
     --variant CC-Simple --eval-only \
     --adv-ckpt host_data/results/learned_adv/CC-Simple/adversary.pt
 ```
-`--victim-models` is symlinked in so the loader finds the weights; the driver **aborts
-with a clear message** if the weights are missing (rather than silently training against
-a random-init victim).
+The driver aborts if the victim weights are missing rather than training against a
+random-init victim.
 
 ---
 
 ## Configuration
 
-Two configs, both driving `src/standalone_experiment_runner.py`:
 - `experiment_config.json` — base training/evaluation (epochs, traffic, reward,
   variants, sweeps).
 - `reward_fix_full_config.json` — the **canonical** stress-trained setup (2× hotspot,
-  corrected reward weights) plus the `attack_eval` grid used for the FGSM/attack work.
-
-Select a subset of variants with the second arg to `run_phase.sh`, or `--variants` on
-the runner directly.
-
----
-
-## Students (ongoing work)
-
-- **`students/goncalo-martins-fgsm-thesis/`** — MSc thesis on the FGSM results.
-  Contains the narrative guide and the finished T1–T7 figures (committed). No
-  experiments needed to write.
-- **`students/miguel-chen-learned-adversary/`** — the learned-adversary continuation:
-  the full project brief, the two research extensions (coordinated + timed), verified
-  run commands, and milestones.
+  `mean_util_weight=0.1`) plus the `attack_eval` grid.
+- `configs/*.json` — full copies of the canonical config with the overrides for one
+  reported run each (extra seeds, logit attack, partial compromise).
 
 ---
 
