@@ -1,0 +1,16 @@
+{
+ "_comment": "Stage A1 (29 Sep 2026): corrected threat model (only per-path utilisation perturbed, clamped to [0,1]), GNN attacked through the encoder. Budget sweep of both logit objectives with the matched random control, plus FGSM at every budget for comparison with the legacy runs. Nominal cell: 2x hotspot, no failures, 15 paired episodes. Overrides attack_eval of reward_fix_full_config.json (tools/run_probe_grid.sh).",
+ "attack_eval": {
+  "perturb_features": "path_util",
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [{"load": 2.0, "n_failures": 0}],
+  "probe_attacks": [
+   ["logit_margin", 0.1, 1], ["logit_congestion", 0.1, 1], ["random", 0.1, 1], ["packet_loss", 0.1, 1],
+   ["logit_margin", 0.2, 1], ["logit_congestion", 0.2, 1], ["random", 0.2, 1], ["packet_loss", 0.2, 1],
+   ["logit_margin", 0.3, 1], ["logit_congestion", 0.3, 1], ["random", 0.3, 1], ["packet_loss", 0.3, 1],
+   ["logit_margin", 0.5, 1], ["logit_congestion", 0.5, 1], ["random", 0.5, 1], ["packet_loss", 0.5, 1],
+   ["logit_margin", 1.0, 1], ["logit_congestion", 1.0, 1], ["random", 1.0, 1], ["packet_loss", 1.0, 1]
+  ]
+ }
+}

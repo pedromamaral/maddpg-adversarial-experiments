@@ -17,7 +17,9 @@ claim below comes from `students/goncalo-martins-fgsm-thesis/RESULTS_OUTLINE.md`
 decisions yet takes at most 2.8 of ~21 pp; a learned adversary does no better, so
 K-path redundancy is a structural defence (H1).
 
-**New (what the evidence supports):**
+**New (what the evidence supports):** — *every attack number below was measured under
+the legacy threat model (all 94 features perturbed; see §2) and will be replaced by the
+`path_util` re-runs. The structure of the argument should survive; the numbers will not.*
 
 1. Observation attacks change many decisions and a minority of outcomes. Measured
    against each victim's own damage ceiling (7.3–21.4 pp), FGSM extracts 0–30 %, the
@@ -40,7 +42,35 @@ extracted a majority of the available damage.
 
 ---
 
-## 2. Experiments still needed
+## 2. Experiments
+
+### Agreed plan (29 Sep 2026)
+
+**Threat-model fix — found 29 Sep, everything else depends on it.** The attack
+perturbed all 94 observation features by ±ε and clamped only the first four to [0,1]:
+it also moved the timestep, the queue state and the one-hot destination flags, which no
+compromised telemetry channel can reach, and left most features free to leave their
+physical range. The paper describes a utilisation-only attacker. Commit 004c74e adds
+`attack_eval.perturb_features` (`path_util` = the 61 per-path utilisations, slots 33–93;
+`telemetry` = every link-derived slot) and verifies that the legacy path is bit-identical.
+Every reported attack number must be re-measured under `path_util`; the legacy numbers
+become the comparison that shows how much of the old damage came from unreachable features.
+
+| Stage | Run | Status |
+|---|---|---|
+| A1 | `threat_util`: budget sweep ε ∈ {0.1, 0.2, 0.3, 0.5, 1.0} × {logit_margin, logit_congestion, FGSM, random}, 7 canonical victims, nominal cell (`configs/probe_threat_util_sweep.json`) | running since 29 Sep 18:41 UTC, ~12 h |
+| A2 | `threat_util_iter`: MI-FGSM (n=20, α=ε/8, μ=1) on both logit objectives, ε=0.3 (E3) | queued after A1 |
+| B | Replication under `path_util`: 2 extra seeds × 7 variants (GNN seeds are trained) (E1, E2); logit vs random under failures n=0,2,4 (E4); partial compromise re-run | after A1 is checked |
+| C | Learned adversary, re-implemented as PA-AD (director over target paths + logit-margin actor); nominal, full compromise, 4 non-GNN + CC-Duelling-GNN, 2 seeds | after A1 |
+| D (stretch) | Link-level telemetry compromise (consistent across agents) + cross-agent consistency defence | after C |
+
+Not planned: a second topology (keep for revision: 2 variants on one contrasting
+topology, if a reviewer asks), certified bounds (vacuous at ε=0.3), adversarial training.
+
+Runs go through `tools/run_probe_grid.sh RUN configs/probe_*.json [MODELS] [VARIANTS]`
+on the server, from the repo root.
+
+### Original gap list
 
 In priority order. E1–E4 close gaps a reviewer will find; E5–E6 tighten numbers.
 
@@ -66,6 +96,9 @@ it goes in future work.
       Add the masking finding. Learned adversary is a result, not a scaffold.
 - [ ] **Taxonomy table.** All rows completed; add logit (1-step) and iterated-logit rows;
       add partial compromise on the scope axis.
+- [ ] **Threat model.** State exactly which features the attacker reaches (the 61 per-path
+      utilisations, clamped to [0,1]) and why local switch state is out of reach; add the
+      legacy all-feature attack as a contrast if the difference is large.
 - [ ] **Method.** Per-victim ceiling table; t-intervals (t₀.₉₇₅,₁₄ = 2.145); white-box
       GNN attack needs the encoder and every agent's clean observation.
 - [ ] **§iterated → rewrite:** iterating doesn't help (T8); new subsection on gradient

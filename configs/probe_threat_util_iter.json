@@ -1,0 +1,14 @@
+{
+ "_comment": "Stage A2 (29 Sep 2026): iterate the unmasked (logit) objectives with the strongest iterated configuration from pgd_diagnostic (MI-FGSM, n=20, alpha=eps/8, mu=1), same threat model and cell as probe_threat_util_sweep.json. Answers whether iterating the logit objective beats the single step.",
+ "attack_eval": {
+  "perturb_features": "path_util",
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [{"load": 2.0, "n_failures": 0}],
+  "pgd_momentum": 1.0,
+  "pgd_alpha_frac": 0.125,
+  "probe_attacks": [
+   ["logit_margin", 0.3, 20], ["logit_congestion", 0.3, 20]
+  ]
+ }
+}
