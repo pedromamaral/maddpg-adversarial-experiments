@@ -34,6 +34,15 @@ class FGSMAttackFramework:
         # projected gradient descent with per-step size step_alpha (0 → epsilon).
         self.n_steps = 1
         self.step_alpha = 0.0
+        # MI-FGSM momentum for n_steps>1 (0 → plain PGD). Accumulates the
+        # L1-normalised gradient so successive sign steps stop cancelling.
+        self.momentum = 0.0
+        # Threat-model feature mask (opt-in). None keeps the original behaviour:
+        # every observation feature is perturbed and only the first four are
+        # clamped to [0,1], so the timestep, queue state and destination flags move
+        # too, which no compromised telemetry channel can do. When set, only these
+        # indices are perturbed, and they are clamped to [0,1].
+        self.perturb_indices: Optional[List[int]] = None
         # Faithful GNN forward (opt-in). The victim decides through
         # actor(GNN(all agents' real observations)[i]), but the evaluation loop
         # passes a single Agent, so the attack's GNN branch is never reached and the
@@ -84,9 +93,17 @@ class FGSMAttackFramework:
         # perturbation direction matter?" from "does jostling an off-optimal
         # policy help?". Uses numpy RNG only (traffic is driven by Python's
         # random module), so clean/attacked runs stay paired on the same traffic.
+        if self.perturb_indices is not None and bandwidth_indices is None:
+            bandwidth_indices = self.perturb_indices
         if self.attack_type == 'random':
             adv = np.asarray(state, dtype=np.float32).copy()
             signs = np.where(np.random.random(adv.shape) < 0.5, -1.0, 1.0).astype(np.float32)
+            if self.perturb_indices is not None:
+                # Draw the full sign vector first so the RNG stream matches the
+                # unmasked control, then zero the features the attacker cannot reach.
+                keep = np.zeros_like(signs)
+                keep[self.perturb_indices] = 1.0
+                signs = signs * keep
             adv = adv + self.epsilon * signs
             if bandwidth_indices is not None:
                 adv[bandwidth_indices] = np.clip(adv[bandwidth_indices], 0.0, 1.0)
@@ -230,6 +247,12 @@ class FGSMAttackFramework:
                     # so pin the per-destination choice on the clean observation.
                     if self.attack_type in ('logit_congestion', 'logit_margin'):
                         clean_choice = _actor_logits(orig)
+                mask = None
+                if self.perturb_indices is not None:
+                    mask = torch.zeros_like(orig)
+                    mask[:, self.perturb_indices] = 1.0
+                momentum = float(getattr(self, 'momentum', 0.0))
+                grad_accum = torch.zeros_like(orig)
                 for _step in range(n_steps):
                     if adv.grad is not None:
                         adv.grad.zero_()
@@ -239,7 +262,12 @@ class FGSMAttackFramework:
                     if adv.grad is None:
                         raise RuntimeError("Gradients not computed. Gradient flow may be broken.")
                     with torch.no_grad():
-                        adv = adv + step_alpha * torch.sign(adv.grad.data)
+                        g = adv.grad.data if mask is None else adv.grad.data * mask
+                        if momentum > 0.0:
+                            grad_accum = momentum * grad_accum + g / (g.abs().sum() + 1e-12)
+                            g = grad_accum
+                        # sign(0) = 0, so masked-out features never move
+                        adv = adv + step_alpha * torch.sign(g)
                         # project the accumulated perturbation back into the L-inf ball
                         adv = orig + torch.clamp(adv - orig, -self.epsilon, self.epsilon)
                         adv = self._apply_domain_constraints(adv, bandwidth_indices)
