@@ -27,7 +27,7 @@ Guia para escreveres o capítulo de resultados. Cada secção tem: **a figura**,
 > - Regeneradas: T2, T3, T3b, T4 e T7.
 > - Sem alterações: T1, T5 e T8.
 >
-> Faz `git pull`.
+> podes fazer `git pull` do meu repositório está na directoria students.
 >
 > **Intervalos de confiança:** passam a usar a distribuição *t* de Student, que é a correta
 > para 15 episódios emparelhados (t₀.₉₇₅,₁₄ = 2.145 em vez de 1.96). Ficam ~9 % mais largos.
