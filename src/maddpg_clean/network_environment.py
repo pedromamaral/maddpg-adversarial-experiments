@@ -668,6 +668,19 @@ class NetworkEngine:
         """
         return self.max_neighbors + self.n_destinations + 7 - K_PATHS + K_PATHS * self.n_destinations
 
+    @property
+    def path_util_slots(self) -> List[int]:
+        """Observation slots an observation attacker may perturb (the threat model).
+
+        The attacker controls the telemetry the agent reads for path selection: the
+        per-path bottleneck utilisations of get_state(), which follow the adjacent-
+        link statistics and run to state_dims (61 slots on the SP topology; the
+        tail is truncated, see state_dims). The queue state, timestep and
+        destination flags are local to the switch and out of reach.
+        """
+        start = self.max_neighbors + 3 + self.n_destinations + 3
+        return list(range(start, self.state_dims))
+
     def get_state(self, host: str) -> np.ndarray:
         """
         Observation for one agent.

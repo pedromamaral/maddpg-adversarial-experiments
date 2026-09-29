@@ -138,14 +138,25 @@ The runner resolves victim weights from `<results-dir>/models/<variant>/`, so sy
 the canonical models in first: `ln -sfn ../../reward_fix/models <results-dir>/models`.
 The probe refuses to run if it finds no trained weights.
 
+**Threat model.** Every attacker perturbs only the per-path bottleneck utilisations
+the agent reads (`NetworkEngine.path_util_slots`, 61 of 94 observation slots), within
+an L∞ ball of radius ε, clamped to [0,1]; queue state, timestep and destination flags
+are local to the switch and never move. Results produced before 29 Sep 2026
+(`fgsm_tighten`, `logit_attack`, `seed_probe`, `partial_compromise*`, `mchen`) used an
+earlier attacker that perturbed all 94 slots and are superseded.
+`tools/threat_model_check.py` verifies the invariants on real observations.
+
 The `attack_eval` block of the config selects the grid. Keys that matter:
 - `faithful_gnn: true` — differentiate GNN victims through their real decision path
   (encoder included, other agents' clean observations as context). Always set it.
 - attack types `packet_loss` (FGSM objective), `logit_congestion` and `logit_margin`
   (single step on the pre-sigmoid logits; the FGSM objective is gradient-masked),
   `random` (budget-matched control).
-- `configs/` holds the configs of each reported run: `logit_attack_config.json`,
-  `seed_probe_config.json`, `partial_compromise_config.json`, `gnn_seed_*_config.json`.
+- probe entries are `[type, epsilon, n_steps(, fraction_of_agents)]`; for n_steps > 1,
+  `pgd_momentum` (MI-FGSM) and `pgd_alpha_frac` (step = fraction of ε) set the iteration.
+- `configs/probe_*.json` hold `attack_eval` overrides for `tools/run_probe_grid.sh`,
+  which runs the probe for several victims in parallel on the server:
+  `tools/run_probe_grid.sh threat_util configs/probe_threat_util_sweep.json`.
 
 Analysis (stdlib unless noted):
 ```bash

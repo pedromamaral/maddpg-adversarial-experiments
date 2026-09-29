@@ -126,11 +126,14 @@ def instrumented_pgd(framework, maddpg, agent, engine, state, agent_index, epsil
     device = framework.device
     orig_np = np.asarray(state, dtype=np.float32)
     orig = torch.tensor(orig_np, device=device).unsqueeze(0)
+    slots = engine.path_util_slots  # the threat model: only these slots move
+    mask = torch.zeros_like(orig)
+    mask[:, slots] = 1.0
     start = orig.clone()
     if random_start:
         # Standard PGD random restart: begin at a uniform point in the eps-ball.
-        start = start + torch.empty_like(start).uniform_(-epsilon, epsilon)
-        start = framework._apply_domain_constraints(start, None)
+        start = start + torch.empty_like(start).uniform_(-epsilon, epsilon) * mask
+        start = framework._apply_domain_constraints(start, slots)
     adv = start.clone().requires_grad_(True)
     grad_accum = torch.zeros_like(orig)
 
@@ -167,7 +170,7 @@ def instrumented_pgd(framework, maddpg, agent, engine, state, agent_index, epsil
                 objectives.append(float(loss.detach()))
                 grad_norms.append(float(adv.grad.data.norm()))
                 with torch.no_grad():
-                    g = adv.grad.data
+                    g = adv.grad.data * mask
                     if momentum > 0.0:
                         # MI-FGSM: accumulate the L1-normalised gradient so a sign
                         # that oscillates between steps cancels in the accumulator
@@ -176,7 +179,7 @@ def instrumented_pgd(framework, maddpg, agent, engine, state, agent_index, epsil
                         g = grad_accum
                     adv = adv + step_alpha * torch.sign(g)
                     adv = orig + torch.clamp(adv - orig, -epsilon, epsilon)
-                    adv = framework._apply_domain_constraints(adv, None)
+                    adv = framework._apply_domain_constraints(adv, slots)
                 adv = adv.detach().requires_grad_(True)
             # Final objective after the last update (not counted as a step).
             with torch.no_grad():
@@ -185,7 +188,8 @@ def instrumented_pgd(framework, maddpg, agent, engine, state, agent_index, epsil
         if was_training:
             agent.actor.train()
 
-    delta = (adv.detach() - orig).squeeze(0).cpu().numpy()
+    # Spend is measured over the slots the attacker can reach.
+    delta = (adv.detach() - orig).squeeze(0).cpu().numpy()[slots]
     return {
         'adv': adv.detach().squeeze(0).cpu().numpy(),
         'obj_start': objectives[0] if objectives else float('nan'),

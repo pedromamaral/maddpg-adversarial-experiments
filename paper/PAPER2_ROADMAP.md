@@ -50,11 +50,13 @@ extracted a majority of the available damage.
 perturbed all 94 observation features by ±ε and clamped only the first four to [0,1]:
 it also moved the timestep, the queue state and the one-hot destination flags, which no
 compromised telemetry channel can reach, and left most features free to leave their
-physical range. The paper describes a utilisation-only attacker. Commit 004c74e adds
-`attack_eval.perturb_features` (`path_util` = the 61 per-path utilisations, slots 33–93;
-`telemetry` = every link-derived slot) and verifies that the legacy path is bit-identical.
-Every reported attack number must be re-measured under `path_util`; the legacy numbers
-become the comparison that shows how much of the old damage came from unreachable features.
+physical range. The paper describes a utilisation-only attacker, and that is now the
+only threat model in the code: every attacker perturbs just the 61 per-path utilisations
+(`NetworkEngine.path_util_slots`, slots 33–93), clamped to [0,1]. The all-feature
+attacker was removed rather than kept as an option. Every reported attack number must
+be re-measured; the legacy numbers (fgsm_tighten, logit_attack, seed_probe,
+partial_compromise*, mchen) can serve as a contrast showing how much of the old damage
+came from unreachable features.
 
 | Stage | Run | Status |
 |---|---|---|

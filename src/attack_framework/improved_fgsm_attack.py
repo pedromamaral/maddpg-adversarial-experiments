@@ -37,12 +37,6 @@ class FGSMAttackFramework:
         # MI-FGSM momentum for n_steps>1 (0 → plain PGD). Accumulates the
         # L1-normalised gradient so successive sign steps stop cancelling.
         self.momentum = 0.0
-        # Threat-model feature mask (opt-in). None keeps the original behaviour:
-        # every observation feature is perturbed and only the first four are
-        # clamped to [0,1], so the timestep, queue state and destination flags move
-        # too, which no compromised telemetry channel can do. When set, only these
-        # indices are perturbed, and they are clamped to [0,1].
-        self.perturb_indices: Optional[List[int]] = None
         # Faithful GNN forward (opt-in). The victim decides through
         # actor(GNN(all agents' real observations)[i]), but the evaluation loop
         # passes a single Agent, so the attack's GNN branch is never reached and the
@@ -68,12 +62,14 @@ class FGSMAttackFramework:
         agent_network,
         network_engine,
         agent_index: int,
-        bandwidth_indices: Optional[List[int]] = None,
         maddpg=None,
         context_observations: Optional[List[np.ndarray]] = None,
     ) -> np.ndarray:
         """
         Generate adversarial state using FGSM with proper attack objective.
+
+        Only network_engine.path_util_slots are perturbed (the threat model), and
+        they are kept in [0, 1].
 
         maddpg / context_observations are only used when self.faithful_gnn is set:
         the orchestrator and every agent's clean observation (MADDPG agent order),
@@ -83,33 +79,20 @@ class FGSMAttackFramework:
             agent_network: MADDPG Agent or MADDPG orchestrator.
             network_engine: Network environment engine.
             agent_index: Index of the target agent.
-            bandwidth_indices: State indices that represent bandwidth (clamped to [0,1]).
         Returns:
             Perturbed state as a 1-D numpy array.
         """
+        slots = network_engine.path_util_slots
         # Random-noise control: budget-matched L-inf perturbation with a RANDOM
         # sign per feature and NO gradient information. Same epsilon and same
         # domain clamping as the gradient attacks, so any effect isolates "does
         # perturbation direction matter?" from "does jostling an off-optimal
         # policy help?". Uses numpy RNG only (traffic is driven by Python's
         # random module), so clean/attacked runs stay paired on the same traffic.
-        if self.perturb_indices is not None and bandwidth_indices is None:
-            bandwidth_indices = self.perturb_indices
         if self.attack_type == 'random':
             adv = np.asarray(state, dtype=np.float32).copy()
             signs = np.where(np.random.random(adv.shape) < 0.5, -1.0, 1.0).astype(np.float32)
-            if self.perturb_indices is not None:
-                # Draw the full sign vector first so the RNG stream matches the
-                # unmasked control, then zero the features the attacker cannot reach.
-                keep = np.zeros_like(signs)
-                keep[self.perturb_indices] = 1.0
-                signs = signs * keep
-            adv = adv + self.epsilon * signs
-            if bandwidth_indices is not None:
-                adv[bandwidth_indices] = np.clip(adv[bandwidth_indices], 0.0, 1.0)
-            else:
-                k = min(4, adv.shape[0])
-                adv[:k] = np.clip(adv[:k], 0.0, 1.0)
+            adv[slots] = np.clip(adv[slots] + self.epsilon * signs[slots], 0.0, 1.0)
             return adv
 
         # Resolve specific agent if the MADDPG orchestrator was passed
@@ -238,8 +221,7 @@ class FGSMAttackFramework:
                 # features instead of changing the policy's decisions, and would make
                 # the objective non-stationary across PGD iterations (measured: the
                 # loss DEcreases over steps, and the attack spends ~half its epsilon
-                # budget). Single-step FGSM is unaffected — at step 0 adv == orig — so
-                # every previously reported FGSM result reproduces exactly.
+                # budget). Single-step FGSM is unaffected: at step 0 adv == orig.
                 with torch.no_grad():
                     clean_util = self._per_action_util(
                         orig, _actor_probs(orig), network_engine)
@@ -247,10 +229,8 @@ class FGSMAttackFramework:
                     # so pin the per-destination choice on the clean observation.
                     if self.attack_type in ('logit_congestion', 'logit_margin'):
                         clean_choice = _actor_logits(orig)
-                mask = None
-                if self.perturb_indices is not None:
-                    mask = torch.zeros_like(orig)
-                    mask[:, self.perturb_indices] = 1.0
+                mask = torch.zeros_like(orig)
+                mask[:, slots] = 1.0
                 momentum = float(getattr(self, 'momentum', 0.0))
                 grad_accum = torch.zeros_like(orig)
                 for _step in range(n_steps):
@@ -262,15 +242,15 @@ class FGSMAttackFramework:
                     if adv.grad is None:
                         raise RuntimeError("Gradients not computed. Gradient flow may be broken.")
                     with torch.no_grad():
-                        g = adv.grad.data if mask is None else adv.grad.data * mask
+                        g = adv.grad.data * mask
                         if momentum > 0.0:
                             grad_accum = momentum * grad_accum + g / (g.abs().sum() + 1e-12)
                             g = grad_accum
-                        # sign(0) = 0, so masked-out features never move
+                        # sign(0) = 0, so slots outside the threat model never move
                         adv = adv + step_alpha * torch.sign(g)
                         # project the accumulated perturbation back into the L-inf ball
                         adv = orig + torch.clamp(adv - orig, -self.epsilon, self.epsilon)
-                        adv = self._apply_domain_constraints(adv, bandwidth_indices)
+                        adv = self._apply_domain_constraints(adv, slots)
                     adv = adv.detach().requires_grad_(True)
                 return adv.detach().cpu().numpy()[0]
 
@@ -310,10 +290,11 @@ class FGSMAttackFramework:
         central_state: np.ndarray,
         clean_joint_onehot: np.ndarray,
         block_size: int,
-        bandwidth_indices: Optional[List[int]] = None,
+        slots: List[int],
     ) -> np.ndarray:
         """Critic-grounded FGSM: perturb agent i's observation to minimise the
-        agent's own central critic value Q(s, a).
+        agent's own central critic value Q(s, a). Only ``slots`` (the engine's
+        path_util_slots) are perturbed.
 
         The true central state ``s`` and the other agents' (block-onehot) actions
         are held fixed; only agent i's action a_i = π_i(o_i+δ) — projected with a
@@ -353,8 +334,10 @@ class FGSMAttackFramework:
                 if s.grad is None:
                     raise RuntimeError("Critic-grounded attack produced no gradient.")
 
-                perturbation = self.epsilon * torch.sign(s.grad.data)
-                adv = self._apply_domain_constraints(s + perturbation, bandwidth_indices)
+                mask = torch.zeros_like(s)
+                mask[:, slots] = 1.0
+                perturbation = self.epsilon * torch.sign(s.grad.data * mask)
+                adv = self._apply_domain_constraints(s + perturbation, slots)
                 return adv.detach().cpu().numpy()[0]
         except Exception as e:
             logger.error(f'Critic-grounded FGSM failed for agent {agent_index}: {str(e)}')
@@ -550,19 +533,11 @@ class FGSMAttackFramework:
     def _apply_domain_constraints(
         self,
         adversarial_state: torch.Tensor,
-        bandwidth_indices: Optional[List[int]] = None,
+        slots: List[int],
     ) -> torch.Tensor:
-        """Clamp bandwidth features to valid [0, 1] range."""
+        """Clamp the perturbed utilisation slots to their valid [0, 1] range."""
         constrained = adversarial_state.clone()
-        if bandwidth_indices is not None:
-            constrained[:, bandwidth_indices] = torch.clamp(
-                constrained[:, bandwidth_indices], 0.0, 1.0
-            )
-        else:
-            bw_size = min(4, adversarial_state.shape[1])
-            constrained[:, :bw_size] = torch.clamp(
-                constrained[:, :bw_size], 0.0, 1.0
-            )
+        constrained[:, slots] = torch.clamp(constrained[:, slots], 0.0, 1.0)
         return constrained
 
     # ------------------------------------------------------------------

@@ -2065,20 +2065,8 @@ class StandaloneExperimentRunner:
         maddpg, _, _ = self._make_variant(vcfg)
         self._load_variant_checkpoint(maddpg, vcfg['name'])
         env = self._make_attack_env(attack_hotspot)
-
-        # Threat-model feature mask (opt-in; 'all' reproduces earlier probes).
-        perturb_features = attack_eval.get('perturb_features', 'all')
-        groups = self._observation_feature_groups(env.engine)
-        if perturb_features == 'all':
-            self.attack_framework.perturb_indices = None
-        elif perturb_features in groups:
-            self.attack_framework.perturb_indices = groups[perturb_features]
-        else:
-            raise ValueError(f"perturb_features must be 'all' or one of {sorted(groups)}; "
-                             f"got {perturb_features!r}")
-        logger.info(f"[PROBE] perturb_features={perturb_features} "
-                    f"({len(self.attack_framework.perturb_indices or [])} of "
-                    f"{env.engine.state_dims} features; 0 = all, first 4 clamped)")
+        logger.info(f"[PROBE] attacker reaches {len(env.engine.path_util_slots)} of "
+                    f"{env.engine.state_dims} observation slots (per-path utilisation)")
 
         # Attack grid: (attack_type, epsilon, n_steps). Default = budget sweep.
         default_attacks = [
@@ -2141,7 +2129,6 @@ class StandaloneExperimentRunner:
                     out[key] = {'condition': cond_key, 'load': load, 'n_failures': nf,
                                 'attack_type': atype, 'epsilon': eps, 'n_steps': nsteps,
                                 'attack_fraction': frac, 'compromise_seed': sseed,
-                                'perturb_features': perturb_features,
                                 'step_alpha': self.attack_framework.step_alpha,
                                 'momentum': self.attack_framework.momentum if nsteps > 1 else 0.0,
                                 'clean_pdr': cp, 'attacked_pdr': ap, 'drop_pp': cp - ap,
@@ -2160,34 +2147,10 @@ class StandaloneExperimentRunner:
         self.attack_framework.n_steps = 1
         self.attack_framework.step_alpha = 0.0
         self.attack_framework.momentum = 0.0
-        self.attack_framework.perturb_indices = None
         self.attack_framework.faithful_gnn = False
         self._save(out, 'fgsm_probe_results.json')
         logger.info("[PROBE] done")
         return out
-
-    @staticmethod
-    def _observation_feature_groups(engine) -> Dict[str, List[int]]:
-        """Index sets of the attacker-reachable observation features.
-
-        Follows the slot layout of NetworkEngine.get_state(): neighbour available
-        bandwidth [0, mn); queue depth, destination diversity, timestep; one flag
-        per destination; mean/max/var adjacent-link utilisation; then the per-path
-        bottleneck utilisations up to state_dims (the tail is truncated, see the
-        state_dims note). Only link-derived slots are telemetry: the queue state,
-        timestep and destination flags are local to the switch.
-
-          path_util  — per-path bottleneck utilisation only (the paper's threat model)
-          telemetry  — every link-derived slot: neighbour bandwidth, adjacent-link
-                       statistics and path utilisation
-        """
-        mn, nd, total = engine.max_neighbors, engine.n_destinations, engine.state_dims
-        adj_start = mn + 3 + nd
-        path_start = adj_start + 3
-        return {
-            'path_util': list(range(path_start, total)),
-            'telemetry': list(range(0, mn)) + list(range(adj_start, total)),
-        }
 
     def measure_damage_ceiling(self) -> Dict:
         """Bound the achievable-damage envelope at the attack operating point.
@@ -2360,6 +2323,7 @@ class StandaloneExperimentRunner:
                                     central_state=critic_ctx['central_state'],
                                     clean_joint_onehot=critic_ctx['joint_onehot'],
                                     block_size=critic_ctx['block_size'],
+                                    slots=env.engine.path_util_slots,
                                 ))
                             else:
                                 # The orchestrator and every agent's clean observation

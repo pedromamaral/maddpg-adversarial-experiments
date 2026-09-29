@@ -120,27 +120,27 @@ class LearnedObservationAdversary:
     adversary with the existing damage-ceiling / random-control / flip metrics.
     """
 
-    def __init__(self, obs_dim: int, cfg: AdversaryConfig,
-                 bandwidth_indices: Optional[Sequence[int]] = None):
+    def __init__(self, obs_dim: int, cfg: AdversaryConfig, slots: Sequence[int]):
         self.cfg = cfg
         self.epsilon = cfg.epsilon           # runner sets this per case; kept in sync
         self.attack_type = "learned"
         self.device = torch.device(cfg.device)
         self.actor = AdversaryActor(obs_dim, cfg.hidden).to(self.device)
         self.actor.eval()
-        self.bandwidth_indices = list(bandwidth_indices) if bandwidth_indices else None
+        # The threat model: only the engine's path_util_slots may move.
+        self.slots = list(slots)
         # stats block kept for API parity with FGSMAttackFramework
         self.attack_stats: Dict = {"total_attacks": 0, "attack_success_count": 0}
 
     # -- projection into the admissible perturbation set --------------------
     def _project(self, orig: np.ndarray, adv: np.ndarray) -> np.ndarray:
-        """L-inf ball around orig, then domain clamp (obs features live in [0,1])."""
-        adv = np.clip(adv, orig - self.epsilon, orig + self.epsilon)
-        if self.bandwidth_indices is not None:
-            adv[self.bandwidth_indices] = np.clip(adv[self.bandwidth_indices], 0.0, 1.0)
-        else:
-            adv = np.clip(adv, 0.0, 1.0)      # env observations are normalised
-        return adv.astype(np.float32)
+        """Keep every slot outside the threat model at its clean value; move the
+        rest within the L-inf ball around orig and clamp them to [0,1]."""
+        out = orig.copy()
+        out[self.slots] = np.clip(
+            np.clip(adv[self.slots], orig[self.slots] - self.epsilon,
+                    orig[self.slots] + self.epsilon), 0.0, 1.0)
+        return out.astype(np.float32)
 
     @torch.no_grad()
     def perturb(self, state: np.ndarray) -> np.ndarray:
@@ -151,10 +151,10 @@ class LearnedObservationAdversary:
 
     def generate_adversarial_state(self, state, agent_network=None,
                                    network_engine=None, agent_index: int = 0,
-                                   bandwidth_indices=None) -> np.ndarray:
-        """FGSM-compatible entry point. agent_network/engine are unused by the
-        grey-box adversary (it acts on the observation alone) but kept in the
-        signature so the runner call site does not change."""
+                                   **_unused) -> np.ndarray:
+        """FGSM-compatible entry point. The grey-box adversary acts on the
+        observation alone, so the victim, engine and the runner's GNN-context
+        keywords are accepted and ignored."""
         return self.perturb(state)
 
     # -- persistence -------------------------------------------------------
@@ -186,8 +186,7 @@ class AdversaryTrainer:
 
     def __init__(self, victim, env, trainable_indices: Sequence[int],
                  obs_dim: int, cfg: AdversaryConfig,
-                 build_full_actions: Callable,
-                 bandwidth_indices: Optional[Sequence[int]] = None):
+                 build_full_actions: Callable):
         self.victim = victim
         self.env = env
         self.trainable_indices = list(trainable_indices)
@@ -198,7 +197,7 @@ class AdversaryTrainer:
         self.n_total_hosts = getattr(env.engine, "n_total_hosts", len(self.hosts))
         self.n_actions = victim.n_actions
 
-        self.adv = LearnedObservationAdversary(obs_dim, cfg, bandwidth_indices)
+        self.adv = LearnedObservationAdversary(obs_dim, cfg, env.engine.path_util_slots)
         self.actor = self.adv.actor
         self.actor_t = AdversaryActor(obs_dim, cfg.hidden).to(self.device)
         self.actor_t.load_state_dict(self.actor.state_dict())

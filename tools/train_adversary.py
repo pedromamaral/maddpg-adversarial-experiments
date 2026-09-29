@@ -131,7 +131,8 @@ def main():
 
     if args.eval_only:
         assert args.adv_ckpt, "--eval-only needs --adv-ckpt"
-        adv = LearnedObservationAdversary(obs_dim, cfg).load(args.adv_ckpt)
+        adv = LearnedObservationAdversary(
+            obs_dim, cfg, env.engine.path_util_slots).load(args.adv_ckpt)
         # Drop the learned adversary into the runner's attack loop and reuse the
         # existing paired clean/attacked scoring. The runner sets .epsilon per case;
         # attack_type='learned' routes to LearnedObservationAdversary.perturb().
