@@ -60,9 +60,16 @@ came from unreachable features.
 
 | Stage | Run | Status |
 |---|---|---|
-| A1 | `threat_util`: budget sweep ε ∈ {0.1, 0.2, 0.3, 0.5, 1.0} × {logit_margin, logit_congestion, FGSM, random}, 7 canonical victims, nominal cell (`configs/probe_threat_util_sweep.json`) | running since 29 Sep 18:41 UTC, ~12 h |
-| A2 | `threat_util_iter`: MI-FGSM (n=20, α=ε/8, μ=1) on both logit objectives, ε=0.3 (E3) | queued after A1 |
-| B | Replication under `path_util`: 2 extra seeds × 7 variants (GNN seeds are trained) (E1, E2); logit vs random under failures n=0,2,4 (E4); partial compromise re-run | after A1 is checked |
+| A1 | `threat_util`: budget sweep ε ∈ {0.1, 0.2, 0.3, 0.5, 1.0} × {logit_margin, logit_congestion, FGSM, random}, 7 canonical victims, nominal cell (`configs/probe_threat_util_sweep.json`) | done 30 Sep; `tools/analyze_threat_util.py` |
+| A2 | `threat_util_iter`: MI-FGSM (n=20, α=ε/8, μ=1) on both logit objectives, ε=0.3 (E3) | done 1 Oct: adds nothing over one step |
+| T | `telemetry_reliance`: do decisions follow the utilisation signal at all? Four fixed rewrites of the path_util slots (mean, shuffle, repel, lure) (`configs/probe_telemetry_reliance.json`) | running since 1 Oct 18:46 UTC (<1 h) |
+| B1 | `seed_util_s1042`, `seed_util_s2042`: ε ∈ {0.3, 1.0} × {FGSM, margin, congestion, random} on the 14 extra-seed victims (E1, E2) | queued after T (~6 h) |
+| B2 | `failures_util`: n = 2, 4 failures, ε=0.3, all four arms, 7 canonical victims (E4) | running since 1 Oct 18:46 UTC (~5 h) |
+| B3 | `partial_util`: 1, 4, 7 of 14 agents × 4 subset draws on CC-Duelling, LC-Simple, CC-Duelling-GNN, each with its strongest full-compromise attack (post-hoc choice) | queued after B2 (~11 h) |
+
+Server drivers: `~/stageB_chain1.sh` (T then B1) and `~/stageB_chain2.sh` (B2 then B3).
+Erratum for the student outline §8.10: the old partial-compromise run used fraction 0.25,
+which the runner turns into int(14·0.25) = 3 agents, not 4.
 | C | Learned adversary, re-implemented as PA-AD (director over target paths + logit-margin actor); nominal, full compromise, 4 non-GNN + CC-Duelling-GNN, 2 seeds | after A1 |
 | D (stretch) | Link-level telemetry compromise (consistent across agents) + cross-agent consistency defence | after C |
 

@@ -1,0 +1,12 @@
+{
+ "_comment": "Stage B1: replicate threat_util on the independently trained victims (seeds s1042, s2042; non-GNN weights in seeds/, GNN in seeds_gnn/) at the reference budget and at full control of the utilisation slots. Nominal cell, 15 paired episodes.",
+ "attack_eval": {
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [{"load": 2.0, "n_failures": 0}],
+  "probe_attacks": [
+   ["packet_loss", 0.3, 1], ["logit_margin", 0.3, 1], ["logit_congestion", 0.3, 1], ["random", 0.3, 1],
+   ["packet_loss", 1.0, 1], ["logit_margin", 1.0, 1], ["logit_congestion", 1.0, 1], ["random", 1.0, 1]
+  ]
+ }
+}

@@ -1,0 +1,57 @@
+{
+ "_comment": "Stage B3: partial compromise on LC-Simple with its strongest full-compromise attack at eps=0.3 (packet_loss; chosen from threat_util, so the choice is post hoc), 1, 4 and 7 of 14 agents, four independent draws of the compromised set (probe_subset_seeds), each with a matched random arm. Full compromise is threat_util.",
+ "attack_eval": {
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [
+   {
+    "load": 2.0,
+    "n_failures": 0
+   }
+  ],
+  "probe_subset_seeds": [
+   101,
+   202,
+   303,
+   404
+  ],
+  "probe_attacks": [
+   [
+    "packet_loss",
+    0.3,
+    1,
+    0.08
+   ],
+   [
+    "random",
+    0.3,
+    1,
+    0.08
+   ],
+   [
+    "packet_loss",
+    0.3,
+    1,
+    0.29
+   ],
+   [
+    "random",
+    0.3,
+    1,
+    0.29
+   ],
+   [
+    "packet_loss",
+    0.3,
+    1,
+    0.5
+   ],
+   [
+    "random",
+    0.3,
+    1,
+    0.5
+   ]
+  ]
+ }
+}

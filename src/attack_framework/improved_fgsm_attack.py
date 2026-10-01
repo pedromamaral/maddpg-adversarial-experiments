@@ -214,6 +214,11 @@ class FGSMAttackFramework:
                 orig = state_tensor.detach().clone()
                 adv = state_tensor  # requires_grad already set
 
+                if self.attack_type in self.TELEMETRY_REWRITES:
+                    with torch.no_grad():
+                        logits = _actor_logits(orig).squeeze(0).cpu().numpy()
+                    return self._rewrite_telemetry(state_np[0], logits, network_engine)
+
                 # Pin the congestion target to the CLEAN observation. The objectives
                 # weight each action by its true k-path bottleneck utilisation, which
                 # lives in the observation itself; re-deriving it from `adv` would let
@@ -530,6 +535,47 @@ class FGSMAttackFramework:
     # ------------------------------------------------------------------
     # Domain constraints
     # ------------------------------------------------------------------
+    # Fixed rewrites of the utilisation telemetry. Not epsilon-bounded attacks:
+    # they set the path_util slots anywhere in [0, 1], to measure how far the
+    # policy's decisions follow that signal at all.
+    TELEMETRY_REWRITES = ('ablate_mean', 'ablate_shuffle', 'lie_repel', 'lie_lure')
+
+    def _rewrite_telemetry(self, obs: np.ndarray, logits: np.ndarray, engine) -> np.ndarray:
+        """
+          ablate_mean    every path shows the observation's mean utilisation: the
+                         signal is removed, its overall level kept
+          ablate_shuffle each destination's path values permuted at random: the
+                         signal is kept but no longer tied to the right path
+          lie_repel      the path the policy would choose shows 1, the others 0
+          lie_lure       the most congested path shows 0, the others 1; a policy
+                         that trusted its telemetry would route like the damage
+                         ceiling's worst-path rule
+        """
+        slots = engine.path_util_slots
+        adv = obs.copy()
+        if self.attack_type == 'ablate_mean':
+            adv[slots] = obs[slots].mean()
+            return adv
+        n_dest = engine.n_destinations
+        K = len(logits) // n_dest
+        s0, s_end = slots[0], slots[-1] + 1
+        for d in range(n_dest):
+            idx = [s for s in range(s0 + d * K, s0 + (d + 1) * K) if s < s_end]
+            if not idx:  # destinations past the truncated tail have no slots
+                continue
+            if self.attack_type == 'ablate_shuffle':
+                adv[idx] = np.random.permutation(obs[idx])
+            elif self.attack_type == 'lie_repel':
+                chosen = s0 + d * K + int(np.argmax(logits[d * K:(d + 1) * K]))
+                adv[idx] = 0.0
+                if chosen < s_end:
+                    adv[chosen] = 1.0
+            elif self.attack_type == 'lie_lure':
+                worst = idx[int(np.argmax(obs[idx]))]
+                adv[idx] = 1.0
+                adv[worst] = 0.0
+        return adv
+
     def _apply_domain_constraints(
         self,
         adversarial_state: torch.Tensor,

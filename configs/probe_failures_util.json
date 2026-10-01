@@ -1,0 +1,11 @@
+{
+ "_comment": "Stage B2: is the failure-regime fragility still noise rather than adversary, now that FGSM is not the only gradient attack? Canonical victims, 2 and 4 random link failures (n=0 is threat_util, same traffic), eps=0.3, 15 paired episodes. n=6 is omitted: the network has already collapsed there.",
+ "attack_eval": {
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [{"load": 2.0, "n_failures": 2}, {"load": 2.0, "n_failures": 4}],
+  "probe_attacks": [
+   ["packet_loss", 0.3, 1], ["logit_margin", 0.3, 1], ["logit_congestion", 0.3, 1], ["random", 0.3, 1]
+  ]
+ }
+}

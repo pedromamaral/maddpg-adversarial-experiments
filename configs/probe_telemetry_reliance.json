@@ -1,0 +1,12 @@
+{
+ "_comment": "How far do the victims' decisions follow the utilisation telemetry at all? Four fixed rewrites of the path_util slots (not epsilon-bounded; epsilon=1.0 marks full control): ablate_mean removes the signal, ablate_shuffle decouples it from the paths, lie_repel pushes every decision off its choice, lie_lure aims every decision at the most congested path (a fully trusting policy would then route like the ceiling's worst-path rule). Nominal cell, 15 paired episodes, same traffic as threat_util.",
+ "attack_eval": {
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [{"load": 2.0, "n_failures": 0}],
+  "probe_attacks": [
+   ["ablate_mean", 1.0, 1], ["ablate_shuffle", 1.0, 1],
+   ["lie_repel", 1.0, 1], ["lie_lure", 1.0, 1]
+  ]
+ }
+}
