@@ -62,7 +62,7 @@ came from unreachable features.
 |---|---|---|
 | A1 | `threat_util`: budget sweep ε ∈ {0.1, 0.2, 0.3, 0.5, 1.0} × {logit_margin, logit_congestion, FGSM, random}, 7 canonical victims, nominal cell (`configs/probe_threat_util_sweep.json`) | done 30 Sep; `tools/analyze_threat_util.py` |
 | A2 | `threat_util_iter`: MI-FGSM (n=20, α=ε/8, μ=1) on both logit objectives, ε=0.3 (E3) | done 1 Oct: adds nothing over one step |
-| T | `telemetry_reliance`: do decisions follow the utilisation signal at all? Four fixed rewrites of the path_util slots (mean, shuffle, repel, lure) (`configs/probe_telemetry_reliance.json`) | running since 1 Oct 18:46 UTC (<1 h) |
+| T | `telemetry_reliance`: do decisions follow the utilisation signal at all? Four fixed rewrites of the path_util slots (mean, shuffle, repel, lure) (`configs/probe_telemetry_reliance.json`) | done 1 Oct: removing the signal moves delivery ≤0.75 pp on every victim; the worst lie moves 3–20 % of decisions; robustness is largely insensitivity (`tools/analyze_telemetry_reliance.py`) |
 | B1 | `seed_util_s1042`, `seed_util_s2042`: ε ∈ {0.3, 1.0} × {FGSM, margin, congestion, random} on the 14 extra-seed victims (E1, E2) | queued after T (~6 h) |
 | B2 | `failures_util`: n = 2, 4 failures, ε=0.3, all four arms, 7 canonical victims (E4) | running since 1 Oct 18:46 UTC (~5 h) |
 | B3 | `partial_util`: 1, 4, 7 of 14 agents × 4 subset draws on CC-Duelling, LC-Simple, CC-Duelling-GNN, each with its strongest full-compromise attack (post-hoc choice) | queued after B2 (~11 h) |
