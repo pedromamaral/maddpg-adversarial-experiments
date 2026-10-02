@@ -626,12 +626,13 @@ class MADDPG:
                  gnn_n_relay: int = 0,
                  central_state_dims: Optional[int] = None,
                  actor_head: str = 'sigmoid', critic_head: str = 'joint',
-                 decision_block: int = 3):
+                 decision_block: int = 3, actor_entropy: float = 0.0):
 
         self.n_agents = n_agents
         self.actor_head = actor_head
         self.critic_head = critic_head
         self.decision_block = decision_block
+        self.actor_entropy = float(actor_entropy)
         self.n_actions = n_actions
         self.critic_type = critic_type
         self.critic_target_mode = critic_target_mode
@@ -960,7 +961,16 @@ class MADDPG:
                     actor_loss = -agent.critic(nc_act_states, nc_act_actions).mean()
                 else:
                     actor_loss = -agent.critic(states_t_gnn[i].detach(), predicted_actions).mean()
-    
+
+                # Entropy bonus on the per-destination distributions (block_softmax
+                # only): keeps them from saturating into a fixed routing table before
+                # the critic has resolved the per-decision values. In float32, since
+                # log p of a near-saturated softmax underflows in fp16.
+                if self.actor_entropy > 0 and agent.actor.head == 'block_softmax':
+                    p = predicted_actions_soft.float().view(batch_size, -1, agent.actor.block)
+                    entropy = -(p * p.clamp_min(1e-12).log()).sum(-1).mean()
+                    actor_loss = actor_loss - self.actor_entropy * entropy
+
             agent.actor_optimizer.zero_grad()
             # retain_graph keeps GNN intermediates alive so all 32 agents can
             # accumulate gradients through the single shared GNN forward pass.

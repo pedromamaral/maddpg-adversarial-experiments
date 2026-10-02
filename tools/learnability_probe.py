@@ -65,6 +65,8 @@ ap.add_argument('--critic', default='joint', choices=['joint', 'factored'],
                      "Q(s, a) = mean over decisions of q(s)[chosen path]")
 ap.add_argument('--head', default='sigmoid', choices=['sigmoid', 'block_softmax'],
                 help="actor head: 'sigmoid' (v1) or one softmax per destination")
+ap.add_argument('--entropy', type=float, default=0.0,
+                help='actor entropy bonus (learn_action_projection.actor_entropy; block_softmax only)')
 args = ap.parse_args()
 sys.path.insert(0, args.src)
 sys.path.insert(0, os.path.join(args.src, 'maddpg_clean'))
@@ -123,7 +125,8 @@ m = MADDPG(actor_dims=[S], critic_dims=[S], n_agents=1, n_actions=NA,
            critic_type='local_critic', network_type='simple_q_network',
            critic_target_mode=proj.get('critic_target_mode', 'block_argmax_onehot'),
            actor_mode=args.actor_mode or proj.get('actor_mode', 'st_onehot'),
-           actor_head=args.head, critic_head=args.critic, decision_block=K)
+           actor_head=args.head, critic_head=args.critic, decision_block=K,
+           actor_entropy=args.entropy)
 agent = m.agents[0]
 if args.init == 'trained':
     p = os.path.join(args.results, 'models', 'CC-Simple', 'agent_0', 'agent_0_actor_best.pth')

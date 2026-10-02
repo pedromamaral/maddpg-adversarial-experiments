@@ -422,6 +422,13 @@ class StandaloneExperimentRunner:
             adjacency = None
             critic_dims = actor_dims
             central_state_dims = None
+        elif projection_cfg.get('central_state', 'compact') == 'observations':
+            # CC critic reads every agent's own observation (14 x 94 = 1316 dims),
+            # including the per-path utilisations each decision depends on. With no
+            # central state stored, MADDPG.learn concatenates the local observations.
+            adjacency = None
+            central_state_dims = None
+            critic_dims = n_agents * actor_dims
         else:
             adjacency = None
             # CC critic uses compact <B, D> central state instead of all local obs.
@@ -490,6 +497,7 @@ class StandaloneExperimentRunner:
             actor_head=projection_cfg.get('actor_head', 'sigmoid'),
             critic_head=projection_cfg.get('critic_head', 'joint'),
             decision_block=n_actions // engine.n_destinations,
+            actor_entropy=float(projection_cfg.get('actor_entropy', 0.0)),
         )
         return maddpg, engine, env
 
