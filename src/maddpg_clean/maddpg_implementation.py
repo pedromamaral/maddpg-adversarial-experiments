@@ -35,7 +35,8 @@ class ActorNetwork(nn.Module):
 
     def __init__(self, input_dims: int, fc1_dims: int, fc2_dims: int,
                  n_actions: int, name: str, chkpt_dir: str,
-                 device: Optional[str] = None):
+                 device: Optional[str] = None,
+                 head: str = 'sigmoid', block: int = 3):
         super(ActorNetwork, self).__init__()
 
         self.input_dims = input_dims
@@ -43,6 +44,19 @@ class ActorNetwork(nn.Module):
         self.fc2_dims = fc2_dims
         self.n_actions = n_actions
         self.name = name
+        # Output head; the argmax per destination block is the same under both.
+        #   'sigmoid' (v1): an independent sigmoid per (destination, path). Trained
+        #       through a straight-through one-hot, each output follows the critic's
+        #       absolute level rather than the difference between paths, so the
+        #       outputs saturate and the policy freezes into a fixed routing table.
+        #   'block_softmax': one softmax per destination block; the paths of a
+        #       destination compete, so the gradient follows their advantage.
+        if head not in ('sigmoid', 'block_softmax'):
+            raise ValueError(f"unknown actor head {head!r}")
+        if n_actions % block:
+            raise ValueError(f"n_actions={n_actions} is not a multiple of block={block}")
+        self.head = head
+        self.block = block
         self.checkpoint_file = os.path.join(chkpt_dir, name + '_actor.pth')
 
         # Network layers
@@ -67,7 +81,10 @@ class ActorNetwork(nn.Module):
     def forward(self, state):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        return torch.sigmoid(self.action_out(x))
+        z = self.action_out(x)
+        if self.head == 'block_softmax':
+            return torch.softmax(z.view(*z.shape[:-1], -1, self.block), dim=-1).view_as(z)
+        return torch.sigmoid(z)
 
     def save_checkpoint(self):
         torch.save(self.state_dict(), self.checkpoint_file)
@@ -86,7 +103,8 @@ class CriticNetwork(nn.Module):
     def __init__(self, input_dims: int, fc1_dims: int, fc2_dims: int,
                  n_agents: int, n_actions: int, name: str, chkpt_dir: str,
                  action_input_dims: Optional[int] = None,
-                 network_type: str = 'simple_q_network'):
+                 network_type: str = 'simple_q_network',
+                 head: str = 'joint', block: int = 3):
         super(CriticNetwork, self).__init__()
 
         self.input_dims = input_dims
@@ -97,6 +115,31 @@ class CriticNetwork(nn.Module):
         self.network_type = network_type
         self.name = name
         self.checkpoint_file = os.path.join(chkpt_dir, name + '_critic.pth')
+        # Critic head.
+        #   'joint' (v1): Q(s, a) from concat(s, a). With one scalar reward over many
+        #       routing decisions it barely resolves a single destination's choice,
+        #       so the actor's gradient is mostly a state-independent average.
+        #   'factored': the trunk reads the state alone and emits one value per
+        #       (decision, path) in the action input; Q(s, a) is their mean over the
+        #       chosen paths, plus a state value V(s) for the duelling network. Each
+        #       decision is credited directly, and dQ/da is that per-path value.
+        if head not in ('joint', 'factored'):
+            raise ValueError(f"unknown critic head {head!r}")
+        if head == 'factored' and self.action_input_dims % block:
+            raise ValueError(f"action dims {self.action_input_dims} not a multiple of block={block}")
+        self.head = head
+        self.n_blocks = self.action_input_dims // block
+
+        if head == 'factored':
+            self.fc1 = nn.Linear(input_dims, fc1_dims)
+            self.fc2 = nn.Linear(fc1_dims, fc2_dims)
+            self.q_decisions = nn.Linear(fc2_dims, self.action_input_dims)
+            if network_type == 'duelling_q_network':
+                self.value_stream = nn.Linear(fc2_dims, 1)
+            self.init_weights()
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.to(self.device)
+            return
 
         # Shared trunk: concatenate state + action
         self.fc1 = nn.Linear(input_dims + self.action_input_dims, fc1_dims)
@@ -133,6 +176,13 @@ class CriticNetwork(nn.Module):
                 nn.init.zeros_(layer.bias)
 
     def forward(self, state, action):
+        if self.head == 'factored':
+            x = F.relu(self.fc2(F.relu(self.fc1(state))))
+            q = (self.q_decisions(x) * action).sum(dim=1, keepdim=True) / self.n_blocks
+            if self.network_type == 'duelling_q_network':
+                q = q + self.value_stream(x)
+            return q                                               # [B, 1]
+
         x = F.relu(self.fc1(torch.cat([state, action], dim=1)))
         x = F.relu(self.fc2(x))
 
@@ -314,7 +364,9 @@ class Agent:
                  fc1: int = 64, fc2: int = 64, gamma: float = 0.95,
                  tau: float = 0.01, critic_type: str = 'central_critic',
                  network_type: str = 'simple_q_network', use_gnn: bool = False,
-                 neighborhood_action_dims: Optional[int] = None):
+                 neighborhood_action_dims: Optional[int] = None,
+                 actor_head: str = 'sigmoid', critic_head: str = 'joint',
+                 decision_block: int = 3):
 
         self.gamma = gamma
         self.tau = tau
@@ -342,27 +394,31 @@ class Agent:
         # Online networks
         self.actor = ActorNetwork(
             input_dims=actor_dims, fc1_dims=fc1, fc2_dims=fc2,
-            n_actions=n_actions, name=f'{self.agent_name}_actor', chkpt_dir=chkpt_dir
+            n_actions=n_actions, name=f'{self.agent_name}_actor', chkpt_dir=chkpt_dir,
+            head=actor_head, block=decision_block,
         )
         self.critic = CriticNetwork(
             input_dims=critic_dims, fc1_dims=fc1, fc2_dims=fc2,
             n_agents=n_agents, n_actions=n_actions,
             name=f'{self.agent_name}_critic', chkpt_dir=chkpt_dir,
             action_input_dims=critic_action_dims,
-            network_type=network_type
+            network_type=network_type,
+            head=critic_head, block=decision_block,
         )
 
         # Target networks (no gradients needed)
         self.target_actor = ActorNetwork(
             input_dims=actor_dims, fc1_dims=fc1, fc2_dims=fc2,
-            n_actions=n_actions, name=f'{self.agent_name}_target_actor', chkpt_dir=chkpt_dir
+            n_actions=n_actions, name=f'{self.agent_name}_target_actor', chkpt_dir=chkpt_dir,
+            head=actor_head, block=decision_block,
         )
         self.target_critic = CriticNetwork(
             input_dims=critic_dims, fc1_dims=fc1, fc2_dims=fc2,
             n_agents=n_agents, n_actions=n_actions,
             name=f'{self.agent_name}_target_critic', chkpt_dir=chkpt_dir,
             action_input_dims=critic_action_dims,
-            network_type=network_type
+            network_type=network_type,
+            head=critic_head, block=decision_block,
         )
 
         # Optimisers live in Agent, not in the network, for clean separation
@@ -568,9 +624,14 @@ class MADDPG:
                  adjacency: Optional[List[List[int]]] = None,
                  gnn_adjacency: Optional[List[List[int]]] = None,
                  gnn_n_relay: int = 0,
-                 central_state_dims: Optional[int] = None):
+                 central_state_dims: Optional[int] = None,
+                 actor_head: str = 'sigmoid', critic_head: str = 'joint',
+                 decision_block: int = 3):
 
         self.n_agents = n_agents
+        self.actor_head = actor_head
+        self.critic_head = critic_head
+        self.decision_block = decision_block
         self.n_actions = n_actions
         self.critic_type = critic_type
         self.critic_target_mode = critic_target_mode
@@ -607,6 +668,9 @@ class MADDPG:
                     if critic_type == 'neighborhood_critic' and adjacency is not None
                     else None
                 ),
+                actor_head=actor_head,
+                critic_head=critic_head,
+                decision_block=decision_block,
             )
             for i in range(n_agents)
         ]

@@ -148,12 +148,12 @@ def _episode_worker(args):
 
     # Reconstruct actor networks on CPU (explicit device='cpu' avoids CUDA in workers)
     actors: dict = {}
-    for i, (actor_dim, fc1, fc2, n_actions) in enumerate(all_actor_params):
+    for i, (actor_dim, fc1, fc2, n_actions, head, block) in enumerate(all_actor_params):
         if not deterministic_mask[i]:
             actor = ActorNetwork(
                 input_dims=actor_dim, fc1_dims=fc1, fc2_dims=fc2,
                 n_actions=n_actions, name=f'w_{i}', chkpt_dir='/tmp',
-                device='cpu',
+                device='cpu', head=head, block=block,
             )
             sd = {k: torch.tensor(v, dtype=torch.float) for k, v in actor_weights_cpu[i].items()}
             actor.load_state_dict(sd)
@@ -485,6 +485,11 @@ class StandaloneExperimentRunner:
             gnn_adjacency=gnn_adjacency,
             gnn_n_relay=gnn_n_relay,
             central_state_dims=central_state_dims,
+            # v1 defaults: sigmoid actor, joint critic. See tools/learnability_probe.py
+            # for why v1 does not learn and what 'block_softmax' + 'factored' change.
+            actor_head=projection_cfg.get('actor_head', 'sigmoid'),
+            critic_head=projection_cfg.get('critic_head', 'joint'),
+            decision_block=n_actions // engine.n_destinations,
         )
         return maddpg, engine, env
 
@@ -589,7 +594,8 @@ class StandaloneExperimentRunner:
         actor_weights_cpu = maddpg.get_actor_weights_cpu()
         gnn_info_cpu = maddpg.get_gnn_info_cpu() if maddpg.gnn_processor is not None else None
         all_actor_params = [
-            (a.actor.input_dims, a.actor.fc1_dims, a.actor.fc2_dims, a.actor.n_actions)
+            (a.actor.input_dims, a.actor.fc1_dims, a.actor.fc2_dims, a.actor.n_actions,
+             a.actor.head, a.actor.block)
             for a in maddpg.agents
         ]
         trainable_indices = getattr(engine, 'trainable_host_indices', None)

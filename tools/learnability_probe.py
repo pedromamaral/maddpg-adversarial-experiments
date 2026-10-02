@@ -18,26 +18,27 @@ exploration per destination block) the easiest possible version of the task.
             at the end, whether the critic resolves single-destination choices
             and where its action-gradient pushes the actor
 
-Variants change one piece of the machinery at a time: --critic factored
-(Q = mean over destinations of a per-(destination, path) value), --head
-logits / softmax (actor output without the sigmoid / with a softmax per
-destination), --supervised (the same actor network trained on greedy labels).
+Variants change one piece of the machinery at a time, through the production
+options of MADDPG (training.learn_action_projection.actor_head / critic_head):
+--critic factored (Q = mean over decisions of a per-(decision, path) value),
+--head block_softmax (one softmax per destination instead of independent
+sigmoids), and --supervised (the same actor network trained on greedy labels).
 
 Findings, 3000 updates (2 Oct 2026):
-  as trained (mlp critic, sigmoid head)   57 % agreement, 91 % static, 80 % saturated;
+  as trained (joint critic, sigmoid head) 57 % agreement, 91 % static, 80 % saturated;
       the critic resolves single-destination choices at ~63 % (chance 55 %), and
       ~3e-7 of gradient reaches the actor's logits
   supervised, same actor network          98 %: capacity is not the problem
   factored critic, sigmoid head           65 %: critic now 91 % per destination,
       but independent sigmoids follow absolute Q levels, not differences, and saturate
-  mlp critic, softmax head                62 %: the critic is the bottleneck
+  joint critic, softmax head              62 %: the critic is the bottleneck
   factored critic, softmax head           83 % and rising, regret -73 %, 57 % static
 Both fixes are needed: a critic that credits each destination's choice, and an
 actor whose outputs per destination compete (the gradient then follows the
 advantage of one path over the others).
 
-    python tools/learnability_probe.py --init scratch --updates 3000
-    python tools/learnability_probe.py --critic factored --head softmax
+    python tools/learnability_probe.py --init scratch --updates 3000      # v1: fails
+    python tools/learnability_probe.py --critic factored --head block_softmax  # the fix
     python tools/learnability_probe.py --init trained   # start from CC-Simple's actor
 """
 import argparse
@@ -59,35 +60,23 @@ ap.add_argument('--steps-per-update', type=int, default=4, help='contexts acted 
 ap.add_argument('--seed', type=int, default=0)
 ap.add_argument('--supervised', action='store_true',
                 help='capacity check: train the same actor network with cross-entropy on greedy labels')
-ap.add_argument('--critic', default='mlp', choices=['mlp', 'factored'],
-                help="'mlp': the trained architecture, Q(s, a) from concat(s, a); 'factored': "
-                     "Q(s, a) = mean over decisions of q(s)[chosen path], one value per (destination, path)")
-ap.add_argument('--head', default='sigmoid', choices=['sigmoid', 'logits', 'softmax'],
-                help="actor output: 'sigmoid' (as trained) or raw logits, so the straight-through "
-                     "gradient reaches the logits without the sigmoid's vanishing slope")
+ap.add_argument('--critic', default='joint', choices=['joint', 'factored'],
+                help="critic head: 'joint' (v1), Q(s, a) from concat(s, a); 'factored', "
+                     "Q(s, a) = mean over decisions of q(s)[chosen path]")
+ap.add_argument('--head', default='sigmoid', choices=['sigmoid', 'block_softmax'],
+                help="actor head: 'sigmoid' (v1) or one softmax per destination")
 args = ap.parse_args()
 sys.path.insert(0, args.src)
 sys.path.insert(0, os.path.join(args.src, 'maddpg_clean'))
 
 import torch  # noqa: E402
 from standalone_experiment_runner import StandaloneExperimentRunner  # noqa: E402
-from maddpg_implementation import MADDPG, ActorNetwork  # noqa: E402
+from maddpg_implementation import MADDPG  # noqa: E402
 
 
 def _logits(actor, s):
     return actor.action_out(torch.relu(actor.fc2(torch.relu(actor.fc1(s)))))
 
-
-def _block_softmax(actor, s):
-    z = _logits(actor, s)
-    return torch.softmax(z.view(*z.shape[:-1], -1, 3), dim=-1).view_as(z)
-
-
-# Argmax decisions are unchanged by every head; only the gradient path differs.
-if args.head == 'logits':
-    ActorNetwork.forward = _logits
-elif args.head == 'softmax':      # competing outputs per destination block
-    ActorNetwork.forward = _block_softmax
 
 random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
 runner = StandaloneExperimentRunner(args.config, 0, args.results)
@@ -133,30 +122,9 @@ m = MADDPG(actor_dims=[S], critic_dims=[S], n_agents=1, n_actions=NA,
            fc1=vcfg['fc1'], fc2=vcfg['fc2'], gamma=cfg_t['gamma'], tau=cfg_t['tau'],
            critic_type='local_critic', network_type='simple_q_network',
            critic_target_mode=proj.get('critic_target_mode', 'block_argmax_onehot'),
-           actor_mode=args.actor_mode or proj.get('actor_mode', 'st_onehot'))
+           actor_mode=args.actor_mode or proj.get('actor_mode', 'st_onehot'),
+           actor_head=args.head, critic_head=args.critic, decision_block=K)
 agent = m.agents[0]
-
-
-class FactoredCritic(torch.nn.Module):
-    """Q(s, a) = mean over decision blocks of q(s)[chosen slot]: each (destination,
-    path) gets its own value, so one destination's choice is credited directly."""
-    def __init__(self, sd, na, h1, h2, dev):
-        super().__init__()
-        self.net = torch.nn.Sequential(torch.nn.Linear(sd, h1), torch.nn.ReLU(),
-                                       torch.nn.Linear(h1, h2), torch.nn.ReLU(), torch.nn.Linear(h2, na))
-        self.device = dev
-        self.to(dev)
-
-    def forward(self, state, action):
-        return (self.net(state) * action).sum(1, keepdim=True) / nd
-
-
-if args.critic == 'factored':
-    dev = agent.actor.device
-    agent.critic = FactoredCritic(S, NA, vcfg['fc1'], vcfg['fc2'], dev)
-    agent.target_critic = FactoredCritic(S, NA, vcfg['fc1'], vcfg['fc2'], dev)
-    agent.target_critic.load_state_dict(agent.critic.state_dict())
-    agent.critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=vcfg['beta'])
 if args.init == 'trained':
     p = os.path.join(args.results, 'models', 'CC-Simple', 'agent_0', 'agent_0_actor_best.pth')
     agent.actor.load_state_dict(torch.load(p, weights_only=True))
@@ -223,8 +191,7 @@ def diagnose(x):
     # actor gradient, as learn() computes it: straight-through one-hot into the critic
     z = logits.detach().clone().requires_grad_(True)
     soft = torch.sigmoid(z)
-    head_out = {'logits': z, 'sigmoid': soft,
-                'softmax': torch.softmax(z.view(len(x), nd, K), -1).view_as(z)}[args.head]
+    head_out = soft if args.head == 'sigmoid' else torch.softmax(z.view(len(x), nd, K), -1).view_as(z)
     st = m._project_actions(head_out, decision_block_size=block, mode='block_argmax_onehot', straight_through=True)
     (-agent.critic(xt, st).mean()).backward()
     gz = z.grad.abs().cpu().numpy().reshape(len(x), nd, K)
