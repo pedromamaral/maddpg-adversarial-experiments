@@ -68,6 +68,27 @@ came from unreachable features.
 | B3 | `partial_util`: 1, 4, 7 of 14 agents × 4 subset draws on CC-Duelling, LC-Simple, CC-Duelling-GNN, each with its strongest full-compromise attack (post-hoc choice) | queued after B2 (~11 h) |
 
 Server drivers: `~/stageB_chain1.sh` (T then B1) and `~/stageB_chain2.sh` (B2 then B3).
+
+**Failure-accumulation bug (found 2 Oct, fixed in 8b4a4f9).** Link failures were injected
+in place and never undone at the end of an evaluation, so each chained call on the same
+engine started from the previous call's degraded graph and removed n more links. Only the
+first failure call in a process measured what it claimed. Invalid as a result:
+- Paper 1 failure-severity sweep (`failsev`): only the policy row is right; greedy saw 2n
+  failures, sp 3n, random 4n, worst 5n. "Random collapses 90→9 %", "MADDPG overtakes random
+  at n≈2" and "MADDPG beats greedy at n≥6" are unsupported until re-measured. Same for the
+  ceilings under failure (`ceil2x_fail*`).
+- Paper 2 failure regime (`fgsm_tighten` n≥2, figures T4/T5, Gonçalo §8.6) and `failures_util`
+  (B2): only each condition's first arm, and only at the first condition, is right. "Random bites
+  harder than the gradient at n=2" compared 6 failures with 4; the "dead network at n=6" had
+  ≥24.
+- Unaffected: everything without failures, and Paper 1's per-variant dual-link-failure
+  evaluations (fresh engine per variant, normal run first).
+
+| Rerun | Run | Status |
+|---|---|---|
+| F1 | `failsev_fixed`: Paper 1 severity sweep, CC-Simple, n = 1, 2, 4, 6, 8 (`tools/run_failsev.sh`) | running since 2 Oct 11:30 UTC |
+| F2 | `failures_fixed`: n = 2, 4, 6, 4 arms, 7 victims (`configs/probe_failures_fixed.json`) | running since 2 Oct 11:31 UTC |
+| P | `policy_attribution.json`: what the decisions depend on, n = 0, 2, 4 (`tools/policy_attribution.py`) | running |
 Erratum for the student outline §8.10: the old partial-compromise run used fraction 0.25,
 which the runner turns into int(14·0.25) = 3 agents, not 4.
 | C | Learned adversary, re-implemented as PA-AD (director over target paths + logit-margin actor); nominal, full compromise, 4 non-GNN + CC-Duelling-GNN, 2 seeds | after A1 |

@@ -1,0 +1,11 @@
+{
+ "_comment": "Paper 2 failure sweep, re-run 2 Oct 2026 after the failure-accumulation fix (commit 8b4a4f9): canonical victims, 2, 4 and 6 random link failures, eps=0.3, all four arms, 15 paired episodes. Replaces failures_util and fgsm_tighten's failure conditions, in which every arm after the first inherited the failures of the arms before it.",
+ "attack_eval": {
+  "faithful_gnn": true,
+  "probe_episodes": 15,
+  "probe_conditions": [{"load": 2.0, "n_failures": 2}, {"load": 2.0, "n_failures": 4}, {"load": 2.0, "n_failures": 6}],
+  "probe_attacks": [
+   ["packet_loss", 0.3, 1], ["logit_margin", 0.3, 1], ["logit_congestion", 0.3, 1], ["random", 0.3, 1]
+  ]
+ }
+}
