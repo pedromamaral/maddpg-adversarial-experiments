@@ -3,7 +3,7 @@
 
   seeds     each variant's canonical victim (threat_util) beside its two extra
             training seeds (seed_util_s1042 / _s2042), at eps 0.3 and 1.0
-  failures  the canonical victims at 0 (threat_util), 2 and 4 failed links (failures_util)
+  failures  the canonical victims at 0 (threat_util), 2, 4 and 6 failed links (failures_fixed)
   partial   1, 4 and 7 of 14 agents compromised, 4 subset draws each (partial_util),
             beside full compromise (threat_util)
 
@@ -84,8 +84,8 @@ def seeds():
 def failures():
     print("== FAILURES (canonical victims, eps 0.3): clean PDR, random drop, gap over random (pp)")
     for v in VARIANTS:
-        t0, tf = load("threat_util", v, "fgsm_probe_results.json"), load("failures_util", v, "fgsm_probe_results.json")
-        for nf, run in ((0, t0), (2, tf), (4, tf)):
+        t0, tf = load("threat_util", v, "fgsm_probe_results.json"), load("failures_fixed", v, "fgsm_probe_results.json")
+        for nf, run in ((0, t0), (2, tf), (4, tf), (6, tf)):
             if not run:
                 continue
             cond = f"load2_fail{nf}"

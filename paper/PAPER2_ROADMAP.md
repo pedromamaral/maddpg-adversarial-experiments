@@ -1,5 +1,13 @@
 # Paper 2 — road to journal submission
 
+> **ON HOLD since 2 Oct 2026.** The victims this paper attacks never learned to route.
+> They are near-static routing tables (see `tools/learnability_probe.py`,
+> `tools/policy_attribution.py` and the README status note), so their "robustness" is
+> insensitivity. The learning is being fixed and the variants retrained; the attack study
+> restarts on the retrained policies. Everything below describes the v1 victims. Their
+> results are archived in `host_data/archive_v1/results/`, and the run configs and
+> analysis tools are reusable as they are.
+
 Manuscript: `paper/paper2_robustness.tex` (target: IEEE TNSM). It is the journal reframe
 of the July short draft `paper2_fgsm.tex`, which it supersedes.
 

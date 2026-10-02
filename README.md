@@ -16,6 +16,16 @@ configs and result-generation tooling behind two papers and two MSc theses:
   (`students/goncalo-martins-fgsm-thesis/`) and Miguel Chen on the learned adversary
   (`students/miguel-chen-learned-adversary/`).
 
+> **Status (2 Oct 2026): the learning is being fixed and every variant retrained.** The
+> policies trained so far (v1) never learned to route. They behave as near-static
+> routing tables that ignore their utilisation telemetry, and a greedy least-utilised
+> rule beats all of them. `tools/learnability_probe.py` reproduces the failure in a
+> minute and shows its two causes: a critic that cannot credit a single destination's
+> choice, and independent sigmoid actor outputs that saturate into a fixed table.
+> Paper 1's comparison and Paper 2's attack study, both built on v1 policies, are on hold.
+> The v1 results are archived in `host_data/archive_v1/`. The results that stay valid
+> (policy-independent baselines) are listed under [Weights & results](#weights--results).
+
 ---
 
 ## Repository layout
@@ -65,20 +75,32 @@ The image provides torch, numpy, networkx, matplotlib, scipy. The shell scripts 
 `host_data/` is **gitignored** — no weights or results are in git.
 
 ```text
-host_data/results/
-  reward_fix/                <phase JSONs>, models/<variant>/   # CANONICAL stress-trained victims
-  ceil2x/<variant>/          damage_ceiling.json                # per-victim damage ceilings, 2x hotspot
-  seeds/s1042 s2042/         models/, ceil_<variant>/           # extra training seeds (non-GNN)
-  fgsm_tighten/<variant>/    fgsm_probe_results.json            # 15-episode paired FGSM probe
-  fgsm_full/<variant>/       fgsm_probe_results.json            # earlier epsilon/load sweep
-  logit_attack/<variant>/    fgsm_probe_results.json            # GNN-faithful FGSM + logit objectives
-  seed_probe/s1042 s2042/    <variant>/...                      # FGSM probe on the seed victims
-  partial_compromise_multi/  <variant>/...                      # 1/4/7/14 agents, 4 draws each
-  pgd_diagnostic/            <variant>.json                     # iterated-attack tuning (T8)
-  mchen/                     learned_adv_parity/, ...           # learned-adversary evaluations
+host_data/
+  results/                                   # what stays valid after retraining
+    reward_fix/       models/<variant>/        v1 canonical victims and training curves (reference)
+                      phase2_hotspot_sweep_results.json   shortest-path rows per load (policy rows are v1)
+                      sweep_baselines/load_*/  greedy / random / sp / worst rules per load
+    unisweep/         uniform-traffic sweep    shortest-path rows (policy rows are v1)
+    ceil2x/<variant>/ damage_ceiling.json      rules at 2x hotspot (policy rows are v1)
+    p1_ceiling_1x/    damage_ceiling.json      rules at 1x uniform
+    failsev_fixed/n_<k>/ damage_ceiling.json   rules under k = 0..8 random link failures
+    telemetry_reliance/, policy_attribution.json   evidence that v1 ignores its telemetry
+  archive_v1/                                # superseded, kept for the record and the theses
+    results/          every attack run on v1 victims, extra seeds, old models (main_run,
+                      stress_run, seeds, seeds_gnn), the pre-fix failure sweeps
+    server_home/, repo_untracked/            old server scripts, logs and stray configs
+  topo_check/         zoo/*.graphml, our_topo.txt   input of tools/topo_invariants.py
 ```
 
-Two traps, both of which have produced wrong numbers before:
+The rule rows (greedy, random, sp, worst) and the shortest-path rows do not depend on any
+trained policy, so they serve as baselines for the retrained policies unchanged. The
+thesis figures were drawn from what is now `archive_v1/results` (plus `reward_fix` and
+`ceil2x`); point `RESULTS_ROOT` there to regenerate them.
+
+Three traps, all of which have produced wrong numbers before:
+- **Accumulating link failures** (fixed in `8b4a4f9`). Failures were never undone between
+  chained evaluations, so each rule or attack arm after the first inherited the previous
+  ones' failed links. Every failure result before the fix is superseded.
 - **GNN victims.** `fgsm_tighten` took the attack gradient through the actor alone,
   bypassing the encoder the victim decides through. Use `logit_attack` (run with
   `faithful_gnn: true`) for any GNN FGSM number.
@@ -117,11 +139,21 @@ exist). Best-validation checkpoints are used for all downstream evaluation.
 ./run_phase.sh paper1
 ```
 
+**Does a policy actually route?** Check before trusting any comparison:
+```bash
+python tools/learnability_probe.py --critic factored --head softmax  # can the learner learn the easy case?
+python tools/policy_attribution.py --failures 0,2,4   # static share, greedy agreement, saturation
+tools/run_probe_grid.sh telemetry_reliance configs/probe_telemetry_reliance.json
+python tools/analyze_telemetry_reliance.py            # does delivery depend on the utilisation signal?
+tools/run_failsev.sh failsev_fixed CC-Simple "1 2 4 6 8"   # rules vs policy under link failures
+```
+
 **Figures:**
 ```bash
 python tools/plot_paper1.py            # F1..F11
 python tools/plot_seed_variance.py     # F12 (3-seed variance)
-python tools/topo_invariants.py        # SP-class representativeness table
+ZOO_DIR=host_data/topo_check/zoo OUR_TOPO=host_data/topo_check/our_topo.txt \
+    python tools/topo_invariants.py    # SP-class representativeness table
 ```
 
 ---
@@ -158,16 +190,11 @@ The `attack_eval` block of the config selects the grid. Keys that matter:
   which runs the probe for several victims in parallel on the server:
   `tools/run_probe_grid.sh threat_util configs/probe_threat_util_sweep.json`.
 
-Analysis (stdlib unless noted):
+Analysis (stdlib):
 ```bash
-python tools/analyze_fgsm.py fgsm_tighten        # probe summary
-python tools/analyze_logit_attack.py             # FGSM vs logit, GNN faithful vs original
-python tools/analyze_seed_variance.py            # adversarial gap across training seeds
-python tools/analyze_partial_compromise.py       # damage vs number of compromised agents
-python tools/path_diversity_analysis.py          # vacuous flips from padded K-paths (torch)
-python tools/gradient_signal_analysis.py         # why flips don't reach worse paths (torch)
-python tools/pgd_diagnostic.py                   # iterated-attack budget spend (torch)
-python tools/recompute_learned_vs_fgsm.py        # learned-adversary vs FGSM tables
+python tools/analyze_threat_util.py     # budget sweep + iterated attack vs random control, % of ceiling
+python tools/analyze_stage_b.py         # extra seeds, failure sweep, partial compromise
+python tools/threat_model_check.py      # attack invariants on real observations (torch)
 ```
 
 Figures (T1–T9). The thesis copies go to the student dir; the paper copies drop the
@@ -200,8 +227,9 @@ random-init victim.
   variants, sweeps).
 - `reward_fix_full_config.json` — the **canonical** stress-trained setup (2× hotspot,
   `mean_util_weight=0.1`) plus the `attack_eval` grid.
-- `configs/*.json` — full copies of the canonical config with the overrides for one
-  reported run each (extra seeds, logit attack, partial compromise).
+- `configs/*_config.json` — full copies of the canonical config with the overrides of one
+  v1 run each (GNN seeds, logit attack, partial compromise, seed probe).
+- `configs/probe_*.json` — `attack_eval` overrides for `tools/run_probe_grid.sh`.
 
 ---
 
