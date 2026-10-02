@@ -28,7 +28,10 @@ MOUNTS="-v $R/host_data:/workspace/data -v $R/src:/workspace/src -v $R/tools:/wo
 ceiling() {  # $1 = number of failures
   K=$1; OUT="host_data/results/$RUN/eval/n_$K"
   [ -f "$OUT/damage_ceiling.json" ] && { say "n=$K done"; return; }
-  mkdir -p "$OUT"; ln -sfn ../../models "$OUT/models"
+  mkdir -p "$OUT" && ln -sfn ../../models "$OUT/models"
+  # Without the link the container would create an empty models/ of its own and
+  # the checkpoint guard would (rightly) refuse to evaluate untrained weights.
+  [ -L "$OUT/models" ] || { say "GUARD: could not link models into $OUT"; return; }
   C=/tmp/eval_${RUN}_${V}_n$K.json
   python3 - "$CFG" "$V" "$K" "$C" <<'PY'
 import json, sys
@@ -48,10 +51,18 @@ PY
 }
 
 say "=== eval $RUN $V ($CFG; n = $NS) ==="
-mkdir -p "host_data/results/$RUN/eval"
+# Training containers write as root; take the run over so the eval dirs and model
+# links can be created from here.
+docker run --rm -v "$R/host_data/results/$RUN:/r" "$IMG" chown -R "$(id -u):$(id -g)" /r > /dev/null 2>&1
+mkdir -p "host_data/results/$RUN/eval" || { say "GUARD: cannot write host_data/results/$RUN/eval"; exit 1; }
 for K in $NS; do ceiling "$K" & done
-docker run --rm --name "attr_${RUN}_${V}" --gpus all $MOUNTS -v "$R/$CFG:/workspace/eval_config.json" "$IMG" \
-  python tools/policy_attribution.py --config eval_config.json --results "data/results/$RUN" \
-    --variants "$V" --failures 0,2,4 --out "data/results/$RUN/eval/${V}_attribution.json" >> "$LOG" 2>&1 &
+ATTR="host_data/results/$RUN/eval/${V}_attribution.json"
+if [ -f "$ATTR" ] || docker ps --format '{{.Names}}' | grep -qx "attr_${RUN}_${V}"; then
+  say "attribution done or running"
+else
+  docker run --rm --name "attr_${RUN}_${V}" --gpus all $MOUNTS -v "$R/$CFG:/workspace/eval_config.json" "$IMG" \
+    python tools/policy_attribution.py --config eval_config.json --results "data/results/$RUN" \
+      --variants "$V" --failures 0,2,4 --out "data/results/$RUN/eval/${V}_attribution.json" >> "$LOG" 2>&1 &
+fi
 wait
 say "=== eval $RUN $V END ==="
