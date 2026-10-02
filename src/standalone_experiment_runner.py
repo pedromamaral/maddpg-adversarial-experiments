@@ -1050,17 +1050,9 @@ class StandaloneExperimentRunner:
         n_total_hosts = getattr(env.engine, 'n_total_hosts', maddpg.n_agents)
         n_actions = maddpg.n_actions
         _needs_failure = bool(n_link_failures or target_links)
-        # Snapshot topology before the loop so each episode gets a fresh graph
-        _topo_snapshot = (
-            [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
-            if _needs_failure else None
-        )
         for _ in range(n_eps):
-            if _topo_snapshot is not None:
-                G = env.engine.topology.graph
-                G.remove_edges_from(list(G.edges()))
-                G.add_edges_from(_topo_snapshot)
-                env.engine.topology.refresh_path_cache()
+            # Every episode starts from the intact topology (see restore_intact).
+            env.engine.topology.restore_intact()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             if _needs_failure:
                 self._inject_failures(env.engine, n_link_failures, target_links=target_links)
@@ -1160,18 +1152,10 @@ class StandaloneExperimentRunner:
         k0_action[0::k_per_dest] = 1.0
         all_actions = [k0_action for _ in range(n_hosts)]
         _needs_failure = bool(n_link_failures or target_links)
-        # Snapshot topology before the loop so each episode gets a fresh graph
-        _topo_snapshot = (
-            [(u, v, dict(d)) for u, v, d in engine.topology.graph.edges(data=True)]
-            if _needs_failure else None
-        )
 
         for _ in range(n_eps):
-            if _topo_snapshot is not None:
-                G = engine.topology.graph
-                G.remove_edges_from(list(G.edges()))
-                G.add_edges_from(_topo_snapshot)
-                engine.topology.refresh_path_cache()
+            # Every episode starts from the intact topology (see restore_intact).
+            engine.topology.restore_intact()
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if _needs_failure:
                 self._inject_failures(engine, n_link_failures, target_links=target_links)
@@ -1236,17 +1220,9 @@ class StandaloneExperimentRunner:
         ep_drop_ttl, ep_drop_overflow, ep_drop_no_path = [], [], []
         ep_cap_blocks_per_step, ep_cap_blocks_per_injected = [], []
         ep_max_node_queue_peak, ep_max_node_queue_avg, ep_active_queues_avg = [], [], []
-        # Snapshot topology before the loop so each episode gets a fresh graph
-        _topo_snapshot = (
-            [(u, v, dict(d)) for u, v, d in engine.topology.graph.edges(data=True)]
-            if n_link_failures else None
-        )
         for _ in range(n_eps):
-            if _topo_snapshot is not None:
-                G = engine.topology.graph
-                G.remove_edges_from(list(G.edges()))
-                G.add_edges_from(_topo_snapshot)
-                engine.topology.refresh_path_cache()
+            # Every episode starts from the intact topology (see restore_intact).
+            engine.topology.restore_intact()
             engine.reset_with_load(offered_load_factor=offered_load_factor)
             if n_link_failures:
                 self._inject_failures(engine, n_link_failures)
@@ -2260,21 +2236,13 @@ class StandaloneExperimentRunner:
         # kept separate so it does not desync the paired traffic sequence.
         _rule_rng = random.Random(traffic_seed + 999)
 
-        # Optional targeted link failures (damage-ceiling under failure). Snapshot
-        # the intact topology so each episode starts from a fresh graph before the
-        # target links are removed and the K-path caches rebuilt on the survivors.
+        # Optional link failures (random or targeted). Every episode starts from the
+        # intact topology (see restore_intact) before the links are removed and the
+        # K-path caches rebuilt on the survivors.
         _needs_failure = bool(n_link_failures or target_links)
-        _topo_snapshot = (
-            [(u, v, dict(d)) for u, v, d in env.engine.topology.graph.edges(data=True)]
-            if _needs_failure else None
-        )
 
         for _ in range(n_eps):
-            if _topo_snapshot is not None:
-                G = env.engine.topology.graph
-                G.remove_edges_from(list(G.edges()))
-                G.add_edges_from(_topo_snapshot)
-                env.engine.topology.refresh_path_cache()
+            env.engine.topology.restore_intact()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             if _needs_failure:
                 self._inject_failures(env.engine, n_link_failures, target_links=target_links)

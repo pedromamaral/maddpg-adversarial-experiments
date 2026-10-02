@@ -165,6 +165,8 @@ class NetworkTopology:
         np.random.seed(seed)
 
         self.graph = self._build()
+        # Link failures are injected in place; restore_intact() puts these back.
+        self._intact_edges = [(u, v, dict(d)) for u, v, d in self.graph.edges(data=True)]
         self.hosts = list(self.graph.nodes())
 
         # Shortest-path cache — used by the Shortest Path baseline ONLY (not by RL agents).
@@ -368,6 +370,22 @@ class NetworkTopology:
         return G
 
     # ── path-cache helpers ───────────────────────────────────────────────────
+
+    def restore_intact(self) -> bool:
+        """Put back every link that failure injection removed, and rebuild the
+        path caches. Returns whether anything was missing.
+
+        Evaluations share one topology object, so a failure left in place by one
+        run carries into the next: without this, chained runs (attack arms,
+        baseline rules, conditions) each added n failures to those before them.
+        A no-op on an intact graph, so failure-free runs are unaffected.
+        """
+        if self.graph.number_of_edges() == len(self._intact_edges):
+            return False
+        self.graph.remove_edges_from(list(self.graph.edges()))
+        self.graph.add_edges_from(self._intact_edges)
+        self.refresh_path_cache()
+        return True
 
     def refresh_path_cache(self):
         """Recompute shortest-path cache after topology changes (e.g. link failures).
