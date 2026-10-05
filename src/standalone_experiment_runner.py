@@ -2206,8 +2206,9 @@ class StandaloneExperimentRunner:
 
         out = {}
         # Rules to roll out, as labels: policy | greedy | sp | random | worst, plus
-        # greedy_stale<d> (greedy on link utilisation d steps old) and a '+flow' suffix
-        # (decide once per flow and keep it, as ECMP or flow placement would).
+        # greedy_stale<d> / policy_stale<d> (link utilisation telemetry d steps old)
+        # and a '+flow' suffix (decide once per flow and keep it, as ECMP or flow
+        # placement would).
         specs = attack_eval.get('ceiling_rules', ['policy', 'greedy', 'sp', 'random', 'worst'])
         for label in specs:
             rule, pin, stale = self._parse_rule_spec(label)
@@ -2239,8 +2240,11 @@ class StandaloneExperimentRunner:
         if mod not in ('', 'flow'):
             raise ValueError(f"unknown rule modifier in {label!r}")
         stale = 0
-        if base.startswith('greedy_stale'):
-            stale, base = int(base[len('greedy_stale'):]), 'greedy'
+        if '_stale' in base:
+            base, _, d = base.partition('_stale')
+            stale = int(d)
+            if base not in ('policy', 'greedy'):
+                raise ValueError(f"staleness applies to policy and greedy only: {label!r}")
         if base not in ('policy', 'greedy', 'sp', 'random', 'worst'):
             raise ValueError(f"unknown rule {label!r}")
         return (None if base == 'policy' else base), mod == 'flow', stale
@@ -2263,9 +2267,12 @@ class StandaloneExperimentRunner:
                          stale_steps: int = 0) -> Dict:
         # pin_per_flow: a flow keeps the path its first packet got (NetworkEngine.
         # pin_paths_per_flow). stale_steps: routing rules read link utilisation that
-        # is this many steps old, as with periodic telemetry.
+        # is this many steps old, as with periodic telemetry; the policy reads its
+        # per-path utilisation slots (path_util_slots) that old, while its own queue
+        # and adjacent-link readings stay current.
         env.engine.pin_paths_per_flow = bool(pin_per_flow)
         _util_history = deque(maxlen=max(1, int(stale_steps) + 1))
+        _obs_history = deque(maxlen=max(1, int(stale_steps) + 1))
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         _flip_changed = 0   # per-(agent,destination) argmax decisions the attack flips
@@ -2318,6 +2325,7 @@ class StandaloneExperimentRunner:
             env.engine.topology.restore_intact()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
             _util_history.clear()   # stale telemetry never reaches across episodes
+            _obs_history.clear()
             if _needs_failure:
                 self._inject_failures(env.engine, n_link_failures, target_links=target_links)
                 env.engine.topology.refresh_path_cache()
@@ -2413,6 +2421,12 @@ class StandaloneExperimentRunner:
                                                           trainable_indices, n_actions)
                     elif trainable_indices is not None:
                         t_states = [states[i] for i in trainable_indices]
+                        if stale_steps > 0:
+                            _slots = env.engine.path_util_slots
+                            _obs_history.append([np.asarray(s)[_slots].copy() for s in t_states])
+                            t_states = [np.array(s, dtype=np.float32) for s in t_states]
+                            for s, old in zip(t_states, _obs_history[0]):
+                                s[_slots] = old
                         t_actions = maddpg.choose_action(t_states)
                         actions = self._build_full_actions(t_actions, n_total_hosts,
                                                           trainable_indices, n_actions)
