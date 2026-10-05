@@ -836,6 +836,10 @@ class NetworkEngine:
         hosts = self.topology.hosts
         next_queue: Dict[str, List[Dict]] = defaultdict(list)
         step_sent = step_delivered = step_dropped = 0
+        # Per-agent credit: [forwarding events, delivered, dropped] of the packets each
+        # ingress agent chose the path for (pkt['decider']), counted like the global
+        # step_sent / step_delivered / step_dropped. Returned as info['decider_stats'].
+        decider_stats: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0])
         rewards = []
         _agent_drop_stats = []  # (pkt_drop_count, total) per active agent; None if inactive
         _agent_active = []  # True for agents that processed packets this step
@@ -922,6 +926,7 @@ class NetworkEngine:
                         dst_idx = self._access_to_idx.get(dst, 0)
                         path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
                         pkt['path_k'] = path_k_pkt
+                        pkt['decider'] = host   # this agent owns the packet's outcome
                         paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
                         chosen = self._next_hop_for_transit(paths, path_k_pkt, host, nbrs)
                 else:
@@ -934,6 +939,10 @@ class NetworkEngine:
                     _sp = self.topology.path_cache.get((host, dst), [])
                     chosen = _sp[1] if len(_sp) >= 2 and _sp[1] in nbrs else nbrs[0]
 
+                dec = pkt.get('decider')
+                if dec is not None:
+                    decider_stats[dec][0] += 1
+
                 required_bw = self._required_bw(host, chosen)
                 if self.topology.avail_bw(host, chosen) < required_bw:
                     self._episode_stats['capacity_block_events'] += 1
@@ -941,6 +950,8 @@ class NetworkEngine:
                         dropped += 1
                         step_dropped += 1
                         pkt_drop_count += 1
+                        if dec is not None:
+                            decider_stats[dec][2] += 1
                         self._episode_stats['drop_link_congestion'] += 1
                         self._episode_stats['dropped_delay_samples'].append(
                             max(0, self.time_step - pkt_created)
@@ -951,6 +962,8 @@ class NetworkEngine:
                         # TTL and hop count are unchanged — waiting is not a hop.
                         # Only drop on genuine buffer overflow (MAX_NODE_QUEUE_DEPTH).
                         step_sent -= 1  # this was not a forwarding event
+                        if dec is not None:
+                            decider_stats[dec][0] -= 1
                         if len(next_queue[host]) < MAX_NODE_QUEUE_DEPTH:
                             next_queue[host].append(pkt)
                         else:
@@ -958,6 +971,8 @@ class NetworkEngine:
                             dropped += 1
                             step_dropped += 1
                             pkt_drop_count += 1
+                            if dec is not None:
+                                decider_stats[dec][2] += 1
                             self._episode_stats['drop_overflow'] += 1
                             self._episode_stats['dropped_delay_samples'].append(
                                 max(0, self.time_step - pkt_created)
@@ -972,6 +987,8 @@ class NetworkEngine:
                     delivered += 1
                     step_delivered += 1
                     pkt_delivered_count += 1
+                    if dec is not None:
+                        decider_stats[dec][1] += 1
                     final_hops = pkt_hops + 1
                     self._episode_stats['delivered_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
@@ -986,11 +1003,14 @@ class NetworkEngine:
                         'created_at': pkt_created,
                         'hops': pkt_hops + 1,
                         'ingress': host,
+                        'decider': pkt.get('decider'),
                     })
                 else:
                     dropped += 1
                     step_dropped += 1   # TTL expired
                     pkt_drop_count += 1
+                    if dec is not None:
+                        decider_stats[dec][2] += 1
                     self._episode_stats['drop_ttl'] += 1
                     self._episode_stats['dropped_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
@@ -1097,6 +1117,7 @@ class NetworkEngine:
             'util_variance':     util_var,
             'max_link_utilization': max_util,
             'backlog_packets': current_backlog,
+            'decider_stats': dict(decider_stats),
             'reward_components': {
                 'fwd_success_term':  reward_components['fwd_success_term'],
                 'shaping_term':      reward_components['shaping_term'],

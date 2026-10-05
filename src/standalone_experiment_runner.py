@@ -92,6 +92,34 @@ def _shared_flow_reward(info: Dict, reward_cfg: Dict) -> float:
     )
 
 
+def _credited_rewards(info: Dict, reward_cfg: Dict, agent_hosts: List[str],
+                      r_shared: float) -> List[float]:
+    """Per-agent rewards for one step.
+
+    reward.credit = 'shared' (default): every agent gets the team reward r_shared.
+    One scalar then credits all 14 x 21 routing decisions of the step, and the gain
+    of good routing over random is ~12 % of it, so no single decision is visible
+    in it (tools/reward_alignment.py).
+
+    reward.credit = 'mixed': (1 - w) * r_shared + w * the delivery and loss terms of
+    the team reward computed over the agent's own traffic, i.e. the packets whose
+    path it chose (info['decider_stats']); w = reward.local_weight. An agent that
+    forwarded nothing this step gets r_shared.
+    """
+    if reward_cfg.get('credit', 'shared') != 'mixed':
+        return [r_shared] * len(agent_hosts)
+    w = float(reward_cfg.get('local_weight', 0.5))
+    dw = float(reward_cfg.get('delivery_weight', 1.0))
+    dp = float(reward_cfg.get('drop_penalty', 1.0))
+    stats = info.get('decider_stats', {})
+    out = []
+    for h in agent_hosts:
+        fwd, delivered, dropped = stats.get(h, (0, 0, 0))
+        local = (dw * delivered - dp * dropped) / fwd if fwd > 0 else r_shared
+        out.append((1.0 - w) * r_shared + w * local)
+    return out
+
+
 def _episode_worker(args):
     """
     Collect one episode in a subprocess and return all transitions.
@@ -217,6 +245,11 @@ def _episode_worker(args):
     ep_sent = 0
     ep_dropped = 0
 
+    # Host name of each MADDPG agent, in agent order (per-agent credit).
+    _all_hosts = env.engine.get_all_hosts()
+    _agent_hosts = ([_all_hosts[i] for i in trainable_indices] if filtered
+                    else _all_hosts[:n_agents])
+
     # Precompute trainable_hosts list for central state computation
     _trainable_hosts_local = (
         [engine.topology.hosts[i] for i in trainable_indices]
@@ -250,10 +283,10 @@ def _episode_worker(args):
             # n_agents items in each list passed to store_transition.
             t_states = [np.array(states[i], dtype=np.float32) for i in trainable_indices]
             t_next   = [np.array(next_states[i], dtype=np.float32) for i in trainable_indices]
-            # All variants optimise the same shared flow-level objective.
-            # Only the critic/encoder architecture differs between LC and CC.
+            # The shared flow-level objective, optionally mixed with each agent's
+            # own-traffic outcome (reward.credit; see _credited_rewards).
             r_shared = _shared_flow_reward(info, reward_cfg)
-            t_rewards = [r_shared] * n_agents
+            t_rewards = _credited_rewards(info, reward_cfg, _agent_hosts, r_shared)
             transitions.append((t_states, maddpg_actions, t_rewards, t_next, done, cs, ncs))
             ep_r += sum(t_rewards) / n_agents
         else:
@@ -265,7 +298,7 @@ def _episode_worker(args):
             transitions.append((
                 [np.array(s, dtype=np.float32) for s in states],
                 [np.array(a, dtype=np.float32) for a in executed_actions],
-                [r_shared] * n_agents,
+                _credited_rewards(info, reward_cfg, _agent_hosts, r_shared),
                 [np.array(s, dtype=np.float32) for s in next_states],
                 list(done),
                 None, None,
