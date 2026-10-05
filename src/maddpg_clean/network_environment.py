@@ -525,6 +525,13 @@ class NetworkEngine:
         self._flow_schedule: Dict[int, List[Dict]] = defaultdict(list)
         self._active_flows: List[Dict] = []
         self._flow_seq = 0
+        # Per-flow path pinning (opt-in, evaluation only). Off: every packet takes its
+        # ingress agent's current choice for the destination, so a flow's packets are
+        # sprayed over the paths as the choice changes step to step, at no reordering
+        # cost. On: the first packet of a flow fixes its path for the whole flow, as
+        # ECMP hashing or flow placement does in a real network.
+        self.pin_paths_per_flow = False
+        self._flow_paths: Dict[int, int] = {}
         if self.traffic_mode == 'flow':
             self.topology.configure_flow_reservations(self.flow_hold_steps)
         # Skewed traffic matrix: concentrate a fraction of flows on hot src→dst pairs
@@ -659,6 +666,7 @@ class NetworkEngine:
         self._flow_schedule = defaultdict(list)
         self._active_flows = []
         self._flow_seq = 0
+        self._flow_paths = {}
         if self.traffic_mode == 'flow':
             self._build_flow_schedule()
         else:
@@ -924,7 +932,13 @@ class NetworkEngine:
                         # source endpoint.  kpath_cache is keyed from pkt_src
                         # (the originating endpoint), not from this switch.
                         dst_idx = self._access_to_idx.get(dst, 0)
-                        path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
+                        fid = pkt.get('flow_id')
+                        if self.pin_paths_per_flow and fid in self._flow_paths:
+                            path_k_pkt = self._flow_paths[fid]
+                        else:
+                            path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
+                            if self.pin_paths_per_flow and fid is not None:
+                                self._flow_paths[fid] = path_k_pkt
                         pkt['path_k'] = path_k_pkt
                         pkt['decider'] = host   # this agent owns the packet's outcome
                         paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
@@ -1004,6 +1018,7 @@ class NetworkEngine:
                         'hops': pkt_hops + 1,
                         'ingress': host,
                         'decider': pkt.get('decider'),
+                        'flow_id': pkt.get('flow_id'),
                     })
                 else:
                     dropped += 1

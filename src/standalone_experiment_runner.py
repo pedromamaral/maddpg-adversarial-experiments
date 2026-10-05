@@ -2005,7 +2005,7 @@ class StandaloneExperimentRunner:
                 joint[ai, bs + int(np.argmax(pa[bs:be]))] = 1.0
         return {'central_state': central_state, 'joint_onehot': joint, 'block_size': block_size}
 
-    def _rule_action(self, host, rule, engine, rng):
+    def _rule_action(self, host, rule, engine, rng, util_fn=None):
         """Build a per-destination one-hot routing action from a fixed rule.
 
         For each destination, score the K precomputed paths by their true
@@ -2031,7 +2031,7 @@ class StandaloneExperimentRunner:
                 for k in range(n_avail):
                     p = paths[k]
                     if len(p) >= 2:
-                        u = max(engine.topology.get_util(p[j], p[j + 1])
+                        u = max((util_fn or engine.topology.get_util)(p[j], p[j + 1])
                                 for j in range(len(p) - 1))
                     else:
                         u = 0.0
@@ -2205,26 +2205,45 @@ class StandaloneExperimentRunner:
         env = self._make_attack_env(attack_hotspot)
 
         out = {}
-        runs = [('policy', None), ('greedy', 'greedy'), ('sp', 'sp'),
-                ('random', 'random'), ('worst', 'worst')]
-        for label, rule in runs:
+        # Rules to roll out, as labels: policy | greedy | sp | random | worst, plus
+        # greedy_stale<d> (greedy on link utilisation d steps old) and a '+flow' suffix
+        # (decide once per flow and keep it, as ECMP or flow placement would).
+        specs = attack_eval.get('ceiling_rules', ['policy', 'greedy', 'sp', 'random', 'worst'])
+        for label in specs:
+            rule, pin, stale = self._parse_rule_spec(label)
             res = self._attack_episodes(maddpg, env, n_eps, t_per_ep, attack=False,
                                         offered_load_factor=attack_load, routing_rule=rule,
-                                        target_links=target_links, n_link_failures=n_link_failures)
+                                        target_links=target_links, n_link_failures=n_link_failures,
+                                        pin_per_flow=pin, stale_steps=stale)
             out[label] = res
-            logger.info(f"[CEILING] {label:8s} PDR={res['mean_end_to_end_pdr']:6.2f}%  "
+            logger.info(f"[CEILING] {label:14s} PDR={res['mean_end_to_end_pdr']:6.2f}%  "
                         f"loss={res['mean_pkt_loss']:5.2f}%  reward={res['mean_reward']:8.2f}")
-        pol = out['policy']['mean_end_to_end_pdr']
-        worst = out['worst']['mean_end_to_end_pdr']
-        logger.info(f"[CEILING] policy→worst PDR gap = {pol - worst:+.2f}pp  "
-                    f"(max damage an observation attack could extract)")
+        pol = out['policy']['mean_end_to_end_pdr'] if 'policy' in out else None
+        worst = out['worst']['mean_end_to_end_pdr'] if 'worst' in out else None
+        gap = pol - worst if pol is not None and worst is not None else None
+        if gap is not None:
+            logger.info(f"[CEILING] policy→worst PDR gap = {gap:+.2f}pp  "
+                        f"(max damage an observation attack could extract)")
         out['_meta'] = {'reference_variant': vcfg['name'], 'attack_load': attack_load,
                         'hotspot': bool(attack_hotspot), 'target_links': target_links,
                         'n_link_failures': n_link_failures,
-                        'n_eps': n_eps, 'policy_minus_worst_pp': pol - worst}
+                        'n_eps': n_eps, 'policy_minus_worst_pp': gap}
         self._save(out, 'damage_ceiling.json')
         logger.info("[CEILING] done")
         return out
+
+    @staticmethod
+    def _parse_rule_spec(label: str):
+        """'greedy_stale4+flow' -> ('greedy', True, 4); 'policy' -> (None, False, 0)."""
+        base, _, mod = label.partition('+')
+        if mod not in ('', 'flow'):
+            raise ValueError(f"unknown rule modifier in {label!r}")
+        stale = 0
+        if base.startswith('greedy_stale'):
+            stale, base = int(base[len('greedy_stale'):]), 'greedy'
+        if base not in ('policy', 'greedy', 'sp', 'random', 'worst'):
+            raise ValueError(f"unknown rule {label!r}")
+        return (None if base == 'policy' else base), mod == 'flow', stale
 
     def _attack_episodes(self, maddpg: MADDPG, env: NetworkEnv,
                          n_eps: int, t_per_ep: int,
@@ -2239,7 +2258,14 @@ class StandaloneExperimentRunner:
                          target_links: Optional[list] = None,
                          n_link_failures: int = 0,
                          compromise_seed: Optional[int] = None,
-                         measure_flips: bool = False) -> Dict:
+                         measure_flips: bool = False,
+                         pin_per_flow: bool = False,
+                         stale_steps: int = 0) -> Dict:
+        # pin_per_flow: a flow keeps the path its first packet got (NetworkEngine.
+        # pin_paths_per_flow). stale_steps: routing rules read link utilisation that
+        # is this many steps old, as with periodic telemetry.
+        env.engine.pin_paths_per_flow = bool(pin_per_flow)
+        _util_history = deque(maxlen=max(1, int(stale_steps) + 1))
         ep_rewards, ep_losses, ep_delivery = [], [], []
         ep_delay_p95, ep_backlog, ep_goodput = [], [], []
         _flip_changed = 0   # per-(agent,destination) argmax decisions the attack flips
@@ -2291,6 +2317,7 @@ class StandaloneExperimentRunner:
         for _ in range(n_eps):
             env.engine.topology.restore_intact()
             env.engine.reset_with_load(offered_load_factor=offered_load_factor)
+            _util_history.clear()   # stale telemetry never reaches across episodes
             if _needs_failure:
                 self._inject_failures(env.engine, n_link_failures, target_links=target_links)
                 env.engine.topology.refresh_path_cache()
@@ -2371,7 +2398,16 @@ class StandaloneExperimentRunner:
                         # fixed rule (worst/best/sp/random) to bound the achievable
                         # PDR envelope an observation-space attacker could ever reach.
                         t_hosts = [hosts[i] for i in trainable_indices]
-                        t_actions = [self._rule_action(h, routing_rule, env.engine, _rule_rng)
+                        util_fn = None
+                        if stale_steps > 0:
+                            _topo = env.engine.topology
+                            _snap = {}   # undirected graph: store both orientations
+                            for u, v in _topo.graph.edges():
+                                _snap[(u, v)] = _snap[(v, u)] = _topo.get_util(u, v)
+                            _util_history.append(_snap)
+                            _snap = _util_history[0]   # stale_steps old once filled
+                            util_fn = lambda u, v, s=_snap, t=_topo: s.get((u, v), t.get_util(u, v))
+                        t_actions = [self._rule_action(h, routing_rule, env.engine, _rule_rng, util_fn)
                                      for h in t_hosts]
                         actions = self._build_full_actions(t_actions, n_total_hosts,
                                                           trainable_indices, n_actions)
@@ -2397,6 +2433,7 @@ class StandaloneExperimentRunner:
             ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
             ep_delivery[-1] = float(ep_stats.get('end_to_end_pdr', ep_delivery[-1]))
 
+        env.engine.pin_paths_per_flow = False
         return {
             'mean_reward':   float(np.mean(ep_rewards)),
             'std_reward':    float(np.std(ep_rewards)),
