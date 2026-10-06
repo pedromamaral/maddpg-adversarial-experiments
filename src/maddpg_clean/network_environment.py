@@ -530,7 +530,10 @@ class NetworkEngine:
         # sprayed over the paths as the choice changes step to step, at no reordering
         # cost. On: the first packet of a flow fixes its path for the whole flow, as
         # ECMP hashing or flow placement does in a real network.
-        self.pin_paths_per_flow = False
+        # traffic.pin_paths_per_flow sets the default for training and evaluation;
+        # evaluation rules may switch it on per rollout ('+flow').
+        self.pin_paths_default = bool(traffic_cfg.get('pin_paths_per_flow', False))
+        self.pin_paths_per_flow = self.pin_paths_default
         self._flow_paths: Dict[int, int] = {}
         if self.traffic_mode == 'flow':
             self.topology.configure_flow_reservations(self.flow_hold_steps)

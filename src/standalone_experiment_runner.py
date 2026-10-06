@@ -2270,7 +2270,7 @@ class StandaloneExperimentRunner:
         # is this many steps old, as with periodic telemetry; the policy reads its
         # per-path utilisation slots (path_util_slots) that old, while its own queue
         # and adjacent-link readings stay current.
-        env.engine.pin_paths_per_flow = bool(pin_per_flow)
+        env.engine.pin_paths_per_flow = bool(pin_per_flow) or env.engine.pin_paths_default
         _util_history = deque(maxlen=max(1, int(stale_steps) + 1))
         _obs_history = deque(maxlen=max(1, int(stale_steps) + 1))
         ep_rewards, ep_losses, ep_delivery = [], [], []
@@ -2447,7 +2447,7 @@ class StandaloneExperimentRunner:
             ep_goodput.append(float(ep_stats.get('goodput_per_step', 0.0)))
             ep_delivery[-1] = float(ep_stats.get('end_to_end_pdr', ep_delivery[-1]))
 
-        env.engine.pin_paths_per_flow = False
+        env.engine.pin_paths_per_flow = env.engine.pin_paths_default
         return {
             'mean_reward':   float(np.mean(ep_rewards)),
             'std_reward':    float(np.std(ep_rewards)),
