@@ -68,6 +68,8 @@ class Policy:
 
     def __init__(self, q, n_agents, n_dest, k, eps=0.0):
         self.q, self.n_agents, self.n_dest, self.k = q, n_agents, n_dest, k
+        self.shuffle_slots = None   # set: path telemetry from a random earlier step
+        self._past = []
         self.n_actions = n_dest * k
         self.agents = [None] * n_agents
         self.eps = eps
@@ -77,6 +79,15 @@ class Policy:
         return torch.cat([torch.as_tensor(np.asarray(states), dtype=torch.float32), self.eye], 1)
 
     def choose_action(self, states):
+        if self.shuffle_slots is not None:
+            # Telemetry ablation: each agent reads the per-path utilisation of a random
+            # earlier step of the episode (realistic values, no link to the present).
+            sl = self.shuffle_slots
+            cur = np.asarray(states, dtype=np.float32)
+            self._past.append(cur[:, sl].copy())
+            states = cur.copy()
+            for a in range(self.n_agents):
+                states[a, sl] = self._past[np.random.randint(len(self._past))][a]
         with torch.no_grad():
             q = self.q(self.inputs(states)).numpy()
         choice = q.argmax(2)                                          # [agents, dest]
@@ -124,6 +135,8 @@ def main():
     ap.add_argument('--eval-failures', default='0,2,4,6,8')
     ap.add_argument('--eval-stale', default='0', help='telemetry ages to evaluate, e.g. 0,2,4')
     ap.add_argument('--eval-only', action='store_true', help='load qnet_seed<seed>.pt from --out')
+    ap.add_argument('--eval-shuffle', action='store_true',
+                    help='telemetry ablation: path utilisation from a random earlier step')
     ap.add_argument('--credit', choices=['flow', 'step'], default='flow')
     ap.add_argument('--gamma', type=float, default=0.95, help='--credit step only')
     ap.add_argument('--tau', type=float, default=0.005, help='--credit step: target update')
@@ -249,10 +262,14 @@ def main():
     result = {'config': args.config, 'seed': args.seed, 'credit': args.credit,
               'train_failures': args.train_failures, 'train_load': train_load,
               'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {}}
-    out_json = os.path.join(args.out, f'idqn_{tag}' + ('_eval' if args.eval_only else '') + '.json')
+    suffix = ('_shuffled' if args.eval_shuffle else '_eval') if args.eval_only else ''
+    out_json = os.path.join(args.out, f'idqn_{tag}{suffix}.json')
+    if args.eval_shuffle:
+        pol.shuffle_slots = eng.path_util_slots
     for stale in (int(x) for x in args.eval_stale.split(',')):
         for nf in (int(x) for x in args.eval_failures.split(',')):
             random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
+            pol._past = []   # NB: kept across the episodes of one condition, so 'earlier' spans them
             eng.decision_log = []
             res = runner._attack_episodes(pol, env, args.eval_episodes, T, attack=False,
                                           offered_load_factor=eval_load, n_link_failures=nf,
