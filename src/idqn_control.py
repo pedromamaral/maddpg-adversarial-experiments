@@ -70,6 +70,7 @@ class Policy:
         self.q, self.n_agents, self.n_dest, self.k = q, n_agents, n_dest, k
         self.shuffle_slots = None   # set: path telemetry from a random earlier step
         self._past = []
+        self._rng = np.random.default_rng(0)   # own stream: failures and traffic unchanged
         self.n_actions = n_dest * k
         self.agents = [None] * n_agents
         self.eps = eps
@@ -87,7 +88,7 @@ class Policy:
             self._past.append(cur[:, sl].copy())
             states = cur.copy()
             for a in range(self.n_agents):
-                states[a, sl] = self._past[np.random.randint(len(self._past))][a]
+                states[a, sl] = self._past[self._rng.integers(len(self._past))][a]
         with torch.no_grad():
             q = self.q(self.inputs(states)).numpy()
         choice = q.argmax(2)                                          # [agents, dest]
