@@ -136,8 +136,9 @@ def main():
     ap.add_argument('--eval-failures', default='0,2,4,6,8')
     ap.add_argument('--eval-stale', default='0', help='telemetry ages to evaluate, e.g. 0,2,4')
     ap.add_argument('--eval-only', action='store_true', help='load qnet_seed<seed>.pt from --out')
-    ap.add_argument('--eval-shuffle', action='store_true',
-                    help='telemetry ablation: path utilisation from a random earlier step')
+    ap.add_argument('--eval-shuffle', choices=['path', 'all'], default=None,
+                    help='ablation: path utilisation (path) or the whole observation (all) '
+                         'from a random earlier step')
     ap.add_argument('--credit', choices=['flow', 'step'], default='flow')
     ap.add_argument('--gamma', type=float, default=0.95, help='--credit step only')
     ap.add_argument('--tau', type=float, default=0.005, help='--credit step: target update')
@@ -263,10 +264,11 @@ def main():
     result = {'config': args.config, 'seed': args.seed, 'credit': args.credit,
               'train_failures': args.train_failures, 'train_load': train_load,
               'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {}}
-    suffix = ('_shuffled' if args.eval_shuffle else '_eval') if args.eval_only else ''
+    suffix = (f'_shuffled_{args.eval_shuffle}' if args.eval_shuffle else '_eval') if args.eval_only else ''
     out_json = os.path.join(args.out, f'idqn_{tag}{suffix}.json')
     if args.eval_shuffle:
-        pol.shuffle_slots = eng.path_util_slots
+        pol.shuffle_slots = (eng.path_util_slots if args.eval_shuffle == 'path'
+                             else list(range(eng.state_dims)))
     for stale in (int(x) for x in args.eval_stale.split(',')):
         for nf in (int(x) for x in args.eval_failures.split(',')):
             random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
