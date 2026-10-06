@@ -21,10 +21,11 @@
 #              StandaloneExperimentRunner._parse_rule_spec)
 #   EVAL_NAME  output subdirectory instead of eval/ (keeps the standard evaluation intact)
 #   NO_ATTR=1  skip the attribution run
+#   LOAD       offered load factor (default 2.0, the Paper 1 stress point)
 # Log: ~/<EVAL_NAME>_<RUN>_<VARIANT>.log. Run on the server from the repo root.
 set -u
 RUN=$1; CFG=$2; V=$3; NS=${4:-"0 2 4 6 8"}
-EV=${EVAL_NAME:-eval}; export RULES=${RULES:-}
+EV=${EVAL_NAME:-eval}; export RULES=${RULES:-} LOAD=${LOAD:-}
 R=$(pwd); LOG=$HOME/${EV}_${RUN}_${V}.log
 [ -f "$CFG" ] || { echo "no config $CFG (run from the repo root)"; exit 1; }
 [ -d "host_data/results/$RUN/models/$V" ] || { echo "no models for $V in $RUN"; exit 1; }
@@ -46,7 +47,7 @@ cfg, v, k, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 c = json.load(open(cfg))
 c["variants"] = [x for x in c["variants"] if x["name"] == v]
 ae = c.setdefault("attack_eval", {})
-ae.update({"offered_load_factor": 2.0, "n_link_failures": k, "ceiling_episodes": 20})
+ae.update({"offered_load_factor": float(os.environ.get("LOAD") or 2.0), "n_link_failures": k, "ceiling_episodes": 20})
 ae.pop("target_links", None)
 if os.environ.get("RULES"):
     ae["ceiling_rules"] = os.environ["RULES"].split()
