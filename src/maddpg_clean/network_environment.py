@@ -539,6 +539,8 @@ class NetworkEngine:
         # (with pinning, one per flow), see the ingress branch of step().
         self.decision_log: Optional[List[Dict]] = None
         self._step_util_snapshot: Dict = {}
+        # with the log on: flow_id -> [delivered, dropped] packets after ingress
+        self.flow_outcomes: Dict[int, List[int]] = defaultdict(lambda: [0, 0])
         if self.traffic_mode == 'flow':
             self.topology.configure_flow_reservations(self.flow_hold_steps)
         # Skewed traffic matrix: concentrate a fraction of flows on hot src→dst pairs
@@ -674,6 +676,7 @@ class NetworkEngine:
         self._active_flows = []
         self._flow_seq = 0
         self._flow_paths = {}
+        self.flow_outcomes = defaultdict(lambda: [0, 0])
         if self.traffic_mode == 'flow':
             self._build_flow_schedule()
         else:
@@ -951,7 +954,7 @@ class NetworkEngine:
                             if self.pin_paths_per_flow and fid is not None:
                                 self._flow_paths[fid] = path_k_pkt
                             if self.decision_log is not None:
-                                self._log_decision(host, dst, path_k_pkt)
+                                self._log_decision(host, dst, path_k_pkt, fid)
                         pkt['path_k'] = path_k_pkt
                         pkt['decider'] = host   # this agent owns the packet's outcome
                         paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
@@ -979,6 +982,7 @@ class NetworkEngine:
                         pkt_drop_count += 1
                         if dec is not None:
                             decider_stats[dec][2] += 1
+                            self._flow_outcome(pkt, 1)
                         self._episode_stats['drop_link_congestion'] += 1
                         self._episode_stats['dropped_delay_samples'].append(
                             max(0, self.time_step - pkt_created)
@@ -1000,6 +1004,7 @@ class NetworkEngine:
                             pkt_drop_count += 1
                             if dec is not None:
                                 decider_stats[dec][2] += 1
+                                self._flow_outcome(pkt, 1)
                             self._episode_stats['drop_overflow'] += 1
                             self._episode_stats['dropped_delay_samples'].append(
                                 max(0, self.time_step - pkt_created)
@@ -1016,6 +1021,7 @@ class NetworkEngine:
                     pkt_delivered_count += 1
                     if dec is not None:
                         decider_stats[dec][1] += 1
+                        self._flow_outcome(pkt, 0)
                     final_hops = pkt_hops + 1
                     self._episode_stats['delivered_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
@@ -1039,6 +1045,7 @@ class NetworkEngine:
                     pkt_drop_count += 1
                     if dec is not None:
                         decider_stats[dec][2] += 1
+                        self._flow_outcome(pkt, 1)
                     self._episode_stats['drop_ttl'] += 1
                     self._episode_stats['dropped_delay_samples'].append(
                         max(0, self.time_step - pkt_created)
@@ -1235,7 +1242,7 @@ class NetworkEngine:
                     return nxt
         return None
 
-    def _log_decision(self, host: str, dst: str, path_k: int):
+    def _log_decision(self, host: str, dst: str, path_k: int, flow_id: Optional[int]):
         """Record an applied path decision with the bottleneck utilisation of each
         of the agent's candidate paths as observed at the start of the step."""
         snap = self._step_util_snapshot
@@ -1244,8 +1251,13 @@ class NetworkEngine:
             seen.add(tuple(p))
             utils.append(max((snap.get((p[j], p[j + 1]), snap.get((p[j + 1], p[j]), 0.0))
                               for j in range(len(p) - 1)), default=0.0))
-        self.decision_log.append({'host': host, 'dst': dst, 'k': path_k,
-                                  'utils': utils, 'n_distinct': len(seen)})
+        self.decision_log.append({'host': host, 'dst': dst, 'k': path_k, 'flow_id': flow_id,
+                                  'step': self.time_step, 'utils': utils,
+                                  'n_distinct': len(seen)})
+
+    def _flow_outcome(self, pkt: Dict, i: int):
+        if self.decision_log is not None and pkt.get('flow_id') is not None:
+            self.flow_outcomes[pkt['flow_id']][i] += 1
 
     def _next_hop_for_transit(self, paths: List[List[str]], path_k: int,
                               host: str, nbrs: List[str]) -> Optional[str]:
