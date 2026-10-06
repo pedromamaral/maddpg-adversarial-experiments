@@ -535,6 +535,10 @@ class NetworkEngine:
         self.pin_paths_default = bool(traffic_cfg.get('pin_paths_per_flow', False))
         self.pin_paths_per_flow = self.pin_paths_default
         self._flow_paths: Dict[int, int] = {}
+        # Opt-in diagnostic: a list to receive one record per applied path decision
+        # (with pinning, one per flow), see the ingress branch of step().
+        self.decision_log: Optional[List[Dict]] = None
+        self._step_util_snapshot: Dict = {}
         if self.traffic_mode == 'flow':
             self.topology.configure_flow_reservations(self.flow_hold_steps)
         # Skewed traffic matrix: concentrate a fraction of flows on hot src→dst pairs
@@ -842,6 +846,10 @@ class NetworkEngine:
         degree-2 pass-through switches when filter_mode='degree_ge_3').
         """
         self.time_step += 1
+        if self.decision_log is not None:
+            # link utilisation as the agents observed it, before this step's traffic
+            self._step_util_snapshot = {e: self.topology.get_util(*e)
+                                        for e in self.topology.graph.edges()}
         if self.traffic_mode == 'flow':
             self._inject_scheduled_flow_packets()
         hosts = self.topology.hosts
@@ -942,6 +950,8 @@ class NetworkEngine:
                             path_k_pkt = int(np.argmax(_action_matrix[dst_idx]))
                             if self.pin_paths_per_flow and fid is not None:
                                 self._flow_paths[fid] = path_k_pkt
+                            if self.decision_log is not None:
+                                self._log_decision(host, dst, path_k_pkt)
                         pkt['path_k'] = path_k_pkt
                         pkt['decider'] = host   # this agent owns the packet's outcome
                         paths  = self.topology.kpath_cache.get((pkt_src, dst), [])
@@ -1224,6 +1234,18 @@ class NetworkEngine:
                 if nxt in nbrs:
                     return nxt
         return None
+
+    def _log_decision(self, host: str, dst: str, path_k: int):
+        """Record an applied path decision with the bottleneck utilisation of each
+        of the agent's candidate paths as observed at the start of the step."""
+        snap = self._step_util_snapshot
+        utils, seen = [], set()
+        for p in self.topology.kpath_cache.get((host, dst), [])[:K_PATHS]:
+            seen.add(tuple(p))
+            utils.append(max((snap.get((p[j], p[j + 1]), snap.get((p[j + 1], p[j]), 0.0))
+                              for j in range(len(p) - 1)), default=0.0))
+        self.decision_log.append({'host': host, 'dst': dst, 'k': path_k,
+                                  'utils': utils, 'n_distinct': len(seen)})
 
     def _next_hop_for_transit(self, paths: List[List[str]], path_k: int,
                               host: str, nbrs: List[str]) -> Optional[str]:
