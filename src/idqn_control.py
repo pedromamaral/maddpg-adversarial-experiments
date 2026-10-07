@@ -24,6 +24,14 @@ target network: the value-based twin of the factored LC critic.
 BS and MECS as hot sources, 2 random CS as hot destinations, the shape of the
 evaluation hotspot), so that no single static routing table fits all episodes.
 
+--learner ac is MADDPG with per-decision credit: MADDPG's own ActorNetwork
+(block_softmax) and factored CriticNetwork, one per agent, with the actor trained
+through the critic exactly as MADDPG.learn does (straight-through one-hot of the
+per-destination softmax, entropy bonus); only the critic's target changes, to each
+applied decision's flow outcome. --critic local reads the agent's observation (LC);
+--critic central reads all 14 agents' observations (CC, the 'observations'
+central state of the v2 pilots).
+
 After training, evaluates the greedy (epsilon = 0) policy like tools/run_eval.sh
 (PDR across failure levels, through _attack_episodes) and scores its applied
 decisions like tools/flow_choice_check.py; --eval-stale adds rollouts on
@@ -66,21 +74,76 @@ class QNet(nn.Module):
         return self.net(x).view(-1, self.n_dest, self.k)
 
 
+class ActorCritic:
+    """MADDPG's actor and factored critic per agent, critic fitted to flow outcomes."""
+
+    def __init__(self, n_agents, obs_dim, n_dest, k, critic, alpha, beta, entropy):
+        from maddpg_implementation import ActorNetwork, CriticNetwork
+        self.n_agents, self.n_dest, self.k, self.central = n_agents, n_dest, k, critic == 'central'
+        self.entropy = entropy
+        c_in = n_agents * obs_dim if self.central else obs_dim
+        self.actors = [ActorNetwork(obs_dim, 256, 128, n_dest * k, f'a{i}', '/tmp', device='cpu',
+                                    head='block_softmax', block=k) for i in range(n_agents)]
+        self.critics = [CriticNetwork(c_in, 256, 128, 1, n_dest * k, f'c{i}', '/tmp',
+                                      action_input_dims=n_dest * k, head='factored', block=k).cpu()
+                        for i in range(n_agents)]
+        self.a_opt = [torch.optim.Adam(a.parameters(), lr=alpha) for a in self.actors]
+        self.c_opt = [torch.optim.Adam(c.parameters(), lr=beta) for c in self.critics]
+
+    @staticmethod
+    def decision_values(critic, x):
+        """The factored critic's value of every (destination, path): q_decisions."""
+        return critic.q_decisions(torch.relu(critic.fc2(torch.relu(critic.fc1(x)))))
+
+    def scores(self, states):
+        with torch.no_grad():
+            x = torch.as_tensor(states, dtype=torch.float32)
+            return torch.stack([self.actors[a](x[a]) for a in range(self.n_agents)]).view(
+                self.n_agents, self.n_dest, self.k)
+
+    def update(self, a, batch):
+        obs = torch.as_tensor(np.stack([b[0] for b in batch]), dtype=torch.float32)
+        cs = (torch.as_tensor(np.stack([b[1] for b in batch]), dtype=torch.float32)
+              if self.central else obs)
+        idx = torch.as_tensor([b[2] * self.k + b[3] for b in batch])
+        r = torch.as_tensor([b[4] for b in batch], dtype=torch.float32)
+        critic, actor = self.critics[a], self.actors[a]
+        q = self.decision_values(critic, cs).gather(1, idx.unsqueeze(1)).squeeze(1)
+        c_loss = ((q - r) ** 2).mean()
+        self.c_opt[a].zero_grad(); c_loss.backward(); self.c_opt[a].step()
+        # actor: as MADDPG.learn with actor_mode st_onehot and the factored critic
+        soft = actor(obs)
+        blocks = soft.view(len(batch), self.n_dest, self.k)
+        hard = torch.zeros_like(blocks).scatter_(2, blocks.argmax(2, keepdim=True), 1.0).view_as(soft)
+        act = hard + soft - soft.detach()
+        a_loss = -critic(cs, act).mean()
+        if self.entropy > 0:
+            a_loss = a_loss - self.entropy * -(blocks * blocks.clamp_min(1e-12).log()).sum(-1).mean()
+        self.a_opt[a].zero_grad(); a_loss.backward(); self.a_opt[a].step()
+        return c_loss.item()
+
+    def state_dict(self):
+        return {'actors': [x.state_dict() for x in self.actors],
+                'critics': [x.state_dict() for x in self.critics]}
+
+    def load_state_dict(self, sd):
+        for x, d in zip(self.actors, sd['actors']):
+            x.load_state_dict(d)
+        for x, d in zip(self.critics, sd['critics']):
+            x.load_state_dict(d)
+
+
 class Policy:
     """What _attack_episodes needs from an agent object, for evaluation."""
 
-    def __init__(self, q, n_agents, n_dest, k, eps=0.0):
-        self.q, self.n_agents, self.n_dest, self.k = q, n_agents, n_dest, k
+    def __init__(self, score, n_agents, n_dest, k, eps=0.0):
+        self.score, self.n_agents, self.n_dest, self.k = score, n_agents, n_dest, k
         self.shuffle_slots = None   # set: path telemetry from a random earlier step
         self._past = []
         self._rng = np.random.default_rng(0)   # own stream: failures and traffic unchanged
         self.n_actions = n_dest * k
         self.agents = [None] * n_agents
         self.eps = eps
-        self.eye = torch.eye(n_agents)
-
-    def inputs(self, states):
-        return torch.cat([torch.as_tensor(np.asarray(states), dtype=torch.float32), self.eye], 1)
 
     def choose_action(self, states):
         if self.shuffle_slots is not None:
@@ -93,7 +156,7 @@ class Policy:
             for a in range(self.n_agents):
                 states[a, sl] = self._past[self._rng.integers(len(self._past))][a]
         with torch.no_grad():
-            q = self.q(self.inputs(states)).numpy()
+            q = self.score(np.asarray(states, dtype=np.float32)).numpy()
         choice = q.argmax(2)                                          # [agents, dest]
         if self.eps > 0:
             explore = np.random.rand(*choice.shape) < self.eps
@@ -147,7 +210,10 @@ def main():
     ap.add_argument('--tau', type=float, default=0.005, help='--credit step: target update')
     ap.add_argument('--train-failures', default='0', help='e.g. 0,2,4,6,8: drawn per episode')
     ap.add_argument('--train-random-hotspot', action='store_true')
-    ap.add_argument('--eval-tag', default=None, help='--eval-only: output idqn_seed<s>_<tag>.json')
+    ap.add_argument('--eval-tag', default=None, help='--eval-only: output <prefix>_seed<s>_<tag>.json')
+    ap.add_argument('--learner', choices=['dqn', 'ac'], default='dqn')
+    ap.add_argument('--critic', choices=['local', 'central'], default='local', help='--learner ac')
+    ap.add_argument('--entropy', type=float, default=0.01, help='--learner ac (pilot 4: 0.01)')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     torch.set_num_threads(2)
@@ -168,10 +234,22 @@ def main():
     dst_idx = {d: j for j, d in enumerate(eng.topology.access_nodes)}
 
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
-    q = QNet(eng.state_dims, A, nd, K)
-    opt = torch.optim.Adam(q.parameters(), lr=args.lr)
-    pol = Policy(q, A, nd, K)
-    q_target = copy.deepcopy(q)
+    eye = torch.eye(A)
+    if args.learner == 'ac':
+        assert args.credit == 'flow', "--learner ac implements per-decision (flow) credit"
+        nets = next(v for v in cfg['variants'] if v['name'] == 'LC-Simple')   # pilots' learning rates
+        ac = ActorCritic(A, eng.state_dims, nd, K, args.critic, float(nets.get('alpha', 3e-4)),
+                         float(nets.get('beta', 3e-4)), args.entropy)
+        pol = Policy(ac.scores, A, nd, K)
+        prefix, ckpt = f'ac_{args.critic}', f'ac_{args.critic}_seed{args.seed}.pt'
+        bufs = [deque(maxlen=20_000) for _ in range(A)]   # (obs, central obs, dest, path, reward)
+    else:
+        q = QNet(eng.state_dims, A, nd, K)
+        opt = torch.optim.Adam(q.parameters(), lr=args.lr)
+        pol = Policy(lambda st: q(torch.cat([torch.as_tensor(st), eye], 1)), A, nd, K)
+        q_target = copy.deepcopy(q)
+        prefix, ckpt = 'idqn', f'qnet_seed{args.seed}.pt'
+        bufs = None
     buf = deque(maxlen=200_000)   # flow: (state, agent, dest, path, reward)
     #                               step: (state, agent, paths[nd], reward, next state, done)
     reward_cfg = cfg.get('reward', {})
@@ -184,7 +262,7 @@ def main():
     cs_nodes = [h for h in access if h.startswith('CS')]
     eval_hot = (list(eng._skew_hot_srcs), list(eng._skew_hot_dsts))
     if args.eval_only:
-        q.load_state_dict(torch.load(os.path.join(args.out, f'qnet_{tag}.pt')))
+        (ac if args.learner == 'ac' else q).load_state_dict(torch.load(os.path.join(args.out, ckpt)))
         args.episodes = 0
 
     for ep in range(args.episodes):
@@ -226,19 +304,28 @@ def main():
                 continue
             a = agent_of[d['host']]
             r = dl / (dl + dr)
-            buf.append((seen[d['step']][a], a, dst_idx[d['dst']], d['k'], r))
+            if bufs is not None:
+                central = np.concatenate(seen[d['step']]).astype(np.float16) if args.critic == 'central' else None
+                bufs[a].append((seen[d['step']][a], central, dst_idx[d['dst']], d['k'], r))
+            else:
+                buf.append((seen[d['step']][a], a, dst_idx[d['dst']], d['k'], r))
             rewards.append(r)
         stats = score_decisions(eng.decision_log)
         eng.decision_log = None
         pdr = float(env.get_stats().get('end_to_end_pdr', 0.0))
 
         losses = []
-        if len(buf) >= args.batch:
+        if bufs is not None:
+            for _ in range(args.updates):
+                for a in range(A):
+                    if len(bufs[a]) >= args.batch:
+                        losses.append(ac.update(a, random.sample(bufs[a], args.batch)))
+        elif len(buf) >= args.batch:
             for _ in range(args.updates):
                 batch = random.sample(buf, args.batch)
                 s = torch.as_tensor(np.stack([b[0] for b in batch]), dtype=torch.float32)
                 a = torch.as_tensor([b[1] for b in batch])
-                x = torch.cat([s, pol.eye[a]], 1)
+                x = torch.cat([s, eye[a]], 1)
                 r = torch.as_tensor([b[3 if args.credit == 'step' else 4] for b in batch],
                                     dtype=torch.float32)
                 if args.credit == 'flow':
@@ -250,7 +337,7 @@ def main():
                     s2 = torch.as_tensor(np.stack([b[4] for b in batch]), dtype=torch.float32)
                     done = torch.as_tensor([b[5] for b in batch], dtype=torch.float32)
                     with torch.no_grad():
-                        nxt = q_target(torch.cat([s2, pol.eye[a]], 1)).max(2).values   # [B, nd]
+                        nxt = q_target(torch.cat([s2, eye[a]], 1)).max(2).values   # [B, nd]
                     y = r.unsqueeze(1) + args.gamma * (1 - done).unsqueeze(1) * nxt
                     loss = ((qd - y) ** 2).mean()
                 opt.zero_grad(); loss.backward(); opt.step()
@@ -263,19 +350,21 @@ def main():
                         'flow_reward': float(np.mean(rewards)) if rewards else None,
                         'loss': float(np.mean(losses)) if losses else None, **stats})
         if ep % 25 == 0 or ep == args.episodes - 1:
-            print(f"[IDQN] ep {ep:4d}  eps={pol.eps:.2f}  PDR={pdr:6.2f}  "
+            print(f"[{prefix.upper()}] ep {ep:4d}  eps={pol.eps:.2f}  PDR={pdr:6.2f}  "
                   f"flow reward={history[-1]['flow_reward'] or 0:.3f}  "
                   f"least-loaded={100 * stats.get('least_loaded', 0):5.1f}% "
                   f"(chance {100 * stats.get('chance', 0):4.1f}%)  "
-                  f"loss={history[-1]['loss'] or 0:.4f}  buffer={len(buf)}  {time.time() - t0:6.0f}s",
+                  f"loss={history[-1]['loss'] or 0:.4f}  "
+                  f"buffer={sum(map(len, bufs)) if bufs is not None else len(buf)}  {time.time() - t0:6.0f}s",
                   flush=True)
     if not args.eval_only:
-        torch.save(q.state_dict(), os.path.join(args.out, f'qnet_{tag}.pt'))
+        torch.save((ac if args.learner == 'ac' else q).state_dict(), os.path.join(args.out, ckpt))
 
     # evaluation: greedy policy, as tools/run_eval.sh (PDR) and flow_choice_check.py (choices)
     eng._skew_hot_srcs, eng._skew_hot_dsts = list(eval_hot[0]), list(eval_hot[1])
     pol.eps = 0.0
     result = {'config': args.config, 'seed': args.seed, 'credit': args.credit,
+              'learner': args.learner, 'critic': args.critic if args.learner == 'ac' else None,
               'train_random_hotspot': args.train_random_hotspot,
               'eval_hotspot': {'hot_srcs': eval_hot[0], 'hot_dsts': eval_hot[1]},
               'train_failures': args.train_failures, 'train_load': train_load,
@@ -283,7 +372,7 @@ def main():
     suffix = (f'_shuffled_{args.eval_shuffle}' if args.eval_shuffle else '_eval') if args.eval_only else ''
     if args.eval_only and args.eval_tag:
         suffix = f'_{args.eval_tag}'
-    out_json = os.path.join(args.out, f'idqn_{tag}{suffix}.json')
+    out_json = os.path.join(args.out, f'{prefix}_{tag}{suffix}.json')
     if args.eval_shuffle:
         pol.shuffle_slots = (eng.path_util_slots if args.eval_shuffle == 'path'
                              else list(range(eng.state_dims)))
@@ -304,7 +393,7 @@ def main():
                   f"(chance {100 * stats.get('chance', 0):4.1f}%)  regret={stats.get('regret', 0):.3f}",
                   flush=True)
             json.dump(result, open(out_json, 'w'), indent=1)
-    print("[IDQN] done", flush=True)
+    print(f"[{prefix.upper()}] done", flush=True)
 
 
 if __name__ == '__main__':
