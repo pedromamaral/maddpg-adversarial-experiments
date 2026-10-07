@@ -20,6 +20,9 @@ with the agent's step reward, a factored Q per destination with a soft-updated
 target network: the value-based twin of the factored LC critic.
 
 --train-failures draws a random number of link failures per training episode.
+--train-random-hotspot draws a new hotspot per training episode (4 random sites'
+BS and MECS as hot sources, 2 random CS as hot destinations, the shape of the
+evaluation hotspot), so that no single static routing table fits all episodes.
 
 After training, evaluates the greedy (epsilon = 0) policy like tools/run_eval.sh
 (PDR across failure levels, through _attack_episodes) and scores its applied
@@ -143,6 +146,8 @@ def main():
     ap.add_argument('--gamma', type=float, default=0.95, help='--credit step only')
     ap.add_argument('--tau', type=float, default=0.005, help='--credit step: target update')
     ap.add_argument('--train-failures', default='0', help='e.g. 0,2,4,6,8: drawn per episode')
+    ap.add_argument('--train-random-hotspot', action='store_true')
+    ap.add_argument('--eval-tag', default=None, help='--eval-only: output idqn_seed<s>_<tag>.json')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     torch.set_num_threads(2)
@@ -174,6 +179,10 @@ def main():
     train_failures = [int(x) for x in args.train_failures.split(',')]
     history, t0 = [], time.time()
     tag = f'seed{args.seed}'
+    access = list(eng.topology.access_nodes)
+    sites = sorted({h[2:] for h in access if h.startswith('BS') and 'MECS' + h[2:] in access})
+    cs_nodes = [h for h in access if h.startswith('CS')]
+    eval_hot = (list(eng._skew_hot_srcs), list(eng._skew_hot_dsts))
     if args.eval_only:
         q.load_state_dict(torch.load(os.path.join(args.out, f'qnet_{tag}.pt')))
         args.episodes = 0
@@ -182,6 +191,10 @@ def main():
         pol.eps = max(args.eps_end, args.eps_start
                       - (args.eps_start - args.eps_end) * ep / max(1, args.eps_episodes))
         eng.topology.restore_intact()
+        if args.train_random_hotspot:
+            hot = random.sample(sites, 4)
+            eng._skew_hot_srcs = [f'BS{i}' for i in hot] + [f'MECS{i}' for i in hot]
+            eng._skew_hot_dsts = random.sample(cs_nodes, 2)
         eng.reset_with_load(offered_load_factor=train_load)
         nf = random.choice(train_failures)
         if nf:
@@ -260,11 +273,16 @@ def main():
         torch.save(q.state_dict(), os.path.join(args.out, f'qnet_{tag}.pt'))
 
     # evaluation: greedy policy, as tools/run_eval.sh (PDR) and flow_choice_check.py (choices)
+    eng._skew_hot_srcs, eng._skew_hot_dsts = list(eval_hot[0]), list(eval_hot[1])
     pol.eps = 0.0
     result = {'config': args.config, 'seed': args.seed, 'credit': args.credit,
+              'train_random_hotspot': args.train_random_hotspot,
+              'eval_hotspot': {'hot_srcs': eval_hot[0], 'hot_dsts': eval_hot[1]},
               'train_failures': args.train_failures, 'train_load': train_load,
               'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {}}
     suffix = (f'_shuffled_{args.eval_shuffle}' if args.eval_shuffle else '_eval') if args.eval_only else ''
+    if args.eval_only and args.eval_tag:
+        suffix = f'_{args.eval_tag}'
     out_json = os.path.join(args.out, f'idqn_{tag}{suffix}.json')
     if args.eval_shuffle:
         pol.shuffle_slots = (eng.path_util_slots if args.eval_shuffle == 'path'
