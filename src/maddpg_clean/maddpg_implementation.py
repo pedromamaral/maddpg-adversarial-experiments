@@ -121,8 +121,12 @@ class CriticNetwork(nn.Module):
         #       so the actor's gradient is mostly a state-independent average.
         #   'factored': the trunk reads the state alone and emits one value per
         #       (decision, path) in the action input; Q(s, a) is their mean over the
-        #       chosen paths, plus a state value V(s) for the duelling network. Each
-        #       decision is credited directly, and dQ/da is that per-path value.
+        #       chosen paths. Each decision is credited directly, and dQ/da is that
+        #       per-path value. With the duelling network the per-path values are
+        #       decomposed per decision as in Wang et al. (2016):
+        #       q[d, k] = V_d(s) + A_d(s, k) - mean_k A_d(s, k), separating how well
+        #       a destination's traffic will do from how much better each path is.
+        #       (Under the joint head, 'duelling' is degenerate, see below.)
         if head not in ('joint', 'factored'):
             raise ValueError(f"unknown critic head {head!r}")
         if head == 'factored' and self.action_input_dims % block:
@@ -133,9 +137,10 @@ class CriticNetwork(nn.Module):
         if head == 'factored':
             self.fc1 = nn.Linear(input_dims, fc1_dims)
             self.fc2 = nn.Linear(fc1_dims, fc2_dims)
-            self.q_decisions = nn.Linear(fc2_dims, self.action_input_dims)
+            self.block = block
+            self.q_decisions = nn.Linear(fc2_dims, self.action_input_dims)   # advantages if duelling
             if network_type == 'duelling_q_network':
-                self.value_stream = nn.Linear(fc2_dims, 1)
+                self.value_stream = nn.Linear(fc2_dims, self.n_blocks)    # V_d per decision
             self.init_weights()
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.to(self.device)
@@ -175,12 +180,18 @@ class CriticNetwork(nn.Module):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.zeros_(layer.bias)
 
+    def decision_values(self, state):
+        """Factored head: the value of every (decision, path), [B, action_input_dims]."""
+        x = F.relu(self.fc2(F.relu(self.fc1(state))))
+        q = self.q_decisions(x)
+        if self.network_type == 'duelling_q_network':
+            adv = q.view(-1, self.n_blocks, self.block)
+            q = (self.value_stream(x).unsqueeze(-1) + adv - adv.mean(-1, keepdim=True)).view_as(q)
+        return q
+
     def forward(self, state, action):
         if self.head == 'factored':
-            x = F.relu(self.fc2(F.relu(self.fc1(state))))
-            q = (self.q_decisions(x) * action).sum(dim=1, keepdim=True) / self.n_blocks
-            if self.network_type == 'duelling_q_network':
-                q = q + self.value_stream(x)
+            q = (self.decision_values(state) * action).sum(dim=1, keepdim=True) / self.n_blocks
             return q                                               # [B, 1]
 
         x = F.relu(self.fc1(torch.cat([state, action], dim=1)))

@@ -75,62 +75,115 @@ class QNet(nn.Module):
 
 
 class ActorCritic:
-    """MADDPG's actor and factored critic per agent, critic fitted to flow outcomes."""
+    """MADDPG's actor and factored critic per agent, critic fitted to flow outcomes.
 
-    def __init__(self, n_agents, obs_dim, n_dest, k, critic, alpha, beta, entropy):
-        from maddpg_implementation import ActorNetwork, CriticNetwork
+    duelling: the critic's per-destination duelling head (CriticNetwork, factored).
+    gnn: MADDPG's GNNProcessor encodes all agents' observations jointly over the
+    full topology (transit switches as relay nodes) before the actors; as in
+    MADDPG.learn, the critics read the encoding detached and the GNN is trained
+    through the actor loss.
+    """
+
+    def __init__(self, n_agents, obs_dim, n_dest, k, critic, alpha, beta, entropy,
+                 duelling=False, gnn_adjacency=None, gnn_n_relay=0):
+        from maddpg_implementation import ActorNetwork, CriticNetwork, GNNProcessor
         self.n_agents, self.n_dest, self.k, self.central = n_agents, n_dest, k, critic == 'central'
         self.entropy = entropy
         c_in = n_agents * obs_dim if self.central else obs_dim
         self.actors = [ActorNetwork(obs_dim, 256, 128, n_dest * k, f'a{i}', '/tmp', device='cpu',
                                     head='block_softmax', block=k) for i in range(n_agents)]
         self.critics = [CriticNetwork(c_in, 256, 128, 1, n_dest * k, f'c{i}', '/tmp',
-                                      action_input_dims=n_dest * k, head='factored', block=k).cpu()
+                                      action_input_dims=n_dest * k, head='factored', block=k,
+                                      network_type='duelling_q_network' if duelling
+                                      else 'simple_q_network').cpu()
                         for i in range(n_agents)]
         self.a_opt = [torch.optim.Adam(a.parameters(), lr=alpha) for a in self.actors]
         self.c_opt = [torch.optim.Adam(c.parameters(), lr=beta) for c in self.critics]
+        self.gnn = None
+        if gnn_adjacency is not None:
+            self.gnn = GNNProcessor(obs_dim, 64, n_agents, adjacency=gnn_adjacency,
+                                    n_relay_nodes=gnn_n_relay).cpu()
+            self.gnn.device = torch.device('cpu')
+            assert self.gnn.available, "torch_geometric is required for --gnn"
+            self.g_opt = torch.optim.Adam(self.gnn.parameters(), lr=alpha)
 
-    @staticmethod
-    def decision_values(critic, x):
-        """The factored critic's value of every (destination, path): q_decisions."""
-        return critic.q_decisions(torch.relu(critic.fc2(torch.relu(critic.fc1(x)))))
+    @property
+    def needs_all_obs(self):
+        return self.central or self.gnn is not None
 
-    def scores(self, states):
+    def encode(self, all_obs):
+        """[A, obs] numpy -> per-agent actor inputs [A, obs] (no grad)."""
+        if self.gnn is None:
+            return torch.as_tensor(all_obs, dtype=torch.float32)
+        return torch.as_tensor(np.stack(self.gnn.process_observations(list(all_obs))))
+
+    def scores(self, states, others=None):
+        """Per-path actor outputs [A, n_dest, k]. others: a past snapshot of all
+        observations; agent a then sees its own current observation and the others'
+        from the snapshot (the neighbour-shuffle ablation, GNN only)."""
         with torch.no_grad():
-            x = torch.as_tensor(states, dtype=torch.float32)
-            return torch.stack([self.actors[a](x[a]) for a in range(self.n_agents)]).view(
-                self.n_agents, self.n_dest, self.k)
+            if others is None:
+                x = self.encode(states)
+                out = [self.actors[a](x[a]) for a in range(self.n_agents)]
+            else:
+                out = []
+                for a in range(self.n_agents):
+                    mix = np.array(others, dtype=np.float32)
+                    mix[a] = states[a]
+                    out.append(self.actors[a](self.encode(mix)[a]))
+            return torch.stack(out).view(self.n_agents, self.n_dest, self.k)
 
     def update(self, a, batch):
-        obs = torch.as_tensor(np.stack([b[0] for b in batch]), dtype=torch.float32)
-        cs = (torch.as_tensor(np.stack([b[1] for b in batch]), dtype=torch.float32)
-              if self.central else obs)
+        own = torch.as_tensor(np.stack([b[0] for b in batch]), dtype=torch.float32)
+        B = len(batch)
+        if self.needs_all_obs:
+            allo = torch.as_tensor(np.stack([b[1] for b in batch]), dtype=torch.float32).view(
+                B, self.n_agents, -1)
+        if self.gnn is not None:
+            enc = self.gnn.process_batch([allo[:, j] for j in range(self.n_agents)])
+            actor_in = enc[a]
+            critic_in = (torch.cat([e.detach() for e in enc], 1) if self.central
+                         else enc[a].detach())
+        else:
+            actor_in = own
+            critic_in = allo.reshape(B, -1) if self.central else own
         idx = torch.as_tensor([b[2] * self.k + b[3] for b in batch])
         r = torch.as_tensor([b[4] for b in batch], dtype=torch.float32)
         critic, actor = self.critics[a], self.actors[a]
-        q = self.decision_values(critic, cs).gather(1, idx.unsqueeze(1)).squeeze(1)
+        q = critic.decision_values(critic_in).gather(1, idx.unsqueeze(1)).squeeze(1)
         c_loss = ((q - r) ** 2).mean()
         self.c_opt[a].zero_grad(); c_loss.backward(); self.c_opt[a].step()
         # actor: as MADDPG.learn with actor_mode st_onehot and the factored critic
-        soft = actor(obs)
-        blocks = soft.view(len(batch), self.n_dest, self.k)
+        soft = actor(actor_in)
+        blocks = soft.view(B, self.n_dest, self.k)
         hard = torch.zeros_like(blocks).scatter_(2, blocks.argmax(2, keepdim=True), 1.0).view_as(soft)
         act = hard + soft - soft.detach()
-        a_loss = -critic(cs, act).mean()
+        a_loss = -critic(critic_in, act).mean()
         if self.entropy > 0:
             a_loss = a_loss - self.entropy * -(blocks * blocks.clamp_min(1e-12).log()).sum(-1).mean()
-        self.a_opt[a].zero_grad(); a_loss.backward(); self.a_opt[a].step()
+        self.a_opt[a].zero_grad()
+        if self.gnn is not None:
+            self.g_opt.zero_grad()
+        a_loss.backward()
+        self.a_opt[a].step()
+        if self.gnn is not None:
+            self.g_opt.step()
         return c_loss.item()
 
     def state_dict(self):
-        return {'actors': [x.state_dict() for x in self.actors],
-                'critics': [x.state_dict() for x in self.critics]}
+        sd = {'actors': [x.state_dict() for x in self.actors],
+              'critics': [x.state_dict() for x in self.critics]}
+        if self.gnn is not None:
+            sd['gnn'] = self.gnn.state_dict()
+        return sd
 
     def load_state_dict(self, sd):
         for x, d in zip(self.actors, sd['actors']):
             x.load_state_dict(d)
         for x, d in zip(self.critics, sd['critics']):
             x.load_state_dict(d)
+        if self.gnn is not None:
+            self.gnn.load_state_dict(sd['gnn'])
 
 
 class Policy:
@@ -139,6 +192,7 @@ class Policy:
     def __init__(self, score, n_agents, n_dest, k, eps=0.0):
         self.score, self.n_agents, self.n_dest, self.k = score, n_agents, n_dest, k
         self.shuffle_slots = None   # set: path telemetry from a random earlier step
+        self.shuffle_neighbours = False   # GNN: other agents' observations from a random earlier step
         self._past = []
         self._rng = np.random.default_rng(0)   # own stream: failures and traffic unchanged
         self.n_actions = n_dest * k
@@ -146,6 +200,11 @@ class Policy:
         self.eps = eps
 
     def choose_action(self, states):
+        if self.shuffle_neighbours:
+            cur = np.asarray(states, dtype=np.float32)
+            self._past.append(cur.copy())
+            q = self.score(cur, others=self._past[self._rng.integers(len(self._past))]).numpy()
+            return self._to_actions(q)
         if self.shuffle_slots is not None:
             # Telemetry ablation: each agent reads the per-path utilisation of a random
             # earlier step of the episode (realistic values, no link to the present).
@@ -157,6 +216,9 @@ class Policy:
                 states[a, sl] = self._past[self._rng.integers(len(self._past))][a]
         with torch.no_grad():
             q = self.score(np.asarray(states, dtype=np.float32)).numpy()
+        return self._to_actions(q)
+
+    def _to_actions(self, q):
         choice = q.argmax(2)                                          # [agents, dest]
         if self.eps > 0:
             explore = np.random.rand(*choice.shape) < self.eps
@@ -202,7 +264,7 @@ def main():
     ap.add_argument('--eval-failures', default='0,2,4,6,8')
     ap.add_argument('--eval-stale', default='0', help='telemetry ages to evaluate, e.g. 0,2,4')
     ap.add_argument('--eval-only', action='store_true', help='load qnet_seed<seed>.pt from --out')
-    ap.add_argument('--eval-shuffle', choices=['path', 'all'], default=None,
+    ap.add_argument('--eval-shuffle', choices=['path', 'all', 'neighbours'], default=None,
                     help='ablation: path utilisation (path) or the whole observation (all) '
                          'from a random earlier step')
     ap.add_argument('--credit', choices=['flow', 'step'], default='flow')
@@ -214,6 +276,8 @@ def main():
     ap.add_argument('--learner', choices=['dqn', 'ac'], default='dqn')
     ap.add_argument('--critic', choices=['local', 'central'], default='local', help='--learner ac')
     ap.add_argument('--entropy', type=float, default=0.01, help='--learner ac (pilot 4: 0.01)')
+    ap.add_argument('--duelling', action='store_true', help='--learner ac: per-destination duelling critic')
+    ap.add_argument('--gnn', action='store_true', help='--learner ac: GNN encoder before the actors')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     torch.set_num_threads(2)
@@ -238,10 +302,19 @@ def main():
     if args.learner == 'ac':
         assert args.credit == 'flow', "--learner ac implements per-decision (flow) credit"
         nets = next(v for v in cfg['variants'] if v['name'] == 'LC-Simple')   # pilots' learning rates
+        gnn_adj, gnn_relay = None, 0
+        if args.gnn:   # as StandaloneExperimentRunner._make_variant: full graph, switches relay
+            agents_h = [hosts[i] for i in tr]
+            order = agents_h + [h for h in hosts if h not in set(agents_h)]
+            pos = {h: i for i, h in enumerate(order)}
+            gnn_adj = [[pos[nb] for nb in eng.topology.get_neighbors(h) if nb in pos] for h in order]
+            gnn_relay = len(order) - A
         ac = ActorCritic(A, eng.state_dims, nd, K, args.critic, float(nets.get('alpha', 3e-4)),
-                         float(nets.get('beta', 3e-4)), args.entropy)
+                         float(nets.get('beta', 3e-4)), args.entropy, duelling=args.duelling,
+                         gnn_adjacency=gnn_adj, gnn_n_relay=gnn_relay)
         pol = Policy(ac.scores, A, nd, K)
-        prefix, ckpt = f'ac_{args.critic}', f'ac_{args.critic}_seed{args.seed}.pt'
+        prefix = f"ac_{args.critic}" + ('_duel' if args.duelling else '') + ('_gnn' if args.gnn else '')
+        ckpt = f'{prefix}_seed{args.seed}.pt'
         bufs = [deque(maxlen=20_000) for _ in range(A)]   # (obs, central obs, dest, path, reward)
     else:
         q = QNet(eng.state_dims, A, nd, K)
@@ -305,7 +378,7 @@ def main():
             a = agent_of[d['host']]
             r = dl / (dl + dr)
             if bufs is not None:
-                central = np.concatenate(seen[d['step']]).astype(np.float16) if args.critic == 'central' else None
+                central = np.concatenate(seen[d['step']]).astype(np.float16) if ac.needs_all_obs else None
                 bufs[a].append((seen[d['step']][a], central, dst_idx[d['dst']], d['k'], r))
             else:
                 buf.append((seen[d['step']][a], a, dst_idx[d['dst']], d['k'], r))
@@ -373,7 +446,10 @@ def main():
     if args.eval_only and args.eval_tag:
         suffix = f'_{args.eval_tag}'
     out_json = os.path.join(args.out, f'{prefix}_{tag}{suffix}.json')
-    if args.eval_shuffle:
+    if args.eval_shuffle == 'neighbours':
+        assert args.learner == 'ac' and args.gnn, "neighbour shuffle needs the GNN actor"
+        pol.shuffle_neighbours = True
+    elif args.eval_shuffle:
         pol.shuffle_slots = (eng.path_util_slots if args.eval_shuffle == 'path'
                              else list(range(eng.state_dims)))
     for stale in (int(x) for x in args.eval_stale.split(',')):
