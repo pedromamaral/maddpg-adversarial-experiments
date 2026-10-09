@@ -82,10 +82,16 @@ class ActorCritic:
     full topology (transit switches as relay nodes) before the actors; as in
     MADDPG.learn, the critics read the encoding detached and the GNN is trained
     through the actor loss.
+
+    gnn_stable: the original GNN, updated by all agents' actor losses with no
+    normalisation, grew its features until the actors' softmax saturated (fixed
+    decisions in 4 of 6 runs, 2026-10-09). Stable variant: LayerNorm on the GNN
+    output, one GNN step per update round on the gradient averaged over the agents,
+    and a GNN learning rate of alpha / 10.
     """
 
     def __init__(self, n_agents, obs_dim, n_dest, k, critic, alpha, beta, entropy,
-                 duelling=False, gnn_adjacency=None, gnn_n_relay=0):
+                 duelling=False, gnn_adjacency=None, gnn_n_relay=0, gnn_stable=False):
         from maddpg_implementation import ActorNetwork, CriticNetwork, GNNProcessor
         self.n_agents, self.n_dest, self.k, self.central = n_agents, n_dest, k, critic == 'central'
         self.entropy = entropy
@@ -105,7 +111,11 @@ class ActorCritic:
                                     n_relay_nodes=gnn_n_relay).cpu()
             self.gnn.device = torch.device('cpu')
             assert self.gnn.available, "torch_geometric is required for --gnn"
-            self.g_opt = torch.optim.Adam(self.gnn.parameters(), lr=alpha)
+            self.gnn_stable = gnn_stable
+            self.gnn_norm = nn.LayerNorm(obs_dim) if gnn_stable else nn.Identity()
+            params = list(self.gnn.parameters()) + list(self.gnn_norm.parameters())
+            self.g_opt = torch.optim.Adam(params, lr=alpha / 10 if gnn_stable else alpha)
+            self._g_pending = 0
 
     @property
     def needs_all_obs(self):
@@ -115,7 +125,8 @@ class ActorCritic:
         """[A, obs] numpy -> per-agent actor inputs [A, obs] (no grad)."""
         if self.gnn is None:
             return torch.as_tensor(all_obs, dtype=torch.float32)
-        return torch.as_tensor(np.stack(self.gnn.process_observations(list(all_obs))))
+        with torch.no_grad():
+            return self.gnn_norm(torch.as_tensor(np.stack(self.gnn.process_observations(list(all_obs)))))
 
     def scores(self, states, others=None):
         """Per-path actor outputs [A, n_dest, k]. others: a past snapshot of all
@@ -140,7 +151,7 @@ class ActorCritic:
             allo = torch.as_tensor(np.stack([b[1] for b in batch]), dtype=torch.float32).view(
                 B, self.n_agents, -1)
         if self.gnn is not None:
-            enc = self.gnn.process_batch([allo[:, j] for j in range(self.n_agents)])
+            enc = [self.gnn_norm(e) for e in self.gnn.process_batch([allo[:, j] for j in range(self.n_agents)])]
             actor_in = enc[a]
             critic_in = (torch.cat([e.detach() for e in enc], 1) if self.central
                          else enc[a].detach())
@@ -162,19 +173,39 @@ class ActorCritic:
         if self.entropy > 0:
             a_loss = a_loss - self.entropy * -(blocks * blocks.clamp_min(1e-12).log()).sum(-1).mean()
         self.a_opt[a].zero_grad()
-        if self.gnn is not None:
+        if self.gnn is not None and not self.gnn_stable:
             self.g_opt.zero_grad()
         a_loss.backward()
         self.a_opt[a].step()
         if self.gnn is not None:
-            self.g_opt.step()
+            if self.gnn_stable:
+                self._g_pending += 1      # accumulated; stepped once per round (step_gnn)
+            else:
+                self.g_opt.step()
         return c_loss.item()
+
+    def step_gnn(self):
+        """Stable GNN: one step on the gradient averaged over this round's agents."""
+        if self.gnn is not None and self.gnn_stable and self._g_pending:
+            for p in list(self.gnn.parameters()) + list(self.gnn_norm.parameters()):
+                if p.grad is not None:
+                    p.grad /= self._g_pending
+            self.g_opt.step()
+            self.g_opt.zero_grad()
+            self._g_pending = 0
+
+    def gnn_health(self, all_obs):
+        """Encoding spread, zero share and mean top path probability (saturation)."""
+        enc = self.encode(all_obs)
+        sc = self.scores(all_obs)
+        return float(enc.std()), float((enc == 0).float().mean()), float(sc.max(-1).values.mean())
 
     def state_dict(self):
         sd = {'actors': [x.state_dict() for x in self.actors],
               'critics': [x.state_dict() for x in self.critics]}
         if self.gnn is not None:
             sd['gnn'] = self.gnn.state_dict()
+            sd['gnn_norm'] = self.gnn_norm.state_dict()
         return sd
 
     def load_state_dict(self, sd):
@@ -184,6 +215,8 @@ class ActorCritic:
             x.load_state_dict(d)
         if self.gnn is not None:
             self.gnn.load_state_dict(sd['gnn'])
+            if 'gnn_norm' in sd:
+                self.gnn_norm.load_state_dict(sd['gnn_norm'])
 
 
 class Policy:
@@ -278,6 +311,7 @@ def main():
     ap.add_argument('--entropy', type=float, default=0.01, help='--learner ac (pilot 4: 0.01)')
     ap.add_argument('--duelling', action='store_true', help='--learner ac: per-destination duelling critic')
     ap.add_argument('--gnn', action='store_true', help='--learner ac: GNN encoder before the actors')
+    ap.add_argument('--gnn-stable', action='store_true', help='--gnn: LayerNorm, averaged step, lr/10')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     torch.set_num_threads(2)
@@ -311,9 +345,10 @@ def main():
             gnn_relay = len(order) - A
         ac = ActorCritic(A, eng.state_dims, nd, K, args.critic, float(nets.get('alpha', 3e-4)),
                          float(nets.get('beta', 3e-4)), args.entropy, duelling=args.duelling,
-                         gnn_adjacency=gnn_adj, gnn_n_relay=gnn_relay)
+                         gnn_adjacency=gnn_adj, gnn_n_relay=gnn_relay, gnn_stable=args.gnn_stable)
         pol = Policy(ac.scores, A, nd, K)
-        prefix = f"ac_{args.critic}" + ('_duel' if args.duelling else '') + ('_gnn' if args.gnn else '')
+        prefix = (f"ac_{args.critic}" + ('_duel' if args.duelling else '')
+                  + (('_gnns' if args.gnn_stable else '_gnn') if args.gnn else ''))
         ckpt = f'{prefix}_seed{args.seed}.pt'
         bufs = [deque(maxlen=20_000) for _ in range(A)]   # (obs, central obs, dest, path, reward)
     else:
@@ -393,6 +428,7 @@ def main():
                 for a in range(A):
                     if len(bufs[a]) >= args.batch:
                         losses.append(ac.update(a, random.sample(bufs[a], args.batch)))
+                ac.step_gnn()
         elif len(buf) >= args.batch:
             for _ in range(args.updates):
                 batch = random.sample(buf, args.batch)
@@ -422,6 +458,11 @@ def main():
         history.append({'episode': ep, 'eps': pol.eps, 'pdr': pdr, 'train_failures': nf,
                         'flow_reward': float(np.mean(rewards)) if rewards else None,
                         'loss': float(np.mean(losses)) if losses else None, **stats})
+        if ep % 25 == 0 and bufs is not None and ac.gnn is not None:
+            g = ac.gnn_health(np.stack(t_states))
+            history[-1]['gnn_health'] = g
+            print(f"[GNN] ep {ep:4d}  encoding std={g[0]:.3f}  zero share={100 * g[1]:4.1f}%  "
+                  f"mean top path probability={g[2]:.3f}", flush=True)
         if ep % 25 == 0 or ep == args.episodes - 1:
             print(f"[{prefix.upper()}] ep {ep:4d}  eps={pol.eps:.2f}  PDR={pdr:6.2f}  "
                   f"flow reward={history[-1]['flow_reward'] or 0:.3f}  "
