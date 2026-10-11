@@ -16,15 +16,17 @@ configs and result-generation tooling behind two papers and two MSc theses:
   (`students/goncalo-martins-fgsm-thesis/`) and Miguel Chen on the learned adversary
   (`students/miguel-chen-learned-adversary/`).
 
-> **Status (2 Oct 2026): the learning is being fixed and every variant retrained.** The
-> policies trained so far (v1) never learned to route. They behave as near-static
-> routing tables that ignore their utilisation telemetry, and a greedy least-utilised
-> rule beats all of them. `tools/learnability_probe.py` reproduces the failure in a
-> minute and shows its two causes: a critic that cannot credit a single destination's
-> choice, and independent sigmoid actor outputs that saturate into a fixed table.
-> Paper 1's comparison and Paper 2's attack study, both built on v1 policies, are on hold.
-> The v1 results are archived in `host_data/archive_v1/`. The results that stay valid
-> (policy-independent baselines) are listed under [Weights & results](#weights--results).
+> **Status (11 Oct 2026): Paper 1 rewritten around credit assignment.** The MADDPG
+> policies trained with a step reward (v1, and the v2 pilots 1-4) never learned to route:
+> near-static tables, least-loaded path choice at or below chance. The cause is credit
+> assignment (294 decisions per step, under 3 % of them carrying traffic). Crediting each
+> path decision with its flow's outcome (`src/idqn_control.py --learner ac`) makes MADDPG
+> learn with every critic, value head and GNN variant; observation ablations show it learns
+> a demand-robust routing table, not adaptive routing. The new paper is
+> `paper/paper1_v2/paper1_v2.tex`; `tools/paper1_tables.py` regenerates its tables, figures
+> and every quoted number from `host_data/results`. Paper 2 (attacks) stays on hold: its
+> v1 victims did not use their observations. v1 results are archived in
+> `host_data/archive_v1/`.
 
 ---
 
@@ -85,6 +87,20 @@ host_data/
     p1_ceiling_1x/    damage_ceiling.json      rules at 1x uniform
     failsev_fixed/n_<k>/ damage_ceiling.json   rules under k = 0..8 random link failures
     telemetry_reliance/, policy_attribution.json   evidence that v1 ignores its telemetry
+  # Paper 1 (credit-assignment version), read by tools/paper1_tables.py
+    v2_pilot_lc|cc, v2_p2_*, v2_p3_*  step-reward pilots (eval/n_<k>/, attribution)
+    v2_pilot_lc/eval_realism*/        per-flow pinning and stale-telemetry rules (2x, k=1)
+    granularity/k<k>.log              traffic-granularity sweep (tools/traffic_granularity.py)
+    v2_p4_lc/                         pilot 4 (step reward, realistic regime); eval_3x and
+                                      eval_shift{A,B} hold the rule baselines at 3x, k=4
+                                      pinned; flow_choice_3x.json the applied-decision scores
+    idqn_p4*/                         value-based control (flow credit; _step: step reward;
+                                      _fail, _rh, _rhf: failures / changing hotspot)
+    ac_{local,central}[_duel|_gnn|_gnns]_rhf/   MADDPG with per-decision credit, changing
+                                      hotspot + failures (gnn = unstable encoder, gnns = stable)
+    ac_{local,central}_p4/            MADDPG with per-decision credit, fixed hotspot
+                                      Every *_seed<s>[_tag].json: 'eval' per failure level;
+                                      tags shiftA/B, shuffled[_all|_neighbours], eval (stale)
   archive_v1/                                # superseded, kept for the record and the theses
     results/          every attack run on v1 victims, extra seeds, old models (main_run,
                       stress_run, seeds, seeds_gnn), the pre-fix failure sweeps
@@ -120,7 +136,24 @@ After pulling weights you can run evaluation and attacks **without retraining**.
 
 ---
 
-## Training & clean evaluation (Paper 1)
+## Paper 1 (credit-assignment version)
+
+```bash
+rsync -a --include '*/' --include '*.json' --exclude 'models/' --exclude '*' \
+      --prune-empty-dirs user@server:maddpg-adversarial-experiments/host_data/results/ host_data/results/
+python3 -m venv .venv-plots && .venv-plots/bin/pip install matplotlib numpy
+.venv-plots/bin/python tools/paper1_tables.py      # tables/, figures/, numbers.json
+cd paper/paper1_v2 && latexmk -pdf paper1_v2.tex   # needs Routing.bib and the author photos
+```
+
+Learners are trained with `src/idqn_control.py` (see its docstring): `--learner ac`
+(MADDPG, `--critic local|central`, `--duelling`, `--gnn [--gnn-stable]`) or the default
+value-based control, `--credit flow|step`, `--train-random-hotspot`, `--train-failures`,
+and the evaluation options `--eval-only`, `--eval-shuffle path|all|neighbours`,
+`--eval-stale`, `--eval-tag`. The configs are `configs/v2_pilot4_lc.json` (realistic regime:
+pinned flows, k=4, 3x) and `configs/v2_pilot4_lc_shift{A,B}.json` (unseen hotspots).
+
+## Training & clean evaluation (Paper 1, earlier version)
 
 `run_phase.sh <phase> [comma,separated,variants]` wraps the runner; monitor with
 `check_progress.sh <container> follow`. Select a config with `CONFIG_PATH` (repo-relative,

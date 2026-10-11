@@ -1,0 +1,559 @@
+\documentclass[10pt,journal,comsoc]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{float}
+\usepackage{cite}
+\usepackage{color}
+\usepackage{multirow}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{mathtools}
+\usepackage{makecell}
+\usepackage{tabularx}
+\newtheorem{definition}{Definition}
+% Tables (tables/T*.tex), figures (figures/F*.pdf) and every number quoted in the
+% text (numbers.json) are regenerated from the result files by tools/paper1_tables.py.
+\graphicspath{{./figures/}{./Figures/}}
+\renewcommand{\arraystretch}{1.15}
+\newcommand{\pending}[1]{\textcolor{red}{[#1]}}
+% Generated table bodies are read with the TeX primitive so that \toprule and
+% \bottomrule inside them stay at the start of an alignment row.
+\makeatletter\newcommand{\tablebody}[1]{\@@input #1 }\makeatother
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+\setlength{\emergencystretch}{1em}
+
+\begin{document}
+
+\title{Credit Assignment, not Architecture: What Multi-Agent Reinforcement Learning Routing Agents Learn in a Service-Provider Network}
+
+\author{
+  Pedro Amaral,~\IEEEmembership{Member,~IEEE,}%
+  \thanks{Pedro Amaral is with the Departamento de Engenharia Electrot\'ecnica e de Computadores, Faculdade de Ci\^encias e Tecnologia,
+  FCT/UNL, Universidade Nova de Lisboa, 2829-516 Caparica, Portugal; and Instituto de Telecomunica\c{c}\~oes, 1049-001 Lisbon, Portugal (e-mail: pfa@fct.unl.pt)}%
+  \\
+  Diogo Raimundo%
+  \thanks{Diogo Raimundo is with the Departamento de Engenharia Electrot\'ecnica e de Computadores,\\ Faculdade de Ci\^encias e Tecnologia, FCT/UNL, Universidade Nova de Lisboa,\\ 2829-516 Caparica, Portugal (e-mail: \{d.raimundo\}@campus.fct.unl.pt)}
+}
+
+\markboth{IEEE Transactions on Network and Service Management}%
+{Amaral and Raimundo: Credit Assignment, not Architecture, in MARL Routing}
+
+\maketitle
+
+\begin{abstract}
+Multi-Agent Deep Deterministic Policy Gradient (MADDPG) algorithms have been proposed for routing optimisation because they can learn adaptive routing policies without a model of the network. Their gains are usually reported against shortest-path forwarding, in simulators that let traffic be spread packet by packet and that give the agents exact, current link utilisation. In this work we revisit MADDPG routing on a real 86-node service-provider topology and ask what the agents actually learn. We show that MADDPG agents trained with the usual step reward, with centralised or local critics, with or without Graph Neural Network (GNN) state encoding, do not learn to route: they freeze into near-static routing tables and choose the least-loaded path no more often than chance. We trace this to credit assignment, since a single reward per step credits 294 path decisions of which fewer than 3\% carry traffic, and we show that the same failure affects a value-based learner given the same reward. Crediting each path decision with the outcome of the flow it placed makes MADDPG, with every critic, value head and GNN variant tested, beat flow-level Equal-Cost Multi-Path (ECMP) spreading by 1.5 to 5 points of delivery and come within 1.3 points of a greedy least-utilised rule with exact telemetry on unseen demand patterns. Observation ablations show, however, that what is learned is a demand-robust routing table rather than adaptive routing. We also show that per-packet spreading and exact telemetry inflate the usual baselines by up to 10 points, and propose an evaluation methodology that exposes these effects.
+\end{abstract}
+\IEEEpubidadjcol
+\begin{IEEEkeywords}
+  Multi-agent reinforcement learning; credit assignment; routing; MADDPG; graph neural networks; traffic engineering; evaluation methodology
+\end{IEEEkeywords}
+
+\section{Introduction}
+The increasing complexity of communication networks has created significant challenges for routing systems. Traditional link-state protocols based on shortest-path routing are effective at path discovery and adapt quickly to topology changes, but they do not distribute traffic optimally, which leads to congestion and under-utilisation of link capacity~\cite{he2023routing,xiao2021leveraging}. Furthermore, finding optimal link weights for shortest-path routing under constraints is computationally intractable~\cite{kodialam2022network}, which makes global traffic optimisation difficult.
+
+Deep Reinforcement Learning (DRL) has been proposed as a promising approach to address these limitations by learning adaptive routing policies directly from interaction with the network~\cite{abrol2024deep,valadarsky2017learning}. Multi-Agent Deep Deterministic Policy Gradient (MADDPG)~\cite{lowe2017multi} algorithms extend this idea to many agents, each responsible for a portion of the network, which reduces the state and action space of every agent and improves scalability~\cite{bhavanasi2022routing,geng2020multi,li2022applications}. Graph Neural Networks (GNNs) are often added to encode the topology and to generalise across network configurations~\cite{bhavanasi2022routing,he2023routing,almasan2022deep}.
+
+\subsection{Motivation}
+The evidence that these agents learn to route rests on a fairly uniform evaluation practice: learned policies are compared against shortest-path forwarding, sometimes against simple heuristics, in packet-level or flow-level simulators designed by the authors. In an earlier version of this study we followed the same practice and compared seven MADDPG variants on a real service-provider network, reporting that the centralised critic was the dominant design choice and that the learned policies were robust to link failures. When we analysed what the trained agents were doing, however, we found that they were not routing at all. The policies had frozen into near-static routing tables, they ignored the per-path utilisation in their own observations, and their path choices agreed with the least-utilised path less often than a random choice would. The architecture rankings therefore described which static table each variant had frozen into, not differences in learned routing behaviour.
+
+This raised three questions that, to our knowledge, have not been addressed together in the literature. Why do MADDPG routing agents fail to learn path selection? What does it take for them to learn it? And how should a learned routing policy be evaluated so that a static table is not mistaken for adaptive routing?
+
+\subsection{Available Approaches}
+Two lines of work bear directly on these questions. The first is credit assignment in cooperative Multi-Agent Reinforcement Learning (MARL): when all agents share one reward, each agent must infer how much of it was caused by its own action, and a range of techniques has been proposed to make this possible, from difference rewards~\cite{agogino2004unifying} to counterfactual baselines~\cite{foerster2018counterfactual} and value decomposition~\cite{sunehag2018value}. Routing is an extreme case, because each agent takes one path decision per destination and per step, and almost all of those decisions route no traffic at a given time. The second line is evaluation methodology. Deep reinforcement learning results are known to be sensitive to evaluation choices~\cite{henderson2018deep}, and machine-learning-based traffic engineering has been found to be fragile under realistic conditions~\cite{bernardez2021machine}. In routing, the baselines matter as much as the learner: per-flow ECMP is the deployed default in many networks, adaptive flow placement is a well-studied alternative~\cite{alfares2010hedera,alizadeh2014conga}, and demand-oblivious routing gives provable robustness to changing traffic~\cite{applegate2003making,azar2003optimal}. These baselines are rarely used in MARL routing studies.
+
+\subsection{Contributions}
+In this work we study MADDPG routing on a real 86-node service-provider topology with a provider-edge, $K$-shortest-path forwarding model, and we combine a diagnosis of the learning failure with a fix and with an evaluation methodology. Our contributions are:
+\begin{itemize}
+  \item We show that MADDPG routing agents trained with a per-step reward do not learn path selection, for centralised and local critics, simple and duelling value heads, and with or without GNN encoding, and we propose diagnostics that reveal this: the share of static decisions, agreement with the least-loaded path measured on the decisions that are actually applied, and the delivery lost when the agents' telemetry is shuffled.
+  \item We trace the failure to credit assignment: with 294 path decisions per step of which fewer than 3\% carry traffic, a step reward does not resolve which decision helped. We show that a value-based learner trained on the same reward fails in the same way, and that crediting each decision with the outcome of the flow it placed makes both learners work, so that the reward, not the learning algorithm, is the decisive factor.
+  \item We show that, once credit is assigned per decision, the architecture is secondary: centralised and local critics, simple and duelling heads, and GNN-encoded actors reach the same delivery within 1.5 points, beat flow-level ECMP by 1.5 to 5 points and come within 1.3 points of a greedy least-utilised rule on unseen demand patterns. We also report and fix a training instability of the GNN encoder that froze the agents into static tables.
+  \item We show, through observation ablations and demand shifts, that what MADDPG learns in this setting is a demand-robust routing table rather than adaptive routing: shuffling the agents' whole observation costs less than one point of delivery, and training on a single demand pattern produces tables that fall below ECMP when the demand changes.
+  \item We show that two common simulator choices, per-packet path spreading and exact, current telemetry, inflate the random and greedy baselines by up to 10 points, and that the headroom available to any learner depends strongly on traffic granularity. We propose an evaluation regime with flow-level path pinning, stale telemetry and changing demand that exposes these effects.
+\end{itemize}
+
+The paper has the following structure: section~\ref{State_of_Art} reviews the state of the art; in section~\ref{model} we define the multi-agent Markov decision process and the two credit-assignment schemes; section~\ref{sec:maddpg} describes the MADDPG learning model and its variants; section~\ref{expSetup} details the simulation environment, the baselines and the evaluation methodology; in section~\ref{sec:results} we present and analyse the results, and section~\ref{sec:discussion} discusses their implications and limitations. Section~\ref{conclusion} concludes the paper.
+
+\section{State of the Art} \label{State_of_Art}
+\subsection{DRL for routing optimisation}
+DRL has been applied in several traffic engineering applications, such as routing, congestion control and resource management~\cite{xiao2021leveraging,prakash2023survey}. Early DRL routing approaches typically adopt a single centralised agent that maps observed traffic matrices to link weights or splitting ratios~\cite{stampa2017deep,valadarsky2017learning}. Subsequent works use multi-variate utility functions to balance delay, loss and throughput~\cite{xiao2021leveraging,yu2018drom}, and refine either the training procedure or the neural architecture: in~\cite{xu2018experience}, TE-aware exploration and prioritised replay are added to Deep Deterministic Policy Gradient (DDPG) for split-ratio optimisation, and in~\cite{8780950} Convolutional or Recurrent Neural Networks are added on top of DDPG to exploit spatial or temporal structure in traffic matrices. The work in~\cite{huang2024intelligent} combines a Deep Q-Network (DQN) with prioritised experience replay and loop-free path exploration over SDN, and DAR-DRL~\cite{rao2024dar} integrates a locally aware GNN with an actor--critic agent for hop-by-hop adaptive routing. These single-agent methods show that data-driven policies can outperform shortest-path and heuristic schemes, but they face scalability problems as state and action spaces grow with the network size~\cite{feriani2021single,geng2020multi,guo2024distributed}.
+
+\subsection{Multi-agent DRL for routing}
+To address scalability, recent work formulates routing as MARL, where routers or regions act as agents with local observations~\cite{xiao2021leveraging,feriani2021single}. MADDPG~\cite{lowe2017multi} is a foundational approach for cooperative multi-agent systems in continuous action spaces. It addresses the non-stationarity of multi-agent environments with Centralised Training and Decentralised Execution (CTDE): during training a centralised critic sees the observations and actions of all agents, while during execution each actor acts on local observations only. In~\cite{geng2020multi} the authors propose a distributed traffic engineering framework for multi-region networks with specialised agents for terminal and outgoing traffic, and in~\cite{tong2023intelligent} MADDPG agents in SDN have one actor per traffic type and share a local critic. Fully decentralised alternatives, in which agents communicate only with their neighbours, require additional communication protocols and may converge more slowly~\cite{feriani2021single,wang2024scheduling,li2022applications,zhao2020improving,kuang2025rs}.
+
+The choice between centralised and local critics is a fundamental trade-off in MARL design~\cite{lyu2023centralized,lyu2021contrasting}, and GNNs have been proposed to improve generalisation across topologies~\cite{bhavanasi2022routing,bernardez2023magnneto,li2023gappo,ma2024routing}. Both design axes are usually evaluated through the delivery or delay of the resulting policy against shortest-path forwarding. Table~\ref{tab:soa_overview} gives an overview of the surveyed approaches.
+
+\begin{table*}[htbp]
+  \centering
+  \caption{Overview of DRL- and MARL-based routing and traffic engineering approaches.}
+  \label{tab:soa_overview}
+  \begin{tabular}{|p{2.2cm}|p{2.1cm}|p{1.4cm}|p{1.9cm}|p{1.9cm}|p{1.5cm}|p{2.1cm}|}
+    \hline
+    \textbf{Reference} & \textbf{Setting} & \textbf{Agent type} & \textbf{DRL algorithm} & \textbf{Critic centrality} & \textbf{GNN} & \textbf{Control/output} \\
+    \hline
+    Stampa et al.~\cite{stampa2017deep} & Intra-domain SDN TE & Single & DQN-style DRL & Centralised value & No & Link weights \\
+    \hline
+    Valadarsky et al.~\cite{valadarsky2017learning} & Intra-domain TE & Single & DRL & Centralised & No & Routing configuration \\
+    \hline
+    Yu et al.~\cite{yu2018drom} & SDN routing & Single & DQN & Centralised value & No & Split ratios \\
+    \hline
+    Xu et al.~\cite{xu2018experience} & WAN TE & Single & DDPG + PER & Centralised critic & No & Split ratios \\
+    \hline
+    Sun et al.~\cite{8780950} & SDN routing & Single & DDPG + RNN/CNN & Centralised critic & No & Routing policy \\
+    \hline
+    Huang et al.~\cite{huang2024intelligent} & SDN routing & Single & Dueling DQN + PER & Centralised value & No & Path selection \\
+    \hline
+    Rao et al.~\cite{rao2024dar} & IP routing & Single & Actor--Critic & Local critic & Local GNN & Next hop \\
+    \hline
+    Geng et al.~\cite{geng2020multi} & Distributed TE (multi-region) & Multi & MARL (policy gradient) & Centralised (CTDE) & No & Region-level traffic split \\
+    \hline
+    Tong et al.~\cite{tong2023intelligent} & SDN online routing & Multi & MADDPG & Shared local critic & No & Per-flow routing decisions \\
+    \hline
+    Zhao et al.~\cite{zhao2020improving} & Inter-domain routing & Multi & MARL & Fully decentralised & No & BGP-like routing decisions \\
+    \hline
+    Wang et al.~\cite{wang2024scheduling} & Wireless real-time flows & Multi & Centralised vs decentralised RL & Centralised vs local critic & No & Scheduling / routing of flows \\
+    \hline
+    Kuang et al.~\cite{kuang2025rs} & QoS-differentiated routing & Multi & MADDPG & Centralised critic & No & Routing strategy per QoS class \\
+    \hline
+    Bhavanasi et al.~\cite{bhavanasi2022routing} & Routing (various topologies) & Single / Multi & GCN policy, MA-DQN & Centralised (SA-GCN), local (MA-DQN) & GCN (SA only) & Next-hop / path decisions \\
+    \hline
+    He et al.~\cite{he2023routing} & KDN routing & Single & DRL + GNN & Centralised critic & GNN & Link weights / paths \\
+    \hline
+    Almasan et al.~\cite{almasan2022deep} & TE / routing & Single & DRL & Centralised critic & GNN & TE decisions (load balancing) \\
+    \hline
+    Bern\'ardez et al.~\cite{bernardez2023magnneto} & TE, multi-topology & Multi & MARL & Centralised training & GNN & Local routing close to optimal solver \\
+    \hline
+    Li et al.~\cite{li2023gappo} & Robust routing & Multi & Actor--Critic (GAPPO) & Centralised critic & GAT & Next-hop \\
+    \hline
+    Ma et al.~\cite{ma2024routing} & Computing power network & Single & DRL + GNN & Centralised critic & GNN & Joint routing / resource allocation \\
+    \hline
+    Liu et al.~\cite{liu2023scalable} & Online routing, multi-type services & Single & DRL & Centralised critic & No & Path / resource selection \\
+    \hline
+    Guo et al.~\cite{guo2024distributed} & Hybrid SDN TE & Multi & MARL & Centralised critic & No & Intra-domain TE decisions \\
+    \hline
+  \end{tabular}
+\end{table*}
+
+\subsection{Credit assignment in cooperative MARL}
+When cooperating agents share one reward, every agent receives the same signal whatever its own contribution, and must learn from it which of its actions helped. This is the structural credit-assignment problem~\cite{agogino2004unifying}. Difference rewards address it by giving each agent the change in the global reward caused by its own action~\cite{agogino2004unifying}; Counterfactual Multi-Agent (COMA) policy gradients use a centralised critic to compute a counterfactual baseline per agent~\cite{foerster2018counterfactual}; and value-decomposition methods learn a joint value as a sum of per-agent values~\cite{sunehag2018value}. MADDPG's centralised critic partly addresses non-stationarity, but on its own it does not decompose the reward. In routing, the problem is compounded because each agent's action is itself a vector of decisions, one per destination, and only a small and changing subset of them routes traffic at any time. To our knowledge, the routing works in Table~\ref{tab:soa_overview} do not analyse whether their agents resolve this per-decision credit, nor whether the learned policies depend on the congestion signals in their observations.
+
+\subsection{Baselines and evaluation of learned routing}
+Deep reinforcement learning results depend heavily on evaluation choices such as seeds, hyperparameters and baselines~\cite{henderson2018deep}, and the traffic engineering community has found that machine-learning optimisers can be fragile under realistic conditions~\cite{bernardez2021machine}. In routing, three classes of baseline are particularly relevant. Per-flow ECMP hashing is the deployed default in many networks; it keeps each flow on one path, which avoids packet reordering, at the cost of hash collisions between large flows. Adaptive flow placement, which places or moves flows according to measured congestion~\cite{alfares2010hedera,alizadeh2014conga}, defines what congestion-aware routing can achieve with current measurements. Finally, demand-oblivious and robust routing compute a fixed routing that performs well for a whole set of traffic matrices~\cite{applegate2003making,azar2003optimal}; a learned policy that ignores its state and still performs well is, in effect, an approximation of such a routing. The learned-routing literature mostly compares against shortest path, and, in our experience, the simulators used often let traffic be split per packet over several paths and give the agents exact, current utilisation, two choices that change the baselines considerably.
+
+\subsection{Positioning of this work}
+Several gaps remain. (i) \emph{Credit assignment:} MARL routing studies do not test whether their agents resolve per-decision credit, and we show that with a step reward they do not. (ii) \emph{What is learned:} delivery against shortest path does not reveal whether a policy adapts to congestion or applies a fixed table, and we propose observation ablations that do. (iii) \emph{Realistic baselines:} per-flow ECMP, adaptive placement with stale measurements and demand changes are rarely used, and we show that they move the bar by several points. (iv) \emph{Architecture:} the effect of critic centrality, value heads and GNN encoding is usually reported without controlling for whether learning took place at all. Our work addresses these gaps on a real service-provider topology with paired traffic and three training seeds per configuration.
+
+\section{Multi-Agent Markov Decision Process Formulation} \label{model}
+
+\begin{table}[!t]
+  \centering
+  \caption{Notation}
+  \label{tab:mamdp_notation}
+  \begin{tabular}{cl}
+    \toprule
+    \textbf{Symbol} & \textbf{Description} \\
+    \midrule
+    $N$ & Number of learning agents (PE switches) \\
+    $s_i$ & Local observation of agent $i$ \\
+    $\mathbf{b}_i$ & Available bandwidth on links adjacent to $i$ \\
+    $\mathcal{D}_{\text{acc}}$ & Set of access (endpoint) destinations \\
+    $K$ & Number of pre-computed paths per OD pair \\
+    $u_{i,d,k}$ & Bottleneck utilisation of path $k$ to destination $d$ \\
+    $a_{i,d}$ & Path index chosen by agent $i$ for destination $d$ \\
+    $f$ & A flow; $\delta(f)$ its deciding agent, $\kappa(f)$ its path \\
+    $D_t, L_t$ & Step delivery and loss fractions \\
+    $\bar{u}_t$, $u_{e,t}$ & Mean and per-link utilisation at step $t$ \\
+    $w_D,w_L,w_U,w_V$ & Step-reward weights \\
+    $w$ & Weight of the agent's own traffic in per-agent credit \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The routing problem is formulated as a multi-agent Markov Decision Process (MDP) $\langle \mathcal{S}, \mathcal{A}, \mathcal{P}, \mathcal{R}, \gamma \rangle$. The routing model is an abstraction of a provider-edge (PE), label-switched network (e.g.\ EVPN over MPLS): traffic endpoints (base stations, MEC servers and content servers) are single-homed sources and sinks; the distribution-tier switches to which they attach act as ingress PE agents that select an end-to-end path per destination; core switches transit packets along the selected path. Only the $N$ PE switches are learning agents.
+
+\subsection{State Space}
+\begin{definition}
+  \label{local_state}
+  For agent $i$, the local observation is
+  \[
+    s_i = \big\langle \mathbf{b}_i,\; \mathbf{q}_i,\; \mathbf{p}_i,\; \mathbf{m}_i,\; \mathbf{U}_i \big\rangle,
+  \]
+  where $\mathbf{b}_i \in [0,1]^{\Delta_{\max}}$ is the available bandwidth on the links adjacent to $i$ (zero-padded to the maximum degree $\Delta_{\max}$); $\mathbf{q}_i$ holds the normalised number of queued packets and of distinct destinations among them; $\mathbf{p}_i \in \{0,1\}^{|\mathcal{D}_{\text{acc}}|}$ indicates, for every destination, whether agent $i$ holds a queued packet for it; $\mathbf{m}_i \in [0,1]^{3}$ collects the mean, maximum and variance of the utilisation of the links incident to $i$; and $\mathbf{U}_i \in [0,1]^{|\mathcal{D}_{\text{acc}}|\times K}$ stacks the bottleneck (maximum-over-hops) utilisation $u_{i,d,k}$ of each of the $K$ paths to each destination.
+\end{definition}
+
+The term $\mathbf{U}_i$ lets an actor compare paths by their end-to-end congestion; it is exactly the information used by the greedy least-utilised baseline (section~\ref{subsec:baselines}), so a policy that loses to greedy with fresh telemetry has a learnability, not an observability, gap. On the topology of section~\ref{expSetup} the local observation has 94 dimensions. The centralised critic of MADDPG uses the concatenation of all $N$ local observations.
+
+\subsection{Action Space}
+\begin{definition}
+  \label{def:action_space}
+  Agent $i$'s action is the vector $a_i = (a_{i,d})_{d \in \mathcal{D}_{\text{acc}}}$ with $a_{i,d} \in \{0,\dots,K-1\}$, where $k$ selects the $k$-th pre-computed path to destination $d$ (path $0$ is the shortest).
+\end{definition}
+
+Paths are pre-computed with a $K$-shortest-paths procedure that enforces hop diversity and are recomputed on the surviving graph after a link failure. The chosen path is carried as a label so that transit nodes forward consistently (a loop-free, MPLS-like LSP). We consider two ways of applying the decisions. With \emph{per-packet} choice, every packet takes the path its ingress agent currently selects for its destination, so a flow's packets may be spread over several paths. With \emph{per-flow} choice, the first packet of a flow fixes its path for the lifetime of the flow, as ECMP hashing or flow placement would in a real network; only that first decision is then applied. Unless stated otherwise we use per-flow choice (section~\ref{subsec:traffic}).
+
+Each agent takes $|\mathcal{D}_{\text{acc}}| = 21$ decisions per step, and the $N = 14$ agents take $294$. A decision matters only when the agent places a flow for that destination, which is rare: on the traffic of the original configuration of this study, about $1.8$ flows are active per step, and only $0.6\%$ of the $294$ decisions route a packet at a given step. This sparsity is at the heart of the credit-assignment problem studied in this paper.
+
+\subsection{Reward and Credit Assignment}
+We compare two ways of rewarding the agents.
+
+\begin{definition}
+  \label{def:step_reward}
+  \emph{Step reward.} At step $t$, the team reward is
+  \begin{equation}
+    r_t = w_D\, D_t - w_L\, L_t - w_U\, \bar{u}_t - w_V\, \mathrm{Var}_{e}\big(u_{e,t}\big),
+    \label{eq:reward_function}
+  \end{equation}
+  where $D_t$ and $L_t$ are the fractions of the packets handled in the step that were delivered and dropped, $\bar{u}_t$ is the mean link utilisation and $\mathrm{Var}_e(u_{e,t})$ its variance across links, with $(w_D, w_L, w_U, w_V) = (1.0, 1.0, 0.1, 0.3)$. With \emph{per-agent} credit, agent $i$ receives $(1-w)\,r_t + w\,r_{i,t}$, where $r_{i,t}$ is the delivery and loss part of~\eqref{eq:reward_function} computed only over the packets whose path agent $i$ chose.
+\end{definition}
+
+The step reward ranks fixed routing rules exactly as the end-to-end delivery does (greedy, random, shortest path and worst path, in that order), so it is not misspecified. Its problem is resolution: on the original traffic, greedy routing earns only about $12\%$ more return per episode than random routing, and that difference is spread over $294$ decisions per step, almost all of which route nothing. Per-agent credit narrows the credit to the agent, but each agent still receives one number for its $21$ decisions.
+
+\begin{definition}
+  \label{def:flow_credit}
+  \emph{Per-decision credit.} Let $f$ be a flow whose first packet was assigned path $\kappa(f)$ by agent $\delta(f)$, with observation $s_{\delta(f)}$ at that step. The decision is credited with the share of the flow's packets that were delivered,
+  \begin{equation}
+    r(f) = \frac{\text{delivered}(f)}{\text{delivered}(f) + \text{dropped}(f)} ,
+    \label{eq:flow_credit}
+  \end{equation}
+  and is stored as the sample $\big(s_{\delta(f)},\, \delta(f),\, d(f),\, \kappa(f),\, r(f)\big)$, where $d(f)$ is the flow's destination.
+\end{definition}
+
+This means that every applied decision receives its own outcome, and decisions that route nothing produce no sample. Per-decision credit treats each decision as a contextual bandit (the discount factor plays no role) and ignores the effect of a decision on other flows, which is the usual approximation of independent learners. It requires that the outcome of each flow can be attributed to the agent that placed it, which in a label-switched network is a matter of counting delivered and dropped packets per label at the egress.
+
+\section{Learning Models}
+\label{sec:maddpg}
+
+\subsection{MADDPG Actor and Critic}
+Each agent $i$ has an actor that maps its local observation to one probability distribution over the $K$ paths of every destination,
+\begin{equation}
+  \boldsymbol{\pi}_{i,d}(s_i) = \mathrm{softmax}\big(f_{\theta_i}(s_i)_d\big) \in \Delta^{K-1}, \quad d \in \mathcal{D}_{\text{acc}},
+  \label{eq:actor}
+\end{equation}
+and executes $a_{i,d} = \arg\max_k \pi_{i,d,k}$. During training, $\epsilon$-greedy exploration replaces each decision with a uniformly random path with probability $\epsilon$, decayed from $1.0$ to $0.05$ over the first third of training. In the earlier version of this study, and in the first configuration we diagnose in section~\ref{sec:v1}, the actor used independent sigmoid outputs instead of~\eqref{eq:actor}; we show below that this choice contributes to the agents freezing into static tables.
+
+The critic is \emph{factored}: its trunk reads the critic's state input $x$ alone and outputs one value $q_{d,k}(x)$ for every (destination, path) pair, and the value of an action is their mean over the chosen paths,
+\begin{equation}
+  Q(x, a_i) = \frac{1}{|\mathcal{D}_{\text{acc}}|} \sum_{d,k} q_{d,k}(x)\, a_{i,d,k},
+  \label{eq:factored_critic}
+\end{equation}
+where $a_{i,d,k}$ is the one-hot encoding of the action. With a \emph{local} critic (LC), $x = s_i$; with a \emph{centralised} critic (CC), $x$ is the concatenation of all agents' observations. Each decision is therefore credited through its own value, and $\partial Q/\partial a_{i,d,k}$ is that value. In the earlier version of this study the critic was \emph{joint}, $Q([x; a])$ from the concatenated state and action, which barely resolves an individual decision's value.
+
+The actor is trained through the critic, as in MADDPG, with a straight-through one-hot estimator that uses the hard per-destination argmax in the forward pass and the softmax gradient in the backward pass, and an entropy bonus of weight $0.01$ on the per-destination distributions:
+\begin{equation}
+  \mathcal{L}_{\text{actor}}(\theta_i) = -\mathbb{E}\big[Q\big(x, g(\boldsymbol{\pi}_i(s_i))\big)\big] - 0.01\, \mathbb{E}\big[\textstyle\sum_d H(\boldsymbol{\pi}_{i,d})\big].
+\end{equation}
+With the step reward the critic is trained with the usual temporal-difference target ($\gamma = 0.95$, soft target updates with $\tau = 0.005$). With per-decision credit the critic regresses the stored outcome of each decision, $\big(q_{d(f),\kappa(f)}(x) - r(f)\big)^2$, while the actor update is unchanged.
+
+\subsection{Value Heads}
+In the earlier version of this study the duelling head summed two scalar streams computed from the concatenated state and action. Because the output is a single scalar and the action is an input, no action-wise advantage centring is possible, and the two streams span the same function class as a single linear output; the simple and duelling variants were therefore the same model up to parameterisation, which explains why their ordering changed sign across training seeds. The factored critic has an action dimension per decision, which makes a real duelling decomposition~\cite{wang2016dueling} possible:
+\begin{equation}
+  q_{d,k}(x) = V_d(x) + A_{d,k}(x) - \frac{1}{K}\sum_{k'} A_{d,k'}(x),
+  \label{eq:duelling}
+\end{equation}
+which separates how well the traffic to destination $d$ is expected to do in state $x$ from how much better or worse each path is. This decomposition is attractive in our setting, since the paths of a destination usually deliver very similar shares of their traffic.
+
+\subsection{GNN Encoder}
+In the GNN variants, a two-layer GraphConv~\cite{morris2019weisfeiler} encoder processes all agents' observations on the full physical topology before the actors: agent nodes carry their observation, the remaining switches are relay nodes with zero features, and each layer combines a node's features with the sum of its neighbours' through separate weights, with a residual connection from the input,
+\begin{equation}
+  \tilde{\mathbf{x}}_v = \mathrm{ReLU}\Big(\mathrm{GC}^{(2)}\big(\mathrm{ReLU}(\mathrm{GC}^{(1)}(\mathbf{x}_v))\big) + \mathbf{x}_v\Big).
+  \label{eq:gnn_layer}
+\end{equation}
+The critics read the encoding without gradient, and the encoder is trained through the actor losses. In this original form, the shared encoder is updated by every agent's actor loss, with no normalisation, and we found that its features grew until the actors' softmax saturated (section~\ref{sec:architecture}). The \emph{stable} variant applies a layer normalisation to the encoder output, takes one encoder step per update round on the gradient averaged over the agents, and uses a learning rate ten times smaller than the actors'.
+
+\subsection{Value-Based Control}
+To separate the effect of the learning algorithm from that of the reward, we also train independent value-based learners with the same agents, observations and simulator. One Q-network, shared by the agents and given a one-hot agent identifier, outputs $q_{d,k}(s_i)$ for every (destination, path) pair, and each agent takes the path with the highest value per destination; there is no actor and no gradient through a critic. With per-decision credit, the network regresses $r(f)$ of~\eqref{eq:flow_credit}. With the step reward, it is trained by Q-learning on the per-agent credited step reward, with every destination's chosen path credited with the agent's reward, $\gamma = 0.95$ and a soft-updated target network; this is the value-based counterpart of the factored local critic.
+
+\section{Simulation Environment and Evaluation Methodology} \label{expSetup}
+
+\subsection{System Architecture}
+The framework is implemented in Python using PyTorch, with the topology represented as a NetworkX graph carrying per-link capacity and utilisation. A network engine performs a step-clocked, flow-based packet simulation: at each step every PE agent forwards its queued packets along their paths, link utilisation is updated, and rewards are computed. Each flow reserves bandwidth on the links it traverses for a fixed number of steps per packet, and a packet that finds insufficient bandwidth on its next link is dropped. The simulator captures link capacities, congestion-driven loss and hop-by-hop forwarding, but not transport-layer dynamics, so absolute delivery figures would differ in a packet-level simulator or in deployment. The results of this paper are comparative: every policy and rule runs on the same engine with identical traffic and path sets, and the evaluation reseeds the traffic generator before every run, so that all strategies at a given load and failure count face the same episodes and their differences are paired.
+
+\subsection{Network Topology}
+The evaluation uses a real 86-node hierarchical service-provider topology (Table~\ref{tab:topology}). Twenty-one access endpoints, seven base stations (BS), seven MEC servers (MEC) and seven content servers (CS), are single-homed to the distribution tier. The fourteen distribution switches act as ingress PE agents; the remaining fifty-one core switches transit traffic. Link capacities are heterogeneous (300 to 1000 units on backbone links), and the maximum node degree is 6.
+
+\begin{table}[!t]
+  \centering
+  \caption{Service-provider topology characteristics}
+  \label{tab:topology}
+  \begin{tabular}{lc}
+    \toprule
+    \textbf{Property} & \textbf{Value} \\
+    \midrule
+    Number of nodes & 86 \\
+    Number of links & 106 \\
+    Access endpoints (BS / MEC / CS) & 21 (7 / 7 / 7) \\
+    Distribution (PE agent) switches ($N$) & 14 \\
+    Core (transit) switches & 51 \\
+    Maximum node degree ($\Delta_{\max}$) & 6 \\
+    Paths per OD pair ($K$) & 3 \\
+    Local observation dimension & 94 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Topology properties}
+\label{subsec:topology-scope}
+Because every conclusion in this paper is drawn on one real service-provider network, we verify that the instance is representative of its class. Two structural properties matter: \emph{path redundancy}, i.e.\ multiple hop-diverse routes between provider edges, and \emph{capacity headroom}, i.e.\ a core provisioned for peak demand. Table~\ref{tab:topo-zoo} measures path redundancy on seven real backbone and service-provider topologies from the Internet Topology Zoo~\cite{knight2011internet} together with ours, using the fraction of links that are bridges and the mean number of edge-disjoint paths between core node pairs. Our topology falls inside the class range on every statistic (bridge fraction $0.20$ against $0.05$--$0.34$; mean edge-disjoint paths $2.06$ against $1.61$--$3.03$; mean degree $2.47$ against $2.3$--$3.9$). Almost every core pair has at least two disjoint routes, while full three-way edge-disjointness is less common, which is why our forwarding model uses $K{=}3$ hop-diverse paths that may share some links. Capacity headroom is a provisioning decision not encoded in the Topology Zoo data. The conclusions should therefore transfer to topologies with these properties and should not be extrapolated to sparse, capacity-tight or tree-like networks, where path diversity is structurally absent.
+
+\begin{table}[!t]
+  \centering
+  \caption{Structural representativeness of the evaluation topology: seven real backbone/SP networks from the Internet Topology Zoo~\cite{knight2011internet} and ours. Statistics on the largest connected component; edge-disjoint paths sampled over pairs of degree-$\geq2$ nodes in the $2$-core.}
+  \label{tab:topo-zoo}
+  \small
+  \begin{tabular}{lrrrrr}
+    \toprule
+    Topology & $N$ & $E$ & Mean & Bridge & Mean edge- \\
+             &     &     & deg. & frac. & disj.\ paths \\
+    \midrule
+    Cogentco   & 197 & 243 & 2.47 & 0.13 & 2.02 \\
+    Colt       & 153 & 177 & 2.31 & 0.34 & 2.01 \\
+    Deltacom   & 113 & 161 & 2.85 & 0.06 & 2.32 \\
+    GtsCE      & 149 & 193 & 2.59 & 0.07 & 2.12 \\
+    NTT        &  32 &  63 & 3.94 & 0.11 & 3.03 \\
+    TataNld    & 145 & 186 & 2.57 & 0.05 & 2.14 \\
+    UsCarrier  & 158 & 189 & 2.39 & 0.16 & 1.61 \\
+    \midrule
+    Class mean & --- & --- & 2.73 & 0.13 & 2.18 \\
+    \textbf{Ours (SP-86)} & \textbf{86} & \textbf{106} & \textbf{2.47} & \textbf{0.20} & \textbf{2.06} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Traffic Model}
+\label{subsec:traffic}
+Traffic is generated as access-to-access flows scheduled across each 256-step episode; each flow has a duration of 12 steps and injects one packet per active step. In the hotspot regime a fraction $0.75$ of the flows goes from four sites (BS1--4 and MEC1--4) to two content servers (CS1, CS2), emulating a content-delivery flash crowd. The \emph{original} configuration, used by the earlier version of this study and in section~\ref{sec:v1}, has 21 flows per unit of offered load and per-packet path choice, and is evaluated at $2\times$ load. As shown in section~\ref{sec:realism}, this configuration has very few concurrent flows, each using a large share of a link, and per-packet choice lets these flows be spread over several paths at no cost.
+
+The \emph{realistic} configuration, used for all learning experiments from section~\ref{sec:credit} on, makes three changes. Flows are pinned to the path chosen for their first packet; the offered load is split into four times as many flows of a quarter of the rate ($k{=}4$), which keeps the total load identical; and training and evaluation take place at $3\times$ load. Section~\ref{sec:realism} motivates this choice. To test generalisation we use two shifted hotspots that no policy is trained on: \emph{shift A} moves the hotspot to a different region (sites 4--7 to CS5 and CS6), and \emph{shift B} keeps the sources and changes the destinations (sites 1--4 to CS3 and CS4). Policies are trained either on the fixed hotspot or on a \emph{changing} hotspot, drawn per training episode as four random sites and two random content servers, optionally combined with $0$ to $8$ random link failures per episode.
+
+\subsection{Training}
+All learners are trained for 750 episodes (150 epochs of five episodes), with three independent training seeds per configuration. Table~\ref{tab:training_params} lists the hyperparameters.
+
+\begin{table}[!t]
+  \centering
+  \caption{Training hyperparameters}
+  \label{tab:training_params}
+  \begin{tabular}{lc}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    Actor / critic learning rate & $3\times10^{-4}$ (Adam) \\
+    Value-based learner learning rate & $10^{-3}$ (Adam) \\
+    Discount factor $\gamma$ (step reward) & 0.95 \\
+    Soft update rate $\tau$ (step reward) & $5\times10^{-3}$ \\
+    Actor entropy weight & 0.01 \\
+    Exploration $\epsilon$ & $1.0 \rightarrow 0.05$ over 250 episodes \\
+    Training episodes & 750 (256 steps each) \\
+    Minibatch, updates (per decision) & 256 per agent, 20/episode \\
+    Hidden layers & 256, 128 \\
+    GNN hidden dimension & 64 \\
+    Per-agent credit weight $w$ & 0.5 \\
+    Training seeds & 3 per configuration \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Baselines}
+\label{subsec:baselines}
+Since every strategy selects among the same $K$ pre-computed paths, any fixed rule is directly comparable to the learned policies:
+\begin{itemize}
+  \item \textbf{Shortest path}: always path $0$, equivalent to a shortest-path control plane.
+  \item \textbf{Random}: a uniformly random path per decision. With per-flow choice this is flow-level ECMP, and we call it ECMP; with per-packet choice it is packet spraying.
+  \item \textbf{Greedy}: for each decision, the path with the lowest current bottleneck utilisation, using exactly the $\mathbf{U}_i$ signal in the agents' observations; with per-flow choice it is a myopic adaptive flow placement.
+  \item \textbf{Greedy with stale telemetry}: as greedy, but reading link utilisation that is $\Delta$ steps old, as with periodic telemetry.
+  \item \textbf{Worst path}: the most congested path, the floor of the achievable range.
+\end{itemize}
+
+\subsection{Metrics and Diagnostics}
+\label{subsec:metrics}
+The headline metric is the end-to-end packet-delivery ratio (PDR), delivered over injected packets, which counts packets still in flight at the end of an episode as undelivered. Every result is the mean of 20 paired evaluation episodes; learned results are the mean over three training seeds, and we report the per-seed range when it matters. To establish what a policy has learned we use four diagnostics:
+\begin{itemize}
+  \item \textbf{Static share}: the fraction of live (agent, destination) decisions that equal that pair's most frequent path; $100\%$ is a fixed routing table.
+  \item \textbf{Least-loaded share}: among applied decisions whose candidate paths differ in utilisation, the share that chose a least-utilised path, compared with the share a uniform choice would reach (\emph{chance}). With per-flow choice we score only the first decision of each flow, the one that is applied. Greedy scores $100\%$ by construction.
+  \item \textbf{Observation shuffle}: the PDR when every agent reads its path telemetry, or its whole observation, from a random earlier step of the episode, keeping realistic values but removing any link with the present. A policy that loses nothing does not use its current state.
+  \item \textbf{Neighbour shuffle} (GNN only): as above, but only the observations of the other agents are replaced, which tests whether the encoder uses neighbour information.
+\end{itemize}
+
+\section{Results} \label{sec:results}
+
+\subsection{MADDPG trained with a step reward does not route}
+\label{sec:v1}
+Table~\ref{tab:v1} reports the seven MADDPG variants of the earlier version of this study (sigmoid actor, joint critic, shared step reward), on the original configuration at $2\times$ hotspot load. Their delivery ranges from $73.1\%$ to $87.3\%$, which places all of them above shortest path ($73.8\%$) except one, but below random per-packet spreading ($90.0\%$) and far below greedy ($97.2\%$). The diagnostics explain why. Between $82\%$ and $99\%$ of the live decisions repeat the pair's most frequent path, and $77\%$ to $99\%$ of the chosen sigmoid outputs exceed $0.99$, so the policies are near-static routing tables with saturated outputs. Their agreement with the least-loaded path ($21\%$--$42\%$) is below chance ($42\%$--$46\%$) for every variant. And shuffling the per-path telemetry changes delivery by less than half a point in six of the seven variants; for CC-Duelling, delivery even improves by $2.3$ points. In other words, the policies do not use the congestion signal they are given.
+
+\begin{table}[!t]
+  \centering
+  \caption{MADDPG with step reward, sigmoid actor and joint critic, original configuration, $2\times$ hotspot, no failures. Static, least-loaded, chance and saturated in \%; shuffle loss is the PDR lost (pp) when path telemetry is shuffled (negative: gained).}
+  \label{tab:v1}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \resizebox{\columnwidth}{!}{\begin{tabular}{lrrrrrr}
+        \tablebody{tables/T1_v1.tex}
+  \end{tabular}}
+\end{table}
+
+The architecture rankings of the earlier version of this study, centralised above local critic and GNN below its base, therefore compared static tables, and we withdraw them. We also withdraw its conclusions on failure robustness, which were obtained with the same policies.
+
+\subsection{Why: credit assignment over sparse decisions}
+\label{sec:why}
+To isolate the cause we reproduced the learning problem in a controlled setting: a single agent facing independent per-destination choices with an immediate reward, trained with the same actor, critic and update code. In this easy setting the joint critic resolves a single destination's best path only $63\%$ of the time, against $55\%$ by chance, so the actor's gradient is close to a state-independent average; and the sigmoid actor, trained through a straight-through one-hot, follows absolute value levels rather than differences between paths, saturates, and freezes. The actor network itself is capable, reaching $98\%$ when trained by supervision. Replacing the actor with a per-destination softmax and the critic with the factored critic~\eqref{eq:factored_critic} raises the share of best-path choices to $82\%$, and to $91\%$--$92\%$ with an entropy bonus.
+
+The real problem is much harder. With the step reward, one scalar credits 294 decisions per step, of which $0.6\%$ route a packet, and the difference in return between good and random routing is about $12\%$. Table~\ref{tab:pilots} reports the configurations we trained to address this, all with the step reward. The softmax actor and factored critic unfreeze the policies (the static share drops to about $50\%$) and raise the local-critic variant from $77.2\%$ to $89.0\%$; an entropy bonus, an observation-based centralised critic and per-agent credit add at most $2.3$ further points. None of them clearly beats random per-packet spreading at $2\times$ load, and none chooses the least-loaded path above chance. As expected, the improvements that act on the network architecture cannot compensate for a training signal that does not resolve individual decisions.
+
+\begin{table}[!t]
+  \centering
+  \caption{MADDPG configurations trained with the step reward (original configuration, $2\times$ hotspot); PDR at $n$ failed links, least-loaded and chance in \% at $n=0$. Each row adds to the softmax actor and factored critic.}
+  \label{tab:pilots}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{lrrrr}
+        \tablebody{tables/T4_pilots.tex}
+  \end{tabular}
+\end{table}
+
+\subsection{Baseline realism and traffic granularity}
+\label{sec:realism}
+Before evaluating any fix, we checked the baselines. Table~\ref{tab:realism} shows the fixed rules on the original configuration when their decisions are pinned per flow, as in a real network, and when greedy reads telemetry that is a few steps old. Pinning costs random spreading $8.2$ points ($90.0\%$ to $81.9\%$) and greedy $8.0$ points ($97.2\%$ to $89.2\%$), and greedy loses $5.0$ points when its telemetry is two steps old and $10.7$ points when it is four steps old. The original configuration therefore flatters both baselines: per-packet spreading of a few large flows is free in the simulator but would reorder packets in a real network, and exact, current utilisation is not available to a real router.
+
+\begin{table}[!t]
+  \centering
+  \caption{Fixed rules on the original configuration ($2\times$ hotspot), with per-packet or per-flow path choice and with telemetry $\Delta$ steps old; PDR (\%) at $n$ failed links.}
+  \label{tab:realism}
+  \footnotesize
+  \begin{tabular}{llrr}
+        \tablebody{tables/T2_realism.tex}
+  \end{tabular}
+\end{table}
+
+Traffic granularity matters as much. Table~\ref{tab:granularity} and Fig.~\ref{fig:granularity} split the same offered load into $k$ times as many flows of $1/k$ the rate, with per-flow pinning. With few large flows ($k{=}1$), ECMP suffers hash collisions and every rule delivers poorly; as flows become finer, ECMP approaches the greedy rule, and at $2\times$ load and $k \geq 8$ it is within one point of it, leaving no headroom for any learner. As expected, ECMP works well with many small flows and poorly with few large ones, which is the regime that motivates adaptive flow placement~\cite{alfares2010hedera}. We chose $k{=}4$ at $3\times$ load as the realistic configuration because it leaves a meaningful but realistic headroom between ECMP and greedy ($5.5$ points in this sweep) while five times more decisions carry traffic than in the original configuration ($3.0\%$ against $0.6\%$).
+
+\begin{table*}[!t]
+  \centering
+  \caption{Traffic granularity sweep with per-flow pinning (hotspot demand, 5 episodes per point): $k$ times as many flows of $1/k$ the rate at the same offered load. Live is the share of the 294 decisions that route a packet per step; Greedy$_\Delta$ uses telemetry $\Delta$ steps old.}
+  \label{tab:granularity}
+  \footnotesize
+  \begin{tabular}{rrrrrrrrrr}
+        \tablebody{tables/T3_granularity.tex}
+  \end{tabular}
+\end{table*}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{F1_granularity.pdf}
+  \caption{Delivery of the fixed rules against flow granularity $k$ with per-flow pinning, at $2\times$ and $3\times$ hotspot load. Finer flows bring ECMP close to greedy; $k{=}4$ at $3\times$ load is used as the realistic configuration.}
+  \label{fig:granularity}
+\end{figure}
+
+\subsection{Credit assignment, not the algorithm, decides learning}
+\label{sec:credit}
+Table~\ref{tab:credit} and Fig.~\ref{fig:credit} compare two learners, MADDPG and the value-based control, under the two credit schemes, all trained on the fixed hotspot without failures and evaluated in the realistic configuration. With the per-agent step reward, both learners stay within about one point of ECMP: MADDPG-LC delivers $92.7\%$ and the value-based learner $91.1\%$ (seeds $88.0$--$93.1\%$), against $91.4\%$ for ECMP, and neither chooses the least-loaded path above chance on the applied decisions ($42\%$ and $36\%$, against $41\%$ and $39\%$). The value-based learner, which has no actor and no gradient through a critic, therefore fails in the same way as MADDPG when it receives the same reward.
+
+With per-decision credit, the value-based learner delivers $96.9\%$ (seeds $96.6$--$97.2\%$), above greedy ($95.7\%$), and chooses the least-loaded path $51\%$ of the time against $41\%$ by chance. MADDPG with per-decision credit delivers \pending{MADDPG-LC/CC fixed-hotspot results pending} in the same setting. The decisive factor is therefore the reward: with a training signal that credits each decision with its own outcome, both learning algorithms learn to choose paths, and with the step reward neither does.
+
+Under link failures, which none of these policies was trained on, all learned policies degrade faster than greedy: at eight failed links the per-decision value-based learner delivers $84.3\%$, against $89.1\%$ for greedy but still above ECMP ($81.7\%$). Training with random failures closes most of this gap (section~\ref{sec:architecture}).
+
+\begin{table}[!t]
+  \centering
+  \caption{Learning algorithm and credit assignment: realistic configuration ($k{=}4$, $3\times$ hotspot, per-flow pinning), trained on the fixed hotspot without failures, mean of three seeds; PDR (\%) at $n$ failed links, least-loaded and chance (\%) on applied decisions at $n=0$.}
+  \label{tab:credit}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \resizebox{\columnwidth}{!}{\begin{tabular}{llrrrrr}
+        \tablebody{tables/T5_credit.tex}
+  \end{tabular}}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{F2_credit.pdf}
+  \caption{Delivery against the number of failed links in the realistic configuration for the step-reward and per-decision learners and the fixed rules (mean of three seeds for learned policies).}
+  \label{fig:credit}
+\end{figure}
+
+\subsection{With per-decision credit the architecture is secondary}
+\label{sec:architecture}
+Table~\ref{tab:architecture} reports the MADDPG variants trained with per-decision credit on a changing hotspot with random link failures, which is the training regime that generalises best (section~\ref{sec:what}). The four combinations of critic and value head deliver within $0.7$ points of each other in every condition: $96.2\%$ to $96.9\%$ without failures, $92.7\%$ to $93.0\%$ at four failed links and $86.7\%$ to $87.0\%$ at eight, with per-seed ranges below $1.3$ points on the training hotspot (and up to $2.3$ points on shift A). They beat ECMP in every condition, by $5$ points on the training hotspot without failures and by $1.5$ to $3.6$ points on the unseen shifts, exceed greedy with fresh telemetry on the training hotspot without failures, match it on shift B and are within $1.3$ points of it on shift A. Only with six to eight failed links does greedy keep a clear advantage ($2.1$ to $2.4$ points at eight). Neither the critic's scope nor the real duelling head changes these results, and the value-based learner trained in the same regime is within one point of them.
+
+\begin{table*}[!t]
+  \centering
+  \caption{MADDPG with per-decision credit, trained on a changing hotspot with random failures, realistic configuration; mean of three seeds. PDR (\%) on the training hotspot at $n$ failed links and with telemetry two steps old ($n=0$), and on the unseen shifts A and B at $0$ and $4$ failed links. Unstable: GNN encoder without normalisation (section~\ref{sec:maddpg}).}
+  \label{tab:architecture}
+  \footnotesize
+  \begin{tabular}{lrrrrrrrr}
+        \tablebody{tables/T6_architecture.tex}
+  \end{tabular}
+\end{table*}
+
+The GNN-encoded actors behave the same way once the encoder is stabilised: $95.5\%$ with a local critic and $96.3\%$ with a centralised critic. In its original form, however, the encoder failed. The local-critic GNN variant delivered $90.9\%$, at the level of ECMP, and chose the least-loaded path only $27\%$ of the time, and the centralised-critic variant had a seed spread of $3$ points. Inspection of the trained encoders showed that their features had grown to seven to twenty-five times the spread of the raw observations, with $57\%$ to $75\%$ of them stuck at zero, and that in four of the six runs the actors' outputs did not change at all over time: the encoder had driven the actors into exactly the saturated, static behaviour diagnosed in section~\ref{sec:v1}. With layer normalisation, an averaged encoder step and a smaller learning rate, the encoder features keep a spread close to one throughout training and the actors do not saturate. This instability is a property of the encoder design used in the earlier version of this study and, we believe, partly explains its GNN results.
+
+\subsection{What is learned: a demand-robust routing table}
+\label{sec:what}
+The results above show that per-decision credit makes MADDPG learn good path choices, but not whether those choices depend on the current congestion. Table~\ref{tab:ablation} applies the observation shuffles of section~\ref{subsec:metrics}. For every learner, replacing the whole observation with one from a random earlier step costs less than one point of delivery, both without failures and at four failed links, and reading the neighbours' observations from a random earlier step costs the GNN variant nothing. The least-loaded share drops to within five points of chance under the shuffle ($42\%$--$46\%$, against $41\%$), which shows that the above-chance agreement with greedy came from the current state, but losing it barely affects delivery. The policies are therefore, to a large extent, fixed routing tables: each agent has learned which path to use for each destination, and that choice is good whatever the current load.
+
+\begin{table*}[!t]
+  \centering
+  \caption{Observation ablations (realistic configuration, mean of three seeds). PDR (\%) with real observations and with the path telemetry, the neighbours' observations or the whole observation read from a random earlier step ($^{s}$), at $0$ and $4$ failed links; least-loaded (LL) share with real and with shuffled observations, and chance, in \% at $n=0$. MADDPG and GNN rows trained on a changing hotspot with failures.}
+  \label{tab:ablation}
+  \footnotesize
+  \begin{tabular}{lrrrrrrrrr}
+    \toprule
+    \tablebody{tables/T7_ablation.tex}
+  \end{tabular}
+\end{table*}
+
+Whether such a table generalises depends on the demand it was trained on (Table~\ref{tab:generalisation} and Fig.~\ref{fig:generalisation}). The value-based learner trained on the fixed hotspot beats greedy on that hotspot ($96.9\%$ against $95.7\%$), but on shift A it falls to $90.2\%$, below ECMP ($93.5\%$) and $6.6$ points below greedy; the gain on the training hotspot was traffic engineering for one demand matrix. Training on a changing hotspot removes most of this loss at a small cost on the original pattern: the same learner delivers $96.2\%$ on the original hotspot and $95.9\%$ and $95.7\%$ on shifts A and B, above ECMP and greedy with two-step-old telemetry, and the MADDPG variants behave alike. What these policies learn is close to a demand-oblivious routing in the sense of~\cite{applegate2003making,azar2003optimal}: a single assignment of paths that performs well across the demand patterns seen in training, rather than a policy that reads the current congestion.
+
+\begin{table*}[!t]
+  \centering
+  \caption{Generalisation to unseen demand (realistic configuration, mean of three seeds): PDR (\%) on the training hotspot and on shifts A and B, at $0$ and $4$ failed links, for different training regimes.}
+  \label{tab:generalisation}
+  \footnotesize
+  \begin{tabular}{lrrrrrr}
+        \tablebody{tables/T8_generalisation.tex}
+  \end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.75\linewidth]{F3_generalisation.pdf}
+  \caption{Delivery without failures on the training hotspot and on the unseen shifts A and B. A table learned on a fixed hotspot falls below ECMP on shift A; training on a changing hotspot generalises.}
+  \label{fig:generalisation}
+\end{figure*}
+
+\section{Discussion}
+\label{sec:discussion}
+Three implications follow for the design and evaluation of learned routing. First, the training signal deserves at least as much attention as the network architecture. A per-step team reward is the natural choice for a routing objective, and it ranks routing rules correctly, yet it does not resolve individual path decisions, and no architectural change we tried compensated for it. Per-decision credit requires that the outcome of each flow can be attributed to the agent that placed it, which is realistic in a label-switched network, where per-label counters at the egress provide it, and it turns the problem into a set of contextual bandits that both actor--critic and value-based learners solve.
+
+Second, delivery against shortest path is not evidence of learned routing. Every policy we diagnosed beat shortest path, including the static tables of section~\ref{sec:v1}, and per-decision MADDPG beats greedy on its training hotspot without using its current state. A learned policy should be reported together with flow-level ECMP, an adaptive rule with realistic telemetry delay, its delivery under unseen demand, and the delivery lost when its observation is shuffled. These diagnostics are cheap, need no change to the learner, and would, we believe, change the interpretation of a number of published results.
+
+Third, in this network and traffic regime, adaptivity has a small and fragile value. The best adaptive rule, greedy with fresh telemetry, beats the learned robust tables by one to two points on unseen demand and by more under heavy failures, but with telemetry two steps old its advantage disappears. A learned demand-robust table is therefore a strong and practical design point: it needs no telemetry at decision time and degrades gracefully under demand changes once trained on varied demand.
+
+Our study has limitations. All results come from one service-provider topology and one simulator, without transport-layer dynamics; the topology is representative of its class (section~\ref{subsec:topology-scope}), but a second instance would strengthen the claims. The per-decision credit ignores the effect of a decision on other flows, which a difference-reward or counterfactual formulation could capture~\cite{agogino2004unifying,foerster2018counterfactual}. And we did not find a regime in which a learner adapts to current congestion; faster demand changes within an episode, or traffic with more heterogeneous flow sizes, might reward adaptivity more and are the natural next test.
+
+\section{Conclusions and Future Work}\label{conclusion}
+In this work we examined what MADDPG routing agents learn on a real 86-node service-provider network. We showed that agents trained with the usual step reward do not learn path selection, for centralised and local critics, both value heads and GNN-encoded actors: they freeze into near-static tables and choose the least-loaded path no more often than chance, while still beating shortest path. We traced this to credit assignment over 294 sparse decisions per step, and showed that a value-based learner fails in the same way with the same reward, while per-decision credit makes both learners work. With per-decision credit the architecture is secondary: all MADDPG variants, once a GNN training instability is fixed, beat flow-level ECMP by 1.5 to 5 points and come within 1.3 points of a greedy least-utilised rule with fresh telemetry on unseen demand patterns. Observation ablations show, however, that what they learn is a demand-robust routing table rather than adaptive routing. We also showed that per-packet spreading and exact telemetry inflate the usual baselines by up to 10 points, and proposed an evaluation regime and a set of diagnostics that expose these effects.
+
+As future work, we plan to evaluate per-decision credit and the proposed diagnostics on a second service-provider topology and in a packet-level simulator with transport-layer dynamics, to replace the per-decision credit with a counterfactual formulation that accounts for the interaction between flows, and to search for traffic regimes, such as fast demand changes within an episode, where adaptive learned routing can outperform a demand-robust table. The same agents under adversarial perturbation of their observations are the subject of a companion study; our findings suggest that such a study should first establish that the agents use their observations.
+
+\section*{Acknowledgements}
+% TODO (before submission): replace the bracketed placeholders.
+This work was supported in part by Instituto de Telecomunica\c{c}\~{o}es under project [PROJECT NAME/NUMBER] and by Funda\c{c}\~{a}o para a Ci\^{e}ncia e a Tecnologia (FCT) under grant [GRANT NUMBER].
+
+\bibliographystyle{IEEEtran}
+\bibliography{IEEEabrv,Routing,Routing_v2}
+
+\section{Biography Section}
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{Amaral_3x4.jpg}}]
+  {Pedro Amaral} received the Ph.D.\ in Electrical and Computer Engineering in 2013 and the M.Sc.\ in Computer Engineering in 2006 from Universidade Nova de Lisboa. He is an Assistant Professor at Faculdade de Ci\^encias e Tecnologia, Universidade Nova de Lisboa, a researcher at Instituto de Telecomunica\c{c}\~{o}es, Lisboa, and an IEEE member. Current research interests include model-free resource optimisation algorithms in networks, AI-enhanced network management and control, and network security.
+\end{IEEEbiography}
+\vspace{-1.0\baselineskip}
+\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{Raimundo_3x4.jpeg}}]
+  {Diogo Raimundo} received the M.Sc.\ degree in Electrical and Computer Engineering from Faculdade de Ci\^{e}ncias e Tecnologia, Universidade Nova de Lisboa, in 2025. His research interests include deep reinforcement learning, multi-agent systems, and network optimisation.
+\end{IEEEbiography}
+
+\end{document}

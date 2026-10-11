@@ -1,0 +1,16 @@
+\toprule
+Configuration & $n=0$ & $n=8$ & Least-loaded & Chance \\
+\midrule
+v1 local critic (sigmoid, joint critic) & 77.2 & -- & 26 & 43 \\
+Softmax actor + factored critic, LC & 89.0 & 80.5 & 42 & 46 \\
+Softmax actor + factored critic, CC & 86.8 & 75.7 & 32 & 47 \\
++ entropy 0.01, LC & 89.1 & 78.1 & 40 & 44 \\
++ entropy 0.05, LC & 88.4 & 79.2 & 39 & 47 \\
++ observation critic, CC & 85.6 & 76.7 & 38 & 45 \\
++ per-agent credit $w{=}0.5$, LC & 91.3 & 79.5 & 42 & 46 \\
++ per-agent credit $w{=}1$, LC & 91.2 & 79.3 & 47 & 47 \\
++ per-agent credit $w{=}0.5$, CC & 85.3 & 74.9 & 35 & 45 \\
+\midrule
+Random (per packet) & 90.0 & 82.7 & -- & -- \\
+Greedy & 97.2 & 89.7 & -- & -- \\
+\bottomrule

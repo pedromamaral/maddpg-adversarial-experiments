@@ -1,0 +1,17 @@
+\toprule
+Learner and training demand & Orig., $0$ & Orig., $4$ & A, $0$ & A, $4$ & B, $0$ & B, $4$ \\
+\midrule
+DQN, fixed hotspot & 96.9 & 92.1 & 90.2 & 87.9 & 94.9 & 89.8 \\
+DQN, fixed hotspot + failures & 96.7 & 93.6 & 92.8 & 90.5 & 94.0 & 91.2 \\
+DQN, changing hotspot & 96.2 & 91.4 & 95.9 & 93.8 & 95.7 & 90.7 \\
+DQN, changing hotspot + failures & 95.9 & 92.7 & 95.1 & 93.7 & 94.9 & 92.2 \\
+MADDPG-LC, fixed hotspot & -- & -- & -- & -- & -- & -- \\
+MADDPG-CC, fixed hotspot & -- & -- & -- & -- & -- & -- \\
+MADDPG-LC, changing hotspot + failures & 96.2 & 92.9 & 96.1 & 94.5 & 95.9 & 92.3 \\
+MADDPG-CC, changing hotspot + failures & 96.9 & 93.0 & 95.5 & 94.5 & 96.4 & 92.9 \\
+\midrule
+Greedy & 95.7 & 93.6 & 96.8 & 95.0 & 95.7 & 93.0 \\
+Greedy, 2 steps old & 93.7 & 90.7 & 95.0 & 93.1 & 93.5 & 90.8 \\
+ECMP & 91.4 & 89.7 & 93.5 & 91.3 & 92.8 & 90.8 \\
+MADDPG-LC, step reward & 92.7 & 89.1 & 89.6 & 87.1 & 91.9 & 87.0 \\
+\bottomrule
