@@ -74,7 +74,8 @@
     "CS4"
    ]
   },
-  "pin_paths_per_flow": true
+  "pin_paths_per_flow": true,
+  "ttl": 50
  },
  "paper1_eval": {
   "evaluation_episodes": 30,

@@ -533,6 +533,9 @@ class NetworkEngine:
         # traffic.pin_paths_per_flow sets the default for training and evaluation;
         # evaluation rules may switch it on per rollout ('+flow').
         self.pin_paths_default = bool(traffic_cfg.get('pin_paths_per_flow', False))
+        # Hop limit per packet. TTL_INIT suits the 86-node network (longest endpoint
+        # shortest path: 12 hops); larger topologies set traffic.ttl (e.g. 2x diameter).
+        self.ttl_init = int(traffic_cfg.get('ttl', TTL_INIT))
         self.pin_paths_per_flow = self.pin_paths_default
         self._flow_paths: Dict[int, int] = {}
         # Opt-in diagnostic: a list to receive one record per applied path decision
@@ -788,7 +791,7 @@ class NetworkEngine:
         # mean hops remaining in queue — 1 slot (anti-loop signal)
         _q = self.packet_queue[host]
         _mean_hops = float(np.mean([p.get('hops', 0) for p in _q])) if _q else 0.0
-        state.append(max(0.0, 1.0 - _mean_hops / TTL_INIT))
+        state.append(max(0.0, 1.0 - _mean_hops / self.ttl_init))
 
         # Guarantee exactly state_dims elements. NB: the assembled list has 97
         # entries but state_dims == 94 (see the property's KNOWN QUIRK note), so
@@ -1572,7 +1575,7 @@ class NetworkEngine:
                 'dst': dst,
                 'src': src,       # injection source — used for globally-consistent path lookup
                 'path_k': None,   # path label set by the ingress agent (MPLS-like LSP)
-                'ttl': TTL_INIT,
+                'ttl': self.ttl_init,
                 'created_at': self.time_step,
                 'hops': 0,
                 'ingress': None,
@@ -1638,7 +1641,7 @@ class NetworkEngine:
                     'dst': flow['dst'],
                     'src': flow['src'],
                     'path_k': None,
-                    'ttl': TTL_INIT,
+                    'ttl': self.ttl_init,
                     'created_at': current_step,
                     'hops': 0,
                     'ingress': None,
