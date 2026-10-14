@@ -24,4 +24,4 @@ E020 | 2026-10-12 | 63eb5b1 | v2_dc_lc (step MADDPG-LC, Deltacom 8x) + rules | 1
 E021 | 2026-10-12 | 63eb5b1 | dc_ac_{local,central}_fix | 3 seeds | LC 80.2, CC 79.8 | ~ECMP | A022
 E022 | 2026-10-12 | 63eb5b1 | dc_ac_{local,central}_rhf | 3 seeds | LC 80.3, CC 79.8 (seeds 75.4-83.3) | ~ECMP | A022
 E023 | 2026-10-13 | 5b068de | own_flow_effect.py (own_flow/*.json, server only) | ECMP natural exp. | SP-86 +9.6 pp; Deltacom +3.3 pp | see K12 | A023
-E024 | 2026-10-14 | uncommitted | supervised_signal.py on v2_pilot4_lc + v2_deltacom | 150 train eps | — | NOT RUN | A024
+E024 | 2026-10-14 | 6e29524 | supervised_signal.py on v2_pilot4_lc + v2_deltacom | 150 train eps, IPS own-flow | Deltacom ecmp 88.2, greedy 94.1, table 95.8, util 96.7, full 94.8 (SE~1.4); SP-86 all rules 99.3-100.7 vs ecmp 93.3 | no state signal beyond table; greedy <= table on own-flow (K16) | A024

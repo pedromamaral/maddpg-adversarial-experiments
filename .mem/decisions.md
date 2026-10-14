@@ -13,3 +13,4 @@ D10 | Rewards are training-only (CTDE): need not be measurable online (simulator
 D11 | Run supervised-signal check (E024) before any difference-reward experiment (A025) | ~10 h of GPU only if the signal is learnable | go straight to difference reward | 2026-10-13
 D12 | Never delete exited training containers or other projects' images on the server | Pedro said no | clean-up | 2026-10-07
 D13 | Pending paper edits (Deltacom subsection, qualify "beats ECMP by 1.5-5 pp" as SP-86-specific, conversion/ttl/8x method text, own-flow discussion) await Pedro's agreement on reframing | reframing changes C4 | — | 2026-10-13
+D14 | Run A029/E025 (table-for-all system eval) before A025; A025 runs only if table-for-all ~ ECMP on Deltacom (externality confirmed). Supersedes D11's literal gate after E024 (K16) | ~1 h CPU settles K16's off-policy caveat and decides whether A025 targets the right problem | run A025 directly / write C4 and stop | 2026-10-14

@@ -9,7 +9,12 @@
   over sparse per-flow decisions largely unaddressed.
 - Strongest baselines (ours): greedy (fresh telemetry), greedy_stale2/4, ECMP (random+flow), SP.
   Literature baselines with numbers: TODO(ask) — no lit-graph digest yet for this topic.
-- Lit-graph topic folder: TODO(ask) — OneDrive-FCTNOVA/Docencia/Research/lit-graph has no topic
-  folder yet; earlier partial harvest (76 landmark papers) was lit-graph/drl-routing-adversarial/
-  in the repo (no longer present). Lit access: publisher sites via Claude in Chrome (VPN).
+- Lit-graph topic: drl-routing-adversarial (OneDrive-FCTNOVA/Docencia/Research/lit-graph/drl-routing-adversarial/).
+  Folder NOT YET CREATED: the 2026-09-29 harvest (76 landmark papers, raw/seeds_s2.json) was never
+  committed and is not on disk or server (searched 2026-10-14) -> must be redone. Lit access: publisher
+  sites via Claude in Chrome (VPN).
 - Risk: reviewers read C3/C4 as a negative result; framing must be "what is learned + why".
+
+## Gate 2026-10-14 -> ITERATE
+Blockers: A027 (no lit digest: novelty, venue fit, literature numbers unverified), A028 (no published
+method in our setting), A024/E024 (C4 rests on it). C1-C3 evidence sufficient (effects >> 1.3 pp noise).

@@ -27,3 +27,4 @@ K12 | Own-flow effect: SP-86 +9.6 pp (SE 0.5), own gain 5.9 >= system 4.3 (exter
 K13 | Realism: per-flow pinning costs random 8.2 pp, greedy 8.0 pp; finer flows (k>=8) make ECMP ~optimal | E008,E009 | high | 2026-10-06
 K14 | Failure-augmented training helps DQN under failures (96.7/93.6/87.8 vs 96.9/92.1/84.3) | E018 | medium | 2026-10-09
 K15 | Old P1 claims and all v1 attack results (P2, theses) describe frozen tables; FGSM gradient-masked; legacy all-feature threat model pre-2026-09-29 | E001,E002 | high | 2026-10-02
+K16 | Own-flow objective has no state-dependent headroom beyond a static table: IPS own-flow Deltacom ecmp 88.2, table 95.8, greedy 94.1, util 96.7, full 94.8 (SE ~1.4); SP-86 all rules 99.3-100.7 vs 93.3. Greedy's system gain on Deltacom (K10) is therefore externality, not own-flow -> per-decision own-flow credit cannot reach it; supports C4, reframes C5 | E024 | medium (off-policy, ECMP background, ~3 pp resolution) | 2026-10-14

@@ -14,8 +14,9 @@ v1 victims never used their observations, see K01.)
 - C2 Once credit is fixed, architecture (LC/CC critic, simple/duelling, GNN) is secondary. [K06,K07]
 - C3 What is learned is a demand-robust static routing table, not adaptive routing. [K08]
 - C4 Learners capture only static (demand-structure) headroom: beat ECMP where a fixed rule
-  can (SP-86), match ECMP where it cannot (Deltacom). [K10,K11 — needs supervised check E024]
-- C5 (open) The current-state signal is/isn't learnable from the observation -> difference reward?
+  can (SP-86), match ECMP where it cannot (Deltacom). [K10,K11,K16 supported; E025 checks table-for-all]
+- C5 (open, reframed by K16) Own-flow credit has no state headroom beyond the table; the remaining
+  Deltacom gain is system-level (externality) -> difference reward (A025) if E025 confirms.
 
 ## Metrics
 - PDR % (end-to-end packet delivery ratio), 20 paired eval episodes (traffic seed 20240601),
@@ -27,6 +28,9 @@ v1 victims never used their observations, see K01.)
 - "Learns": PDR clearly > ECMP (random+flow) AND least_loaded above chance.
 - Adaptive: shuffle of telemetry/whole obs costs > seed noise (~1 pp).
 - Reference ceiling: greedy (least-utilised, fresh telemetry); realistic ceiling greedy_stale2.
+
+## Literature
+- lit-graph topic: drl-routing-adversarial (folder to be created; old harvest lost, see strategy.md).
 
 ## Outputs
 - Paper 1 v2 -> IEEE TNSM (markboth in tex). Paper 2 (attacks, paper/paper2_robustness.tex) on hold.

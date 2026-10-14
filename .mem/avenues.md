@@ -24,6 +24,9 @@ A020 | tried | whole-observation / telemetry shuffle ablation | C3 | E012-E017,E
 A021 | tried | failure-augmented training for DQN | C3 | E018 | helps under failures: 93.6/87.8 vs 92.1/84.3 (n=4/8) | 2026-10-09
 A022 | tried | second topology Deltacom (provider-edge conversion, ttl 50, 8x) | C4 | E019-E022 | every learner ~ECMP; greedy +4.5 pp needs current state | 2026-10-13
 A023 | tried | own-flow diagnostic (ECMP natural experiment) | C4,C5 | E023 | externality not the explanation on SP-86; ~58% on Deltacom | 2026-10-13
-A024 | active | supervised signal check (IPS own-flow value of greedy/table/util/full regressors) | C5 | E024 | ? | 2026-10-14
-A025 | proposed | difference reward (own outcome minus drops caused on shared links; proxy from per-LSP + interface discards) | C5 | - | only if E024 shows Deltacom own-flow signal learnable | 2026-10-13
+A024 | tried | supervised signal check (IPS own-flow value of greedy/table/util/full regressors) | C5 | E024 | tried: table captures all own-flow headroom; greedy <= table on own-flow; util/full ~ table (K16) | 2026-10-14
+A025 | proposed | difference reward (own outcome minus drops caused on shared links; proxy from per-LSP + interface discards) | C5 | - | E024: own-flow has no state headroom -> remaining gain is externality, which is exactly what a difference reward targets; gated on A029/E025 (D14) | 2026-10-14
 A026 | parked | re-run Paper 2 attacks on per-decision-credit learners | P2 | - | pointless while learners ignore state (K08) | 2026-10-14
+A027 | needed-for-paper | redo lit-graph drl-routing-adversarial (academic-research + research-strategist in Cowork): nearest works, reported numbers, DOIs | novelty, G1-G3 | - | blocks novelty claim + related work | 2026-10-14
+A028 | needed-for-paper | re-run >=1 published MARL/DRL routing method in our simulator (pinned, stale, 3x/8x) vs ECMP/greedy | G1, C1-C4 | - | reviewers will ask "does a published method do better?"; pick after A027 | 2026-10-14
+A029 | active | deploy E024 own-flow table as every agent's rule; system PDR Deltacom 8x + SP-86 3x | C4,C5 | E025 | ? (gates A025) | 2026-10-14
