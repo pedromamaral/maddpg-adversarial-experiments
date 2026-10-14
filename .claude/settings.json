@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rsync -a --include='*.json' --exclude='*' pedroamaral@10.26.110.14:~/maddpg-adversarial-experiments/host_data/results/supervised_signal/ host_data/results/supervised_signal/)",
+      "Bash(python3 tools/summarize_run.py host_data/results/supervised_signal --id E024 --rows 20)",
+      "Bash(python3 -)",
+      "Bash(sed -n '/EXACT next step/,/^Parallel/p' STATE.md)"
+    ]
+  }
+}
