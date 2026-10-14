@@ -23,6 +23,7 @@ Why do Deltacom learners stay at ECMP while greedy gains 4.5 pp?
 Best hypothesis (K16): own-flow objective has no state headroom; greedy's gain is externality, which
 per-decision own-flow credit cannot see. Untested caveat: E024 is off-policy (ECMP background).
 
+## E025 implement DONE (544df54, pushed? no -> git push)
 ## EXACT next step
 0. Pedro: commit (`git add .mem tools/summarize_run.py && git commit -m "E024 analysed (K16); E025 planned (D14)"`).
 1. /model cheaper -> research-do implement E025 (card: --export-table in tools/supervised_signal.py,
