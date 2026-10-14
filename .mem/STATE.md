@@ -1,35 +1,34 @@
-# STATE — 2026-10-14 20:40 UTC
+# STATE — 2026-10-14 (evening)
 
-branch main @ 6e29524 (server same). Everything below is UNCOMMITTED.
-phase just done: E024 status+fetch -> analyze E024 -> strategy gate (iterate) -> ideate -> A029/E025 planned.
+branch main @ 76a7f90 (local ahead of origin by 1 = .mem only; server at d209c69 = code current).
+phase just done: research-do implement E025 + deploy E025.
 
 ## What changed this session
-- tools/summarize_run.py: parses supervised_signal.py format ({rule:{own_delivery_pct,se}, agree_greedy})
-- results/E024.json written (NOTE: .gitignore `results/` also ignores .mem/results/ -> add `!.mem/results/`?)
-- E024 card (results+verdict), LEDGER E024, runs.md (E024 -> Finished)
-- conclusions.md K16; project.md C4 supported / C5 reframed; avenues A024 tried, A025 gated, A027/A028 needed-for-paper, A029 active
-- decisions.md D14 (supersedes D11 gate); strategy.md gate = ITERATE; new card experiments/E025-table-for-all.md
+- src/standalone_experiment_runner.py: rule 'table' (_table_choice, env TABLE_FILE; missing/out-of-range -> k=0); 'table' in _parse_rule_spec
+- tools/supervised_signal.py: --export-table (JSON {agent_idx:{dest_idx:k}}, same shrunk-mean rule as 'table')
+- tools/run_eval.sh: TABLE_FILE host path mounted at /workspace/table.json
+- smoke: SP-86 export 14 agents/137 entries; rule matches file 0/294 mismatches (local python: /usr/bin/python3)
+- .mem: E025 card (impl note), runs.md row, STATE
 
 ## Active runs
-E025 launched 10-14 on server (run_E025.sh); marker ~/idqn/run_E025.done; next: research-do status -> fetch E025
+E025 on server, launched 10-14 ~22:00 via ~/idqn/run_E025.sh (export table -> run_eval.sh, n=0/4/8,
+RULES="table random+flow greedy greedy_stale2 sp"). Containers maddpg-E025-exp-{v2_deltacom,v2_pilot4_lc}
+(evals follow). Done marker ~/idqn/run_E025.done (2 lines when finished). ETA ~1h.
+Out: host_data/results/E025/{table_,ss_}<cfg>.json; evals in v2_dc_lc/E025_v2_deltacom and v2_p3_lc_w05/E025_v2_pilot4_lc.
+Caveat: SP-86 policy dir v2_p3_lc_w05 is a guess (rules don't use the policy); if its eval fails, pick another SP-86 LC-Simple dir.
 
 ## Latest results
-- E024 IPS own-flow Deltacom: ECMP 88.2, greedy 94.1, table 95.8, util 96.7, full 94.8 (SE ~1.4);
-  SP-86 all rules 99.3-100.7 vs ECMP 93.3 (K16)
-- E020-E022 Deltacom 8x system PDR: learners ~ECMP 80.4 vs greedy 84.9 (K10)
+- E024 IPS own-flow Deltacom: ECMP 88.2, greedy 94.1, table 95.8 (K16). E020-E022 Deltacom 8x system PDR: learners ~ECMP 80.4 vs greedy 84.9 (K10).
 
 ## Open problem
-Why do Deltacom learners stay at ECMP while greedy gains 4.5 pp?
-Best hypothesis (K16): own-flow objective has no state headroom; greedy's gain is externality, which
-per-decision own-flow credit cannot see. Untested caveat: E024 is off-policy (ECMP background).
+Why do Deltacom learners stay at ECMP while greedy gains 4.5 pp? Hypothesis (K16): externality; E025 tests it.
 
-## E025 implement DONE (544df54, pushed? no -> git push)
 ## EXACT next step
-0. Pedro: commit (`git add .mem tools/summarize_run.py && git commit -m "E024 analysed (K16); E025 planned (D14)"`).
-1. /model cheaper -> research-do implement E025 (card: --export-table in tools/supervised_signal.py,
-   'table' rule via TABLE_FILE in runner._rule_action / tools/run_eval.sh; smoke test).
-2. research-do deploy E025 -> fetch -> research-think analyze E025 (decides A025 per D14).
-Parallel: A027 lit-graph redo in Cowork (academic-research + research-strategist); Pedro agrees D13 reframing.
+0. Pedro: `git push` (.mem commit 76a7f90). Server code already current.
+1. later: research-do status -> fetch E025 (rsync json only; summarize_run.py -> .mem/results/E025.json;
+   check runs.md/LEDGER row E025 with sha d209c69).
+2. research-think analyze E025 using the card's thresholds (<=ECMP+1.3 externality -> A025; >=+2.6 -> optimisation; SP-86 sanity within 1.3 pp of learners). Decides A025 per D14.
+Parallel: A027 lit-graph redo in Cowork.
 
 ## Read next
-experiments/E025-table-for-all.md, codebase.md, decisions.md D14; src by rg -n "_rule_action" first.
+experiments/E025-table-for-all.md, decisions.md D14, conclusions.md K10/K16.
