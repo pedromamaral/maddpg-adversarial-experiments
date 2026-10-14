@@ -1,9 +1,14 @@
-# STATE — 2026-10-14 (evening)
+# STATE — 2026-10-14 (late)
 
 branch main pushed to origin; server code at d209c69 (current).
-phase just done: research-do implement + deploy + status E025.
+phase just done: research-think strategy (gate = ITERATE, D15). Before that: implement+deploy E025.
 
-## What changed this session
+## What changed this session (strategy)
+- strategy.md rebuilt from lit-graph strategy-plan rev 0 digest (A027 done): novelty narrowed, KILL-1..4, DRL-OR = A028 target
+- avenues: A027 tried; A028 -> DRL-OR port; new A030 (static-table optimiser, needed-for-paper), A031 dropped, A032 parked; A003/A026 dropped
+- D15; project.md C3/C5 kill criteria; E025 card note (its thresholds rule)
+
+## Earlier this session (E025 implement)
 - src/standalone_experiment_runner.py: rule 'table' (_table_choice, env TABLE_FILE; missing/out-of-range -> k=0); 'table' in _parse_rule_spec
 - tools/supervised_signal.py: --export-table (JSON {agent_idx:{dest_idx:k}}, same shrunk-mean rule as 'table')
 - tools/run_eval.sh: TABLE_FILE host path mounted at /workspace/table.json
@@ -27,8 +32,9 @@ Why do Deltacom learners stay at ECMP while greedy gains 4.5 pp? Hypothesis (K16
 ## EXACT next step
 1. after the .done marker has 2 lines (SP-86 may finish first; can fetch it alone): research-do status -> fetch E025 (rsync json only; summarize_run.py -> .mem/results/E025.json;
    check runs.md/LEDGER row E025 with sha d209c69).
-2. research-think analyze E025 using the card's thresholds (<=ECMP+1.3 externality -> A025; >=+2.6 -> optimisation; SP-86 sanity within 1.3 pp of learners). Decides A025 per D14.
-Parallel: A027 lit-graph redo in Cowork.
+2. research-think analyze E025 using the card's thresholds (<=ECMP+1.3 externality -> A025; >=+2.6 -> optimisation; SP-86 sanity within 1.3 pp of learners). Decides A025 per D14/D15.
+3. then research-think ideate -> card for A030 (static-table optimiser, M1 wk 1-2) and A028 (DRL-OR port, M2 wk 2-5).
+Paper deadline target ~2027-01-14 (TNSM).
 
 ## Read next
-experiments/E025-table-for-all.md, decisions.md D14, conclusions.md K10/K16.
+experiments/E025-table-for-all.md, decisions.md D14/D15, strategy.md (KILL criteria), conclusions.md K10/K16.

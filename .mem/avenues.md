@@ -3,7 +3,7 @@
 
 A001 | tried | v1 MADDPG, 7 variants (LC/CC x simple/duelling x GNN), step reward | old P1 | E001 | never learned to route: static tables (K01) | 2026-10-02
 A002 | dropped | old Paper 1 claims: critic dominance, failure robustness, GNN cost | old P1 | E001 | withdrawn — compared frozen tables | 2026-10-02
-A003 | parked | Paper 2: observation attacks (FGSM, iterated, logit, learned adversary) on v1 victims | P2 | E002 | on hold: victims ignored observations (robustness = insensitivity) | 2026-10-02
+A003 | dropped | Paper 2: observation attacks (FGSM, iterated, logit, learned adversary) on v1 victims | P2 | E002 | on hold: victims ignored observations (robustness = insensitivity); strategy-plan: AVENUE #5 RED until a state-using learner exists (revisit if KILL-2 passes) | 2026-10-14
 A004 | tried | utilisation-only threat model (attacker reads path_util slots 33-93 only) | P2 | E002 | now the only threat model; all pre-2026-09-29 attack numbers legacy | 2026-09-29
 A005 | tried | learnability probe: factored critic + block-softmax actor (+entropy) | C1 | E003 | 63%->82%->91-92% on bandit; did not transfer to real net (E004) | 2026-10-02
 A006 | dropped | reward misspecification hypothesis | C1 | E006 | rejected: reward ranks rules like PDR (greedy>random>sp>worst) | 2026-10-03
@@ -26,7 +26,10 @@ A022 | tried | second topology Deltacom (provider-edge conversion, ttl 50, 8x) |
 A023 | tried | own-flow diagnostic (ECMP natural experiment) | C4,C5 | E023 | externality not the explanation on SP-86; ~58% on Deltacom | 2026-10-13
 A024 | tried | supervised signal check (IPS own-flow value of greedy/table/util/full regressors) | C5 | E024 | tried: table captures all own-flow headroom; greedy <= table on own-flow; util/full ~ table (K16) | 2026-10-14
 A025 | proposed | difference reward (own outcome minus drops caused on shared links; proxy from per-LSP + interface discards) | C5 | - | E024: own-flow has no state headroom -> remaining gain is externality, which is exactly what a difference reward targets; gated on A029/E025 (D14) | 2026-10-14
-A026 | parked | re-run Paper 2 attacks on per-decision-credit learners | P2 | - | pointless while learners ignore state (K08) | 2026-10-14
-A027 | needed-for-paper | redo lit-graph drl-routing-adversarial (academic-research + research-strategist in Cowork): nearest works, reported numbers, DOIs | novelty, G1-G3 | - | blocks novelty claim + related work | 2026-10-14
-A028 | needed-for-paper | re-run >=1 published MARL/DRL routing method in our simulator (pinned, stale, 3x/8x) vs ECMP/greedy | G1, C1-C4 | - | reviewers will ask "does a published method do better?"; pick after A027 | 2026-10-14
+A026 | dropped | re-run Paper 2 attacks on per-decision-credit learners | P2 | - | pointless while learners ignore state (K08); strategy-plan: do-not-pursue until a state-using learner exists | 2026-10-14
+A027 | tried | redo lit-graph drl-routing-adversarial (academic-research + research-strategist in Cowork): nearest works, reported numbers, DOIs | novelty, G1-G3 | - | done 2026-10-14: lit-graph + strategy-plan rev 0 (digest in strategy.md); novelty narrowed to credit-scheme comparison + state-use ablations + static/state split | 2026-10-14
+A028 | needed-for-paper | re-run >=1 published MARL/DRL routing method in our simulator (pinned, stale, 3x/8x) vs ECMP/greedy | G1, C1-C4 | - | target DRL-OR (github netlab-lcy/DRL-OR, MIT): port per-flow utility reward + obs + SP pretraining + safe fallback into our simulator (pinned, stale, SP-86 3x + Deltacom 8x, 3 seeds, shuffle ablation); NOT its Mininet testbed. KILL-3: if no end-to-end port by wk 4 -> "DRL-OR-style" learner | 2026-10-14
 A029 | active | deploy E024 own-flow table as every agent's rule; system PDR Deltacom 8x + SP-86 3x | C4,C5 | E025 | ? (gates A025) | 2026-10-14
+A030 | needed-for-paper | stochastic-optimal static table (DOTE-style): optimise one static per-flow table by SGD over sampled demands in the simulator; eval on same 20 paired eps, both topologies | C3 | - | strategy-plan AVENUE #6 (GREEN, ~1 wk); KILL-4: beats learners by >1 pp -> C3 = "learners approximate the robust table imperfectly"; no public DOTE code | 2026-10-14
+A031 | dropped | train Teal / MAGNNETO now | G1 | - | strategy-plan: GPU contention on shared server, off-path (MLU/fluid setting, not comparable) | 2026-10-14
+A032 | parked | field-wide state-use audit of published DRL-routing methods (strategy-plan AVENUE #2) | next paper | - | next paper (CoNEXT/INFOCOM/ToN 2027); reuses Paper 1 ablation method | 2026-10-14

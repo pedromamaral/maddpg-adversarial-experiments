@@ -18,6 +18,7 @@ Success criterion / reading (Deltacom n=0, seed noise ~1.3 pp; Deltacom rhf seed
   - table-for-all >= ECMP + 2.6, ~greedy -> learners under-optimised (failed to find the table);
     A025 is the wrong target -> investigate optimisation instead.
   - in between -> inconclusive; report, rerun with more eps.
+  (strategy-plan KILL-1 'table >= greedy - 1 SE -> drop A025' is the upper branch above; these thresholds rule, D15.)
   - SP-86 sanity: table-for-all within ~1.3 pp of learners (96.2-97.4); if far below, the export is wrong.
 Implemented 544df54 (smoke OK on SP-86: export 14 agents/137 entries; 'table' rule matches file, 0/294 mismatches; local python = /usr/bin/python3).
 Usage: supervised_signal.py --config C --train-episodes 150 --export-table T.json; TABLE_FILE=T.json RULES="table ..." tools/run_eval.sh RUN CFG VARIANT "0 4 8" (needs a trained RUN dir for the policy/env).
