@@ -2005,6 +2005,15 @@ class StandaloneExperimentRunner:
                 joint[ai, bs + int(np.argmax(pa[bs:be]))] = 1.0
         return {'central_state': central_state, 'joint_onehot': joint, 'block_size': block_size}
 
+    def _table_choice(self, host, d, engine):
+        if getattr(self, '_table', None) is None:
+            self._table = json.load(open(os.environ['TABLE_FILE']))
+        if getattr(self, '_table_agent', None) is None:
+            hs = engine.get_all_hosts()
+            self._table_agent = {hs[i]: a for a, i in enumerate(engine.trainable_host_indices)}
+        a = self._table_agent[host]
+        return int(self._table.get(str(a), {}).get(str(d), 0))
+
     def _rule_action(self, host, rule, engine, rng, util_fn=None):
         """Build a per-destination one-hot routing action from a fixed rule.
 
@@ -2015,6 +2024,8 @@ class StandaloneExperimentRunner:
                    a heuristic, NOT a flow-optimum — the trained policy can beat it)
           sp     → k=0 (shortest path; EVPN-SP-like)
           random → uniform among available paths
+          table  → fixed per-(agent, destination) path from the JSON file in env TABLE_FILE
+                   (tools/supervised_signal.py --export-table); missing entry → k=0
         """
         access = list(engine.topology.access_nodes)
         n_dest = len(access)
@@ -2044,6 +2055,10 @@ class StandaloneExperimentRunner:
                     chosen = 0
                 elif rule == 'random':
                     chosen = rng.randrange(n_avail)
+                elif rule == 'table':
+                    chosen = self._table_choice(host, d, engine)
+                    if chosen >= n_avail:
+                        chosen = 0
                 else:
                     chosen = 0
             a[d * K + chosen] = 1.0
@@ -2245,7 +2260,7 @@ class StandaloneExperimentRunner:
             stale = int(d)
             if base not in ('policy', 'greedy'):
                 raise ValueError(f"staleness applies to policy and greedy only: {label!r}")
-        if base not in ('policy', 'greedy', 'sp', 'random', 'worst'):
+        if base not in ('policy', 'greedy', 'sp', 'random', 'worst', 'table'):
             raise ValueError(f"unknown rule {label!r}")
         return (None if base == 'policy' else base), mod == 'flow', stale
 

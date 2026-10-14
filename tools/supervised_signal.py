@@ -41,6 +41,8 @@ ap.add_argument('--train-episodes', type=int, default=150)
 ap.add_argument('--test-episodes', type=int, default=40)
 ap.add_argument('--epochs', type=int, default=40)
 ap.add_argument('--out', default=None)
+ap.add_argument('--export-table', default=None,
+                help='write the fitted table rule as JSON {agent: {dest: k}} (indices) for the TABLE_FILE rule')
 args = ap.parse_args()
 sys.path.insert(0, args.src)
 sys.path.insert(0, os.path.join(args.src, 'maddpg_clean'))
@@ -139,6 +141,15 @@ for a, d, n in zip(ate, dte, nte):
     means = [(s[k][0] + 5 * prior) / (s[k][1] + 5) for k in range(n)]
     choice.append(int(np.argmax(means)))
 res['table'] = boot(ips(np.array(choice)))
+if args.export_table:
+    nmax = {}
+    for a, d, n in zip(atr, dtr, ntr):
+        nmax[(a, d)] = max(nmax.get((a, d), 0), int(n))
+    out_tab = {}
+    for (a, d), s in tab.items():
+        means = [(s[k][0] + 5 * prior) / (s[k][1] + 5) for k in range(nmax[(a, d)])]
+        out_tab.setdefault(str(int(a)), {})[str(int(d))] = int(np.argmax(means))
+    json.dump(out_tab, open(args.export_table, 'w'))
 
 
 def fit(inp_tr, inp_te, out_dim, sel_tr, sel_te, hidden=(256, 128)):

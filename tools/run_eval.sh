@@ -21,6 +21,7 @@
 #              StandaloneExperimentRunner._parse_rule_spec)
 #   EVAL_NAME  output subdirectory instead of eval/ (keeps the standard evaluation intact)
 #   NO_ATTR=1  skip the attribution run
+#   TABLE_FILE host path of a table JSON for the 'table' rule (tools/supervised_signal.py --export-table)
 #   LOAD       offered load factor (default 2.0, the Paper 1 stress point)
 # Log: ~/<EVAL_NAME>_<RUN>_<VARIANT>.log. Run on the server from the repo root.
 set -u
@@ -31,7 +32,9 @@ R=$(pwd); LOG=$HOME/${EV}_${RUN}_${V}.log
 [ -d "host_data/results/$RUN/models/$V" ] || { echo "no models for $V in $RUN"; exit 1; }
 say() { echo "$(date -u '+%F %T UTC') $*" >> "$LOG"; }
 IMG=maddpg-exp:latest
-MOUNTS="-v $R/host_data:/workspace/data -v $R/src:/workspace/src -v $R/tools:/workspace/tools -v $R/configs:/workspace/configs"
+MOUNTS=""
+[ -n "${TABLE_FILE:-}" ] && MOUNTS="-v $(cd "$(dirname "$TABLE_FILE")" && pwd)/$(basename "$TABLE_FILE"):/workspace/table.json:ro -e TABLE_FILE=/workspace/table.json"
+MOUNTS="$MOUNTS -v $R/host_data:/workspace/data -v $R/src:/workspace/src -v $R/tools:/workspace/tools -v $R/configs:/workspace/configs"
 
 ceiling() {  # $1 = number of failures
   K=$1; OUT="host_data/results/$RUN/$EV/n_$K"
