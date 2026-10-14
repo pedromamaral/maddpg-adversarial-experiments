@@ -11,7 +11,7 @@ phase just done: E024 status+fetch -> analyze E024 -> strategy gate (iterate) ->
 - decisions.md D14 (supersedes D11 gate); strategy.md gate = ITERATE; new card experiments/E025-table-for-all.md
 
 ## Active runs
-none
+E025 launched 10-14 on server (run_E025.sh); marker ~/idqn/run_E025.done; next: research-do status -> fetch E025
 
 ## Latest results
 - E024 IPS own-flow Deltacom: ECMP 88.2, greedy 94.1, table 95.8, util 96.7, full 94.8 (SE ~1.4);
