@@ -1,7 +1,7 @@
 # STATE — 2026-10-15
 
-branch main (+ this ideate commit), not pushed; server code at d209c69.
-phase just done: research-think ideate (after E025).
+branch main @ 1632739 (+ this STATE commit), not pushed; server code at d209c69.
+phase just done: research-think ideate (after E025) + Paper 1 situation summary for Pedro (no memory change).
 
 ## What changed
 - D17: order E026 (A030) -> E027 (A034b, alongside) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward)
