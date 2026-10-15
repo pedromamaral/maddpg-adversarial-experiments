@@ -1,7 +1,11 @@
 # STATE — 2026-10-15
 
-branch main; server code at d209c69.
+branch main @ 0913079 (+ this STATE commit), not pushed; server code at d209c69.
 phase just done: research-think analyze E025.
+
+## What changed
+- E025 card: results/interpretation/verdict · LEDGER: E025 row · avenues: A029 tried, A025 gate open
+- conclusions: K17 (+K16 note) · decisions: D16 · project.md: C4/C5 notes · runs.md: E025 rows removed
 
 ## Result (K17, D16)
 - Deltacom 8x table-for-all 78.0/70.9/64.6 < ECMP 80.4/72.8/66.7 (n=0/4/8): own-flow optimum is selfish;
