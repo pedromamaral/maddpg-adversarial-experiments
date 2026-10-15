@@ -1,8 +1,8 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
-E025-dc | server | maddpg-E025-exp-v2_deltacom | ~/idqn/run_E025.sh (export table, then run_eval.sh rules=table random+flow greedy greedy_stale2 sp, n=0/4/8, policy dir v2_dc_lc) | 10-14 | ~1h | host_data/results/E025/ + v2_dc_lc/E025_v2_deltacom | running
-E025-sp | server | maddpg-E025-exp-v2_pilot4_lc | ~/idqn/run_E025.sh (same, policy dir v2_p3_lc_w05 = placeholder) | 10-14 | ~1h | host_data/results/E025/ + v2_p3_lc_w05/E025_v2_pilot4_lc | running (export done 22:51; eval stage, no named container)
+E025-dc | server | maddpg-E025-exp-v2_deltacom | ~/idqn/run_E025.sh (export table, then run_eval.sh rules=table random+flow greedy greedy_stale2 sp, n=0/4/8, policy dir v2_dc_lc) | 10-14 | ~1h | host_data/results/E025/ + v2_dc_lc/E025_v2_deltacom | done (fetched 10-15 → .mem/results/E025-{dc,sp}.json)
+E025-sp | server | maddpg-E025-exp-v2_pilot4_lc | ~/idqn/run_E025.sh (same, policy dir v2_p3_lc_w05 = placeholder) | 10-14 | ~1h | host_data/results/E025/ + v2_p3_lc_w05/E025_v2_pilot4_lc | done (fetched 10-15 → .mem/results/E025-{dc,sp}.json)
 
 ## Finished (results on disk server + host_data/results locally, except own_flow/ server-only)
 E021,E022 | server | dc_{local,central}_{fix,rhf}_s* | ~/idqn/run_dc*.sh | 10-12 | — | dc_ac_* | done

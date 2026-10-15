@@ -1,4 +1,4 @@
-# STATE — 2026-10-14 (late)
+# STATE — 2026-10-15
 
 branch main pushed to origin; server code at d209c69 (current).
 phase just done: research-think strategy (gate = ITERATE, D15). Before that: implement+deploy E025.
@@ -16,12 +16,8 @@ phase just done: research-think strategy (gate = ITERATE, D15). Before that: imp
 - .mem: E025 card (impl note), runs.md row, STATE
 
 ## Active runs
-E025 (server, launched 10-14): runs.md rows E025-dc, E025-sp (split so tools/runs_status.sh parses them).
-Status at last check (~22:00 server clock): SP-86 table exported, evals n=0/4/8 running (~7 min in);
-Deltacom export still running (~47 min), its evals follow. Est. all done ~1.5-2 h after the check.
-Done marker ~/idqn/run_E025.done gets 2 lines (runs_status shows SP-86 row 'DONE? no container' during evals = false alarm).
-Out: host_data/results/E025/{table_,ss_}<cfg>.json; evals in v2_dc_lc/E025_v2_deltacom, v2_p3_lc_w05/E025_v2_pilot4_lc.
-Caveat: SP-86 policy dir v2_p3_lc_w05 is a placeholder (rules ignore the policy); if its eval fails, use another SP-86 LC-Simple dir.
+none. E025 fetched 2026-10-15 (both done markers present): .mem/results/E025-dc.json, E025-sp.json (summaries sha=144de42, NOT training sha).
+Raw: host_data/results/E025/, v2_dc_lc/E025_v2_deltacom, v2_p3_lc_w05/E025_v2_pilot4_lc. runs.md rows marked done (delete once LEDGER row added).
 
 ## Latest results
 - E024 IPS own-flow Deltacom: ECMP 88.2, greedy 94.1, table 95.8 (K16). E020-E022 Deltacom 8x system PDR: learners ~ECMP 80.4 vs greedy 84.9 (K10).
@@ -30,11 +26,12 @@ Caveat: SP-86 policy dir v2_p3_lc_w05 is a placeholder (rules ignore the policy)
 Why do Deltacom learners stay at ECMP while greedy gains 4.5 pp? Hypothesis (K16): externality; E025 tests it.
 
 ## EXACT next step
-1. after the .done marker has 2 lines (SP-86 may finish first; can fetch it alone): research-do status -> fetch E025 (rsync json only; summarize_run.py -> .mem/results/E025.json;
-   check runs.md/LEDGER row E025 with sha d209c69).
-2. research-think analyze E025 using the card's thresholds (<=ECMP+1.3 externality -> A025; >=+2.6 -> optimisation; SP-86 sanity within 1.3 pp of learners). Decides A025 per D14/D15.
-3. then research-think ideate -> card for A030 (static-table optimiser, M1 wk 1-2) and A028 (DRL-OR port, M2 wk 2-5).
-Paper deadline target ~2027-01-14 (TNSM).
+1. research-think analyze E025 (use card thresholds; numbers below are system PDR %, n=0/4/8):
+   Deltacom: greedy 84.9/76.5/68.9 | random+flow 80.4/72.8/66.8 | table 78.0/70.9/64.6 | sp 74.4/68.2/63.3
+   SP-86:    greedy 95.7/93.6/89.1 | random+flow 91.4/89.7/81.7 | table 95.3/90.2/82.7 | sp 75.8/75.7/70.7
+   (no interpretation done here; add LEDGER row E025 with training sha d209c69)
+2. then research-think ideate -> cards for A030 (M1 wk 1-2) and A028 (M2 wk 2-5).
+Paper deadline target ~2027-01-14 (TNSM). Note: ssh alias 'server' not resolvable locally; use pedroamaral@10.26.110.14.
 
 ## Read next
 experiments/E025-table-for-all.md, decisions.md D14/D15, strategy.md (KILL criteria), conclusions.md K10/K16.
