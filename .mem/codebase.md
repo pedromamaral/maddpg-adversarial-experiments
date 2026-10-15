@@ -29,6 +29,7 @@
 - learnability_probe.py, reward_alignment.py, credit_check.py, traffic_granularity.py, own_flow_effect.py,
   supervised_signal.py (uncommitted) — diagnostics behind K02-K13.
 - zoo_to_sp.py (Topology Zoo -> provider-edge model), topo_invariants.py, plot_*.py.
+- static_table_search.py — E026: coordinate-descent search for the best static table by system PDR (CRN, fork pool).
 - summarize_run.py -> .mem/results/E###.json; runs_status.sh (memory tooling).
 
 ## Add an experiment

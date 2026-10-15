@@ -1,5 +1,5 @@
 # E026 — Best static table by SYSTEM PDR (simulator-only local search)
-Status: PLANNED 2026-10-15. Avenue A030 (+A034a as step 0); decision D17; follows E025 (K17); gates KILL-4, tests K11.
+Status: IMPLEMENTED 2026-10-15 (sha: see below). Avenue A030 (+A034a as step 0); decision D17; follows E025 (K17); gates KILL-4, tests K11.
 
 Hypothesis:
   - SP-86 3x: the best system-objective static table ~ learners (96.2-97.4 at n=0) -> C3 holds (learners ~ the
@@ -35,6 +35,23 @@ Success criterion / reading (seed noise ~1.3 pp; eval noise <=1 pp):
   - train J >> eval by > 1 pp -> overfit to train demands; raise M.
 Cost: 0 GPU; CPU-days (parallelise candidates over the 16 cores; don't starve other users).
 
+Implemented (2026-10-15):
+  Step 0 (A034a): NO CHANGE needed. After failures the runner rebuilds kpath_cache on the post-failure graph
+    (runner:1112/1209/2346), so k always indexes a LIVE path; k >= n_live -> k=0 for the 'table' rule (runner:2060) and
+    effectively k=0 for learners (_next_hop_for_transit falls through, env:1276). Semantics identical -> no E025 re-run.
+    Caveat for analysis: after failures index k may be a different physical path than at n=0 (renumbering), for
+    table and learners alike; learners see utils, the table does not.
+  tools/static_table_search.py: J over M paired train eps (seed0=7000.., reseeded per ep = CRN, verified
+    deterministic), fork pool over episodes, entries by traffic volume, first-improvement, eps on paired mean gain.
+    Logs search_log.json (per sweep J, accepts, changed [a,d,k_old,k_new], gains, SE); table_<start>.json, table_best.json.
+  Smoke/noise (SP-86 3x, local Mac, 8 workers, M=8): ~8 s/episode, 14.7 s/J; J SE 0.63 pp; paired single-entry
+    gain SE 0.08-0.69 pp. Landscape steep (single changes from a random start: -7.8..+0.7 pp).
+  Setting: SP-86 M=16, eps=0.5 pp (~1.5-2 SE paired at M=16), --failures 0. 294 entries x ~3 alt ~ 880 J/sweep
+    -> ~4-7 h/sweep at 8 workers; use --max-evals as budget. Deltacom: time with --sweeps 0 at deploy, same rule.
+  Starts: sp, E025 table JSON (host_data/results/<E025 run>/table*.json), random:1, random:2; learner-argmax table
+    needs an export (not built; optional).
+  Usage: python tools/static_table_search.py --config configs/v2_pilot4_lc.json --load 3 --episodes 16 --eps 0.5
+    --workers 8 --start sp --start <E025.json> --start random:1 --out-dir host_data/results/E026_sp
 Results:
 Interpretation:
 Verdict:
