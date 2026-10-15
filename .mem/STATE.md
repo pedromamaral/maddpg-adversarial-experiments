@@ -1,29 +1,27 @@
 # STATE — 2026-10-15
 
-branch main @ 0913079 (+ this STATE commit), not pushed; server code at d209c69.
-phase just done: research-think analyze E025.
+branch main (+ this ideate commit), not pushed; server code at d209c69.
+phase just done: research-think ideate (after E025).
 
 ## What changed
-- E025 card: results/interpretation/verdict · LEDGER: E025 row · avenues: A029 tried, A025 gate open
-- conclusions: K17 (+K16 note) · decisions: D16 · project.md: C4/C5 notes · runs.md: E025 rows removed
+- D17: order E026 (A030) -> E027 (A034b, alongside) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward)
+- avenues: A030 active (E026), A034 new active (E026 step 0, E027), A028 -> E028, A025 -> E029
+- cards: experiments/E026-system-static-table.md, experiments/E027-e025-hardening.md
 
-## Result (K17, D16)
-- Deltacom 8x table-for-all 78.0/70.9/64.6 < ECMP 80.4/72.8/66.7 (n=0/4/8): own-flow optimum is selfish;
-  externality confirmed (card's lower branch). KILL-1 not triggered. A029 tried; A025 gate open.
-- SP-86 table 95.3 ~ learners at n=0 (export valid); -2.5..-4 pp vs learners under failures — unchecked how
-  'table' rule treats a failed chosen path (check before any paper use of failure numbers).
-- Limits: 1 table export, 1 eval seed.
+## Plan (D17)
+- E026: best static table by SYSTEM PDR, simulator-only first-improvement coordinate descent (Pedro: no fluid
+  surrogate). Step 0 = fix/record 'table' rule failed-path semantics. Tests KILL-4 (SP-86) and K11 (Deltacom > 81.9?).
+- E027: K17 with 2nd export + 2nd eval seed (CPU, while E026 runs).
 
 ## Active runs
 none.
 
 ## Open problem
-Can a difference reward (A025) capture the Deltacom externality gap (greedy 84.9 vs ECMP 80.4)? KILL-2 decides.
+Does Deltacom have static headroom that learners miss (E026 > 81.9)? If yes, A025 is retargeted and C4 reworded.
 
 ## EXACT next step
-1. Pedro to confirm D16 ordering (A030 + A028 first for TNSM; A025 as ToN bet) — or reorder.
-2. research-think ideate -> cards for A030 (M1 wk 1-2), A028 (M2 wk 2-5), A025 (diff reward).
+research-do implement E026 (card = spec; start with step 0, then tools/static_table_search.py; time one episode to set M, eps).
 Paper deadline target ~2027-01-14 (TNSM). ssh alias 'server' not resolvable locally; use pedroamaral@10.26.110.14.
 
 ## Read next
-decisions.md D14-D16, strategy.md (KILL criteria), conclusions.md K16/K17, avenues A025/A028/A030.
+experiments/E026-system-static-table.md, codebase.md, E025 card ('table' rule + export usage).
