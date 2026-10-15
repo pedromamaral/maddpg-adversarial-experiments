@@ -1,7 +1,7 @@
 # STATE — 2026-10-15
 
 branch main @ 63a0ea3 (+ this STATE commit), not pushed; server code at d209c69.
-phase just done: research-do implement E026.
+phase just done: research-do deploy E026 (pushed; server at 85e950e).
 
 ## What changed
 - tools/static_table_search.py (new, 46f4985): coordinate-descent search for the best static table by system PDR
@@ -13,7 +13,8 @@ phase just done: research-do implement E026.
 E026 (A030) -> E027 (A034b, CPU, alongside) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
 
 ## Active runs
-none.
+E026: maddpg-E026-sp86 + maddpg-E026-dc on server (6 cpus each, 10 cores used; docker logs only; results host_data/results/E026_{sp,dc}).
+Deltacom timing: 21.1 s/J (M=8, 8w, sp J0=74.54); printed '294 searchable entries' same as SP-86 -> check in analysis.
 
 ## Latest results
 - E026 step 0: 'table' failure semantics already = learners' (kpath_cache rebuilt post-failure) -> E025 stands, no re-run.
@@ -23,10 +24,7 @@ none.
 Does Deltacom have static headroom that learners miss (E026 > 81.9)? If yes, A025 is retargeted and C4 reworded.
 
 ## EXACT next step
-research-do deploy E026: git push; on server git pull; time Deltacom (configs/v2_deltacom.json, --load 8, --sweeps 0)
-to set M/eps per card rule; launch SP-86 (--load 3 --episodes 16 --eps 0.5, starts sp / E025 table JSON / random:1 /
-random:2, 8 workers) and Deltacom detached, CPU only (don't take all 16 cores). Then E027 on CPU alongside.
-Paper deadline ~2027-01-14 (TNSM). ssh: pedroamaral@10.26.110.14 (alias 'server' not resolvable locally).
+research-do status E026 (check ~10 h in: search_log.json via summarize); meanwhile research-do implement/deploy E027 on CPU (4 cores free).
 
 ## Read next
 experiments/E026-system-static-table.md ('Implemented' block), infra.md, runs.md.
