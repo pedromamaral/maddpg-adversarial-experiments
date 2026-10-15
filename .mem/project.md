@@ -15,9 +15,9 @@ v1 victims never used their observations, see K01.)
 - C3 What is learned is a demand-robust static routing table, not adaptive routing. [K08; A030 vs a stochastic-optimal
   static table — KILL-4: >1 pp gap -> 'learners approximate the robust table imperfectly']
 - C4 Learners capture only static (demand-structure) headroom: beat ECMP where a fixed rule
-  can (SP-86), match ECMP where it cannot (Deltacom). [K10,K11,K16 supported; E025 checks table-for-all]
+  can (SP-86), match ECMP where it cannot (Deltacom). [K10,K11,K16,K17 supported]
 - C5 (open, reframed by K16) Own-flow credit has no state headroom beyond the table; the remaining
-  Deltacom gain is system-level (externality) -> difference reward (A025) if E025 confirms.
+  Deltacom gain is system-level (externality) -> E025 confirmed (K17: own-flow table-for-all < ECMP) -> difference reward (A025).
   KILL-2 PASS = Deltacom 8x 3 seeds > 80.4 by >=1.5 pp AND telemetry shuffle >1 pp; FAIL -> open problem.
 
 ## Metrics
