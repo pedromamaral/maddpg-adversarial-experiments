@@ -1,7 +1,7 @@
 # STATE — 2026-10-15
 
-branch main @ 1632739 (+ this STATE commit), not pushed; server code at d209c69.
-phase just done: research-think ideate (after E025) + Paper 1 situation summary for Pedro (no memory change).
+branch main @ 46f4985 (+ this STATE commit), not pushed; server code at d209c69.
+phase just done: research-do implement E026 (tools/static_table_search.py; step 0 = no change needed).
 
 ## What changed
 - D17: order E026 (A030) -> E027 (A034b, alongside) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward)
@@ -20,8 +20,9 @@ none.
 Does Deltacom have static headroom that learners miss (E026 > 81.9)? If yes, A025 is retargeted and C4 reworded.
 
 ## EXACT next step
-research-do implement E026 (card = spec; start with step 0, then tools/static_table_search.py; time one episode to set M, eps).
-Paper deadline target ~2027-01-14 (TNSM). ssh alias 'server' not resolvable locally; use pedroamaral@10.26.110.14.
+research-do deploy E026: push, git pull on server; time Deltacom with --sweeps 0 (set M/eps as in card); launch SP-86
+(M=16, eps 0.5, starts sp/E025-table/random:1/random:2, 8 workers) and Deltacom (LOAD 8) detached, CPU only.
+Then E027 alongside on CPU. Paper deadline ~2027-01-14. ssh: pedroamaral@10.26.110.14.
 
 ## Read next
-experiments/E026-system-static-table.md, codebase.md, E025 card ('table' rule + export usage).
+experiments/E026-system-static-table.md ('Implemented' block), infra.md, runs.md.

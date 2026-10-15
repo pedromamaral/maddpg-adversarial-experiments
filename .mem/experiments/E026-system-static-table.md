@@ -1,5 +1,5 @@
 # E026 — Best static table by SYSTEM PDR (simulator-only local search)
-Status: IMPLEMENTED 2026-10-15 (sha: see below). Avenue A030 (+A034a as step 0); decision D17; follows E025 (K17); gates KILL-4, tests K11.
+Status: IMPLEMENTED 2026-10-15, sha 46f4985. Avenue A030 (+A034a as step 0); decision D17; follows E025 (K17); gates KILL-4, tests K11.
 
 Hypothesis:
   - SP-86 3x: the best system-objective static table ~ learners (96.2-97.4 at n=0) -> C3 holds (learners ~ the
