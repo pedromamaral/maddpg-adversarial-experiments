@@ -22,6 +22,7 @@
 #   EVAL_NAME  output subdirectory instead of eval/ (keeps the standard evaluation intact)
 #   NO_ATTR=1  skip the attribution run
 #   TABLE_FILE host path of a table JSON for the 'table' rule (tools/supervised_signal.py --export-table)
+#   EVAL_TRAFFIC_SEED  eval traffic seed instead of 20240601 (E027); set it for every rule so all stay paired
 #   LOAD       offered load factor (default 2.0, the Paper 1 stress point)
 # Log: ~/<EVAL_NAME>_<RUN>_<VARIANT>.log. Run on the server from the repo root.
 set -u
@@ -34,6 +35,7 @@ say() { echo "$(date -u '+%F %T UTC') $*" >> "$LOG"; }
 IMG=maddpg-exp:latest
 MOUNTS=""
 [ -n "${TABLE_FILE:-}" ] && MOUNTS="-v $(cd "$(dirname "$TABLE_FILE")" && pwd)/$(basename "$TABLE_FILE"):/workspace/table.json:ro -e TABLE_FILE=/workspace/table.json"
+[ -n "${EVAL_TRAFFIC_SEED:-}" ] && MOUNTS="$MOUNTS -e EVAL_TRAFFIC_SEED=$EVAL_TRAFFIC_SEED"
 MOUNTS="$MOUNTS -v $R/host_data:/workspace/data -v $R/src:/workspace/src -v $R/tools:/workspace/tools -v $R/configs:/workspace/configs"
 
 ceiling() {  # $1 = number of failures

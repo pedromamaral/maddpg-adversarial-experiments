@@ -2272,7 +2272,7 @@ class StandaloneExperimentRunner:
                          targeted_tiers: Optional[List[str]] = None,
                          attack_fraction: float = 1.0,
                          offered_load_factor: float = 1.0,
-                         traffic_seed: int = 20240601,
+                         traffic_seed: int = int(os.environ.get('EVAL_TRAFFIC_SEED', 20240601)),
                          routing_rule: Optional[str] = None,
                          target_links: Optional[list] = None,
                          n_link_failures: int = 0,

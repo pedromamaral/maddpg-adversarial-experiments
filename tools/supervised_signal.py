@@ -41,6 +41,8 @@ ap.add_argument('--train-episodes', type=int, default=150)
 ap.add_argument('--test-episodes', type=int, default=40)
 ap.add_argument('--epochs', type=int, default=40)
 ap.add_argument('--out', default=None)
+ap.add_argument('--train-seed', type=int, default=1000,
+                help='base traffic seed of the train episodes (test stays 2000); E027 uses 3000 for a 2nd export')
 ap.add_argument('--export-table', default=None,
                 help='write the fitted table rule as JSON {agent: {dest: k}} (indices) for the TABLE_FILE rule')
 args = ap.parse_args()
@@ -94,7 +96,7 @@ def collect(n_eps, seed):
     return np.stack(X), rows
 
 
-Xtr, Rtr = collect(args.train_episodes, 1000)
+Xtr, Rtr = collect(args.train_episodes, args.train_seed)
 Xte, Rte = collect(args.test_episodes, 2000)
 
 
