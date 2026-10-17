@@ -1,30 +1,24 @@
-# STATE — 2026-10-15
+# STATE — 2026-10-17
 
-branch main @ 63a0ea3 (+ this STATE commit), not pushed; server code at d209c69.
-phase just done: research-do deploy E026 (pushed; server at 85e950e).
+branch main @ d0e5689 (pushed through b0581e1); server at b0581e1.
+phase just done: research-do implement+deploy E027, summarize_run reader for E026.
 
 ## What changed
-- tools/static_table_search.py (new, 46f4985): coordinate-descent search for the best static table by system PDR
-  (CRN reseeding, verified deterministic; fork pool; search_log.json + table_*.json)
-- experiments/E026 card: status IMPLEMENTED, step-0 finding, noise, settings, usage
-- avenues A034: (a) done (no change needed); codebase.md: tool line added
+- tools/summarize_run.py: reads static_table_search search_log.json (partial logs ok) -> metrics search/<start>/{J0,J,gain_pp,evals,sweeps} (1ce92a4)
+- E027 (bafe41b, b0581e1): supervised_signal.py --train-seed; env EVAL_TRAFFIC_SEED; run_eval.sh DOCKER_EXTRA; tools/run_E027.sh
 
 ## Plan (D17)
-E026 (A030) -> E027 (A034b, CPU, alongside) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
+E026 (A030) -> E027 (A034b) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
 
-## Active runs
-E026: maddpg-E026-sp86 + maddpg-E026-dc on server (6 cpus each, 10 cores used; docker logs only; results host_data/results/E026_{sp,dc}).
-Deltacom timing: 21.1 s/J (M=8, 8w, sp J0=74.54); printed '294 searchable entries' same as SP-86 -> check in analysis.
-
-## Latest results
-- E026 step 0: 'table' failure semantics already = learners' (kpath_cache rebuilt post-failure) -> E025 stands, no re-run.
-- E026 noise (SP-86 3x, M=8, local): 14.7 s/J at 8 workers; J SE 0.63 pp; paired single-entry SE 0.08-0.69 pp.
+## Active runs (server, see runs.md)
+E026: maddpg-E026-sp86 + -dc, up ~44 h since 10-15 21:30 (ETA 40-80 h). Partial search_log fetched to host_data/results/E026_{sp,dc} (not interpreted).
+E027: tools/run_E027.sh, started 10-17 17:30, 3 Deltacom eval cells, 4 cpus; marks in ~/idqn/run_E027.done.
 
 ## Open problem
-Does Deltacom have static headroom that learners miss (E026 > 81.9)? If yes, A025 is retargeted and C4 reworded.
+Does Deltacom have static headroom that learners miss (E026 > 81.9)? Is K17 (table < ECMP) robust to export and eval seed (E027)?
 
 ## EXACT next step
-research-do status E026 (check ~10 h in: search_log.json via summarize); meanwhile research-do implement/deploy E027 on CPU (4 cores free).
+research-do status; when E027 .done has 3 lines -> research-do fetch E027 (summarize each v2_dc_lc/E027_* dir); when E026 containers exit -> fetch E026.
 
 ## Read next
-experiments/E026-system-static-table.md ('Implemented' block), infra.md, runs.md.
+runs.md, experiments/E027-e025-hardening.md, experiments/E026-system-static-table.md.
