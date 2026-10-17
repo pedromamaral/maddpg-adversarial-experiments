@@ -6,6 +6,7 @@ Reads JSON only, never logs. Understands the three result formats in host_data/r
   idqn_control.py       <prefix>_seed<s>[_<tag>].json  with eval.fail<n>[_stale<d>].{pdr, least_loaded, chance, ...}
   run_eval.sh           <eval_dir>/n_<k>/damage_ceiling.json  with <rule>.mean_end_to_end_pdr
   supervised_signal.py  <config>.json  with <rule>.{own_delivery_pct, se} and agree_greedy
+  static_table_search.py search_log.json with starts[].{start, J0, J, evals, sweeps} (works on partial logs)
 
 Learner metrics are averaged over seeds (min-max kept); rule rows are per n.
 
@@ -93,6 +94,22 @@ for f in sorted(glob.glob(os.path.join(run, '*.json'))):
         if k in d:
             add(f'{stem}/{k}', [d[k]])
 
+# static_table_search.py: search_log.json, one metric set per start (system PDR, %)
+sl = os.path.join(run, 'search_log.json')
+if os.path.exists(sl):
+    d = json.load(open(sl))
+    configs.add(d.get('config', '?'))
+    for s in d.get('starts', []):
+        name = os.path.basename(s['start']).replace('.json', '')
+        add(f'search/{name}/J0', [s.get('J0')])
+        add(f'search/{name}/J', [s.get('J')])
+        if s.get('J') is not None and s.get('J0') is not None:
+            add(f'search/{name}/gain_pp', [s['J'] - s['J0']])
+        add(f'search/{name}/evals', [s.get('evals')])
+        add(f'search/{name}/sweeps', [len(s.get('sweeps', []))])
+        if s.get('J0_se') is not None:
+            metrics[f'search/{name}/J0']['se'] = s['J0_se']
+
 # step-reward training curves
 tr = os.path.join(run, 'phase1_training_results.json')
 if os.path.exists(tr):
@@ -121,7 +138,7 @@ if not args.no_write:
 # Short table: headline metrics first (fail0/fail4/fail8 PDR, n_0 rules)
 keys = sorted(metrics, key=lambda k: (not re.search(r'(fail0|fail4|fail8|n_0)/', k) and not k.endswith('/pdr'), k))
 keys = [k for k in keys if k.endswith('/pdr') or 'least_loaded' in k or '/train/' in k
-        or k.endswith('/own_delivery_pct') or '/agree_greedy/' in k]
+        or k.startswith('search/') or k.endswith('/own_delivery_pct') or '/agree_greedy/' in k]
 print(f"{args.id} {out['artifacts']} sha={sha} seeds={out['seeds']} metrics={len(metrics)}")
 for k in keys[:args.rows - 1]:
     m = metrics[k]
