@@ -12,13 +12,13 @@ E026 (A030) -> E027 (A034b) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff rewar
 
 ## Active runs (server, see runs.md)
 E026: maddpg-E026-sp86 + -dc, up ~44 h since 10-15 21:30 (ETA 40-80 h). Partial search_log fetched to host_data/results/E026_{sp,dc} (not interpreted).
-E027: tools/run_E027.sh, started 10-17 17:30, 3 Deltacom eval cells, 4 cpus; marks in ~/idqn/run_E027.done.
+E027: DONE and fetched 2026-10-17 (3 cells -> .mem/results/E027_*.json); not yet analysed.
 
 ## Open problem
 Does Deltacom have static headroom that learners miss (E026 > 81.9)? Is K17 (table < ECMP) robust to export and eval seed (E027)?
 
 ## EXACT next step
-research-do status; when E027 .done has 3 lines -> research-do fetch E027 (summarize each v2_dc_lc/E027_* dir); when E026 containers exit -> fetch E026.
+research-think analyze E027 (K17 hardening); when E026 containers exit -> research-do fetch E026.
 
 ## Read next
 runs.md, experiments/E027-e025-hardening.md, experiments/E026-system-static-table.md.
