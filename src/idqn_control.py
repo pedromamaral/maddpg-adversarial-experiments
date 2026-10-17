@@ -231,6 +231,8 @@ class Policy:
         self.n_actions = n_dest * k
         self.agents = [None] * n_agents
         self.eps = eps
+        self.sp_only = False        # DRL-OR-style SP pretraining: behaviour policy = shortest path (k=0)
+        self.fallback_margin = None  # DRL-OR-style safe fallback: leave k=0 only if Q gain > margin
 
     def choose_action(self, states):
         if self.shuffle_neighbours:
@@ -253,7 +255,12 @@ class Policy:
 
     def _to_actions(self, q):
         choice = q.argmax(2)                                          # [agents, dest]
-        if self.eps > 0:
+        if self.fallback_margin is not None:
+            gain = q.max(2) - q[:, :, 0]
+            choice = np.where(gain > self.fallback_margin, choice, 0)
+        if self.sp_only:
+            choice = np.zeros_like(choice)
+        elif self.eps > 0:
             explore = np.random.rand(*choice.shape) < self.eps
             choice = np.where(explore, np.random.randint(self.k, size=choice.shape), choice)
         out = []
@@ -306,6 +313,11 @@ def main():
     ap.add_argument('--train-failures', default='0', help='e.g. 0,2,4,6,8: drawn per episode')
     ap.add_argument('--train-random-hotspot', action='store_true')
     ap.add_argument('--eval-tag', default=None, help='--eval-only: output <prefix>_seed<s>_<tag>.json')
+    ap.add_argument('--sp-pretrain', type=int, default=0,
+                    help='DRL-OR-style: first N episodes follow shortest path (k=0) while Q regresses outcomes; '
+                         'epsilon decay starts after')
+    ap.add_argument('--fallback-margin', type=float, default=None,
+                    help='DRL-OR-style safe fallback: use k=0 unless Q(best)-Q(k=0) > margin (train and eval)')
     ap.add_argument('--learner', choices=['dqn', 'ac'], default='dqn')
     ap.add_argument('--critic', choices=['local', 'central'], default='local', help='--learner ac')
     ap.add_argument('--entropy', type=float, default=0.01, help='--learner ac (pilot 4: 0.01)')
@@ -355,6 +367,7 @@ def main():
         q = QNet(eng.state_dims, A, nd, K)
         opt = torch.optim.Adam(q.parameters(), lr=args.lr)
         pol = Policy(lambda st: q(torch.cat([torch.as_tensor(st), eye], 1)), A, nd, K)
+        pol.fallback_margin = args.fallback_margin
         q_target = copy.deepcopy(q)
         prefix, ckpt = 'idqn', f'qnet_seed{args.seed}.pt'
         bufs = None
@@ -374,8 +387,10 @@ def main():
         args.episodes = 0
 
     for ep in range(args.episodes):
+        pol.sp_only = ep < args.sp_pretrain
+        e = max(0, ep - args.sp_pretrain)
         pol.eps = max(args.eps_end, args.eps_start
-                      - (args.eps_start - args.eps_end) * ep / max(1, args.eps_episodes))
+                      - (args.eps_start - args.eps_end) * e / max(1, args.eps_episodes))
         eng.topology.restore_intact()
         if args.train_random_hotspot:
             hot = random.sample(sites, 4)
@@ -476,10 +491,11 @@ def main():
 
     # evaluation: greedy policy, as tools/run_eval.sh (PDR) and flow_choice_check.py (choices)
     eng._skew_hot_srcs, eng._skew_hot_dsts = list(eval_hot[0]), list(eval_hot[1])
-    pol.eps = 0.0
+    pol.eps, pol.sp_only = 0.0, False
     result = {'config': args.config, 'seed': args.seed, 'credit': args.credit,
               'learner': args.learner, 'critic': args.critic if args.learner == 'ac' else None,
               'train_random_hotspot': args.train_random_hotspot,
+              'sp_pretrain': args.sp_pretrain, 'fallback_margin': args.fallback_margin,
               'eval_hotspot': {'hot_srcs': eval_hot[0], 'hot_dsts': eval_hot[1]},
               'train_failures': args.train_failures, 'train_load': train_load,
               'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {}}
