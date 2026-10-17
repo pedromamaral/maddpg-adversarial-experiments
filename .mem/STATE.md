@@ -1,24 +1,31 @@
 # STATE — 2026-10-17
 
-branch main @ d0e5689 (pushed through b0581e1); server at b0581e1.
-phase just done: research-do implement+deploy E027, summarize_run reader for E026.
+branch main @ "E027: analysed" commit (local, not pushed); server at b0581e1.
+phase just done: research-think analyze E027 (K17 hardening).
 
 ## What changed
-- tools/summarize_run.py: reads static_table_search search_log.json (partial logs ok) -> metrics search/<start>/{J0,J,gain_pp,evals,sweeps} (1ce92a4)
-- E027 (bafe41b, b0581e1): supervised_signal.py --train-seed; env EVAL_TRAFFIC_SEED; run_eval.sh DOCKER_EXTRA; tools/run_E027.sh
+- experiments/E027-e025-hardening.md: results table, interpretation, verdict SUPPORTED
+- experiments/LEDGER.md: E027 line
+- avenues.md: A034 -> tried
+- conclusions.md: K17 revised -> high (Deltacom), evidence E025,E027
+- runs.md: E027 moved to Finished
+
+## Latest results
+E027: Deltacom 8x table - ECMP < 0 in 12/12 cells (2 exports x 2 eval seeds x n=0/4/8), -1.9..-3.7 pp;
+  export spread <=0.12 pp (exports share one IPS data source -> estimation noise only).
 
 ## Plan (D17)
-E026 (A030) -> E027 (A034b) -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
+E026 (A030) -> E027 done -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
 
 ## Active runs (server, see runs.md)
-E026: maddpg-E026-sp86 + -dc, up ~44 h since 10-15 21:30 (ETA 40-80 h). Partial search_log fetched to host_data/results/E026_{sp,dc} (not interpreted).
-E027: DONE and fetched 2026-10-17 (3 cells -> .mem/results/E027_*.json); not yet analysed.
+E026: maddpg-E026-sp86 + -dc, started 10-15 21:30 (ETA 40-80 h). Partial search_log in host_data/results/E026_{sp,dc} (not interpreted).
 
 ## Open problem
-Does Deltacom have static headroom that learners miss (E026 > 81.9)? Is K17 (table < ECMP) robust to export and eval seed (E027)?
+Does Deltacom have static headroom that learners miss (E026 > 81.9 / > ECMP by >1 pp -> KILL-4)?
 
 ## EXACT next step
-research-think analyze E027 (K17 hardening); when E026 containers exit -> research-do fetch E026.
+tools/runs_status.sh; when E026 containers exit -> research-do fetch E026, then research-think analyze E026.
+If E026 still running: research-do implement E028 (A028 DRL-OR-style port) on a cheaper model.
 
 ## Read next
-runs.md, experiments/E027-e025-hardening.md, experiments/E026-system-static-table.md.
+runs.md, experiments/E026-system-static-table.md (fetch/analyse) or avenues.md A028 line + codebase.md (E028).
