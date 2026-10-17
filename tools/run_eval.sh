@@ -23,6 +23,7 @@
 #   NO_ATTR=1  skip the attribution run
 #   TABLE_FILE host path of a table JSON for the 'table' rule (tools/supervised_signal.py --export-table)
 #   EVAL_TRAFFIC_SEED  eval traffic seed instead of 20240601 (E027); set it for every rule so all stay paired
+#   DOCKER_EXTRA extra docker run flags for the ceiling eval, e.g. "--cpus 4"
 #   LOAD       offered load factor (default 2.0, the Paper 1 stress point)
 # Log: ~/<EVAL_NAME>_<RUN>_<VARIANT>.log. Run on the server from the repo root.
 set -u
@@ -59,7 +60,7 @@ if os.environ.get("RULES"):
 json.dump(c, open(out, "w"), indent=1)
 PY
   say "--- ceiling n=$K ---"
-  docker run --rm --name "${EV}_${RUN}_${V}_$K" --gpus all $MOUNTS -v "$C:/workspace/experiment_config.json" "$IMG" \
+  docker run --rm --name "${EV}_${RUN}_${V}_$K" --gpus all ${DOCKER_EXTRA:-} $MOUNTS -v "$C:/workspace/experiment_config.json" "$IMG" \
     python src/standalone_experiment_runner.py --config experiment_config.json --gpu 0 \
       --phase ceiling --results-dir "data/results/$RUN/$EV/n_$K" >> "$LOG" 2>&1
   say "ceiling n=$K exited rc=$?"; rm -f "$C"
