@@ -22,7 +22,7 @@ K07 | Original GNN collapses (LC-GNN 90.9); stable GNN 95.5 LC / 96.3 CC; neighb
 K08 | Learned = demand-robust static table: whole-obs shuffle <1 pp for every learner | E012-E017 | high | 2026-10-10
 K09 | Fixed-hotspot tables fall below ECMP on shift A (DQN 90.2, LC 92.8, CC 89.5 vs 93.5); changing-hotspot training generalises (DQN rh 95.9/95.7 A/B) | E012-E015 | high | 2026-10-09
 K10 | Deltacom 8x: every learner ~ECMP (step LC 80.9, fix LC 80.2/CC 79.8, rhf 80.3/79.8 vs ECMP 80.4); least-loaded at/below chance; shifts below ECMP (86-87.5 vs 88.1) | E020-E022 | high | 2026-10-13
-K11 | Learners capture static headroom only: SP-86 has it, Deltacom does not (no fixed rule beats ECMP; greedy's 4.5 pp needs current state) | E019-E022 | medium | 2026-10-13
+K11 | Learners capture static headroom only. SP-86: best found static table 97.0 ~ learners 96.2-97.4 (n=0). Deltacom: REVISED by E026 — a system-PDR-searched static table reaches 86.9-87.4 from 4 starts (train J, n=0) vs ECMP 80.4, learners 80.3, greedy 84.9, so Deltacom HAS ~7 pp static headroom that learners miss (fits K17 own-flow credit); greedy's 4.5 pp is not evidence that state is needed | E019-E022,E026 | medium (train J; held-out eval E026b and n=4/8 pending) | 2026-10-21
 K12 | Own-flow effect: SP-86 +9.6 pp (SE 0.5), own gain 5.9 >= system 4.3 (externality not the explanation); Deltacom +3.3 pp (SE 0.7), own gain 1.9 = ~42% of system 4.5 | E023 | medium | 2026-10-13
 K13 | Realism: per-flow pinning costs random 8.2 pp, greedy 8.0 pp; finer flows (k>=8) make ECMP ~optimal | E008,E009 | high | 2026-10-06
 K14 | Failure-augmented training helps DQN under failures (96.7/93.6/87.8 vs 96.9/92.1/84.3) | E018 | medium | 2026-10-09

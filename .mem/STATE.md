@@ -21,11 +21,11 @@ E026 (A030) -> E027 done -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
 E026: finished (sp86 10-19 09:55, dc 10-21 09:40), fetched 10-21 -> host_data/results/E026_{sp,dc}, .mem/results/E026_{sp,dc}.json (not interpreted). Server idle.
 
 ## Open problem
-Does Deltacom have static headroom that learners miss (E026 > 81.9 / > ECMP by >1 pp -> KILL-4)?
+Does E026's Deltacom static headroom (+7 pp train J) hold on held-out eval and under failures (E026b)?
 
 ## EXACT next step
 E028 implemented (9ff3439, pushed + pulled on server; card experiments/E028-drlor-style.md). E026 has exited (hold lifted); server idle. Pick margin/pretrain cells -> research-do deploy E028 (check tools/runs_status.sh first).
-E026 fetched -> research-think analyze E026 (results/E026_{sp,dc}.json).
+E026 analysed (D18): Deltacom static table 87.4 >> ECMP 80.4 on train J -> research-do implement/deploy E026b (held-out eval of host_data/results/E026_{sp,dc}/table_best.json via run_eval.sh TABLE_FILE, n=0/4/8). E028 may run in parallel.
 
 ## Read next
 runs.md, experiments/E026-system-static-table.md (fetch/analyse) or avenues.md A028 line + codebase.md (E028).

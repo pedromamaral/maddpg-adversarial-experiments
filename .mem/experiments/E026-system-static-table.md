@@ -1,5 +1,5 @@
 # E026 — Best static table by SYSTEM PDR (simulator-only local search)
-Status: IMPLEMENTED 2026-10-15, sha 46f4985. Avenue A030 (+A034a as step 0); decision D17; follows E025 (K17); gates KILL-4, tests K11.
+Status: ANALYSED 2026-10-21 (search only; held-out eval pending), sha 46f4985. Avenue A030 (+A034a as step 0); decision D17; follows E025 (K17); gates KILL-4, tests K11.
 
 Hypothesis:
   - SP-86 3x: the best system-objective static table ~ learners (96.2-97.4 at n=0) -> C3 holds (learners ~ the
@@ -52,6 +52,29 @@ Implemented (2026-10-15):
     needs an export (not built; optional).
   Usage: python tools/static_table_search.py --config configs/v2_pilot4_lc.json --load 3 --episodes 16 --eps 0.5
     --workers 8 --start sp --start <E025.json> --start random:1 --out-dir host_data/results/E026_sp
-Results:
+Results (2026-10-21; train J = system PDR, M=16 CRN train eps seed0=7000, n=0, eps 0.5 pp; ALL starts converged = last sweep 0 accepts):
+  start        | SP-86 J0 -> J (sweeps, accepts/sweep) | Deltacom J0 -> J (sweeps, accepts/sweep)
+  sp           | 75.6 -> 97.0 (4; 5,1,1,0)             | 74.5 -> 87.1 (2; 3,0)
+  E025 table   | 95.0 -> 96.1 (2; 1,0)                 | 77.9 -> 87.4 (3; 3,1,0)   <- dc best
+  random:1     | 89.3 -> 95.2 (3; 2,2,0)               | 78.3 -> 86.9 (2; 2,0)
+  random:2     | 90.6 -> 95.4 (2; 4,0)                 | 78.1 -> 86.9 (3; 2,1,0)
+  J0 SE 0.38-0.62 pp. Calibration: E025 table train J0 95.0 / 77.9 vs its eval 95.3 / 78.0 (E025) -> train J is on the
+  eval scale for a FIXED table (<=0.3 pp).
+  Not yet run: held-out eval of table_best (run_eval.sh TABLE_FILE, seed 20240601, n=0/4/8) -> E026b.
 Interpretation:
-Verdict:
+  - Deltacom: every start (incl. SP 74.5 and the selfish E025 table) reaches 86.9-87.4 (spread 0.55 pp ~ 1 SE) with only
+    2-4 accepted changes, i.e. a few high-traffic entries carry +9..+13 pp. Best 87.4 is +7.0 over ECMP 80.4, +6.8 over
+    learners 80.3-80.9, and +2.5 over greedy 84.9 (which uses current state). Far beyond the 81.9 threshold and any
+    noise (seed 1.3, eval <=1 pp). Winner's-curse inflation is bounded by the few accepts (<= ~4 x 0.5 pp worst case)
+    and cannot close a 7 pp gap. => Deltacom HAS large static headroom at n=0; K11's "no fixed rule beats ECMP" was
+    true only for the rules we tried (SP, ECMP, own-flow table). Learners miss it -> fits K17 (own-flow credit).
+  - SP-86: best 97.0 (sp start) vs learners 96.2-97.4 at n=0 -> within 1 pp -> C3 holds. Local optima differ by up to
+    1.8 pp (95.2-97.0) and the E025 start stalled at 96.1 -> search landscape is multi-modal; 97.0 is a lower bound on
+    the best static table, so 'learners ~ best table' is 'learners >= best FOUND table - 0.8'.
+  - Caveats: (1) train eps, not eval protocol -> held-out eval needed before the paper uses any number (rule: paper numbers
+    from paper1_tables.py); (2) optimised at n=0 only — failure robustness unknown (E025 table lost 2.5-4 pp under n=4/8);
+    (3) index k renumbers after failures (step 0 note).
+Verdict (provisional until E026b held-out eval):
+  - SP-86 (best table ~ learners): SUPPORTED (|97.0 - 96.2..97.4| <= 1) -> C3 holds on SP-86.
+  - Deltacom (best table ~ ECMP, K11): REFUTED (87.4 >> 81.9). K11 revised; C4 must be reworded; per card, A025 is
+    retargeted at reaching this table (system-credit), and greedy's edge is NOT evidence of state use.
