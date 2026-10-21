@@ -18,14 +18,14 @@ E027: Deltacom 8x table - ECMP < 0 in 12/12 cells (2 exports x 2 eval seeds x n=
 E026 (A030) -> E027 done -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
 
 ## Active runs (server, see runs.md)
-E026: maddpg-E026-sp86 + -dc, started 10-15 21:30 (ETA 40-80 h). Partial search_log in host_data/results/E026_{sp,dc} (not interpreted).
+E026: finished (sp86 10-19 09:55, dc 10-21 09:40), fetched 10-21 -> host_data/results/E026_{sp,dc}, .mem/results/E026_{sp,dc}.json (not interpreted). Server idle.
 
 ## Open problem
 Does Deltacom have static headroom that learners miss (E026 > 81.9 / > ECMP by >1 pp -> KILL-4)?
 
 ## EXACT next step
-E028 implemented (9ff3439, pushed + pulled on server; card experiments/E028-drlor-style.md). Next: pick margin/pretrain cells, then research-do deploy E028 (check tools/runs_status.sh first; server load ~11 from E026).
-E026 still running -> when containers exit: research-do fetch E026, research-think analyze E026.
+E028 implemented (9ff3439, pushed + pulled on server; card experiments/E028-drlor-style.md). E026 has exited (hold lifted); server idle. Pick margin/pretrain cells -> research-do deploy E028 (check tools/runs_status.sh first).
+E026 fetched -> research-think analyze E026 (results/E026_{sp,dc}.json).
 
 ## Read next
 runs.md, experiments/E026-system-static-table.md (fetch/analyse) or avenues.md A028 line + codebase.md (E028).

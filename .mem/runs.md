@@ -1,10 +1,9 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
-E026 | server | maddpg-E026-sp86 | tools/static_table_search.py --config configs/v2_pilot4_lc.json --load 3 --episodes 16 --eps 0.5 --workers 6 --max-evals 1800 --start sp/E025 table/random:1/random:2 (docker -d --rm --cpus 6) | 10-15 21:30 | ~40 h (est, 4 starts) | host_data/results/E026_sp (server) | running
-E026 | server | maddpg-E026-dc | same, configs/v2_deltacom.json --load 8, E025 table_v2_deltacom.json | 10-15 21:30 | ~40-80 h (21 s/J at M=8,8w) | host_data/results/E026_dc (server) | running
 
 ## Finished (results on disk server + host_data/results locally, except own_flow/ server-only)
+E026 | server | maddpg-E026-{sp86,dc} (--rm) | tools/static_table_search.py (4 starts each) | 10-15 21:30 | sp 10-19 09:55 / dc 10-21 09:40 | E026_{sp,dc} (fetched 10-21) | done, analyse next
 E027 | server | E027_<cell>_v2_dc_lc_LC-Simple_<n> (--rm) | tools/run_E027.sh | 10-17 17:30 | ~21:50 | v2_dc_lc/E027_* (fetched) | done, analysed
 E021,E022 | server | dc_{local,central}_{fix,rhf}_s* | ~/idqn/run_dc*.sh | 10-12 | — | dc_ac_* | done
 E020 | server | dc_step_train | ~/idqn/run_dc*.sh | 10-12 | — | v2_dc_lc | done
