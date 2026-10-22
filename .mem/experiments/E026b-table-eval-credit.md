@@ -1,5 +1,5 @@
 # E026b — Held-out eval of the E026 system tables + own-flow vs system gain of their changes
-Status: PROPOSED 2026-10-22. Avenues A030 (eval) + A035 (credit); decision D19; follows E026 (K11 revised, provisional).
+Status: IMPLEMENTED 2026-10-22 (sha 598d49d), not yet run. Avenues A030 (eval) + A035 (credit); decision D19; follows E026 (K11 revised, provisional).
 
 Hypotheses:
   H1 (A030): on held-out eval (seed 20240601, 20 paired eps) the Deltacom 8x table_best stays >= 85 at n=0 (train J 87.4),
@@ -22,6 +22,13 @@ Success / reading (eval noise <=1 pp; seed noise 1.3):
   - H2: own-flow gain <= 0 (within 1 SE) for the changes carrying most of the system gain -> supported; own-flow gain > 0
     for them -> own-flow credit could see them -> the miss is exploration/optimisation, not credit (redirects A025 -> A036).
 Cost: CPU only, ~3 h eval + <1 h credit script.
+Implementation: tools/table_change_credit.py (sha 598d49d; no cfg needed). Replays best start's accepted changes (asserts final
+  == table_<start>.json), CRN eval seeds 20240601+e, per change: system / own-agent / own-entry(a,d) PDR paired diffs +-SE.
+  Smoke OK on server (2 eps, 2 changes). Full run (docker on server, CPU):
+  docker run --rm -v $R/host_data:/workspace/data -v $R/src:/workspace/src -v $R/tools:/workspace/tools -v $R/configs:/workspace/configs
+   -w /workspace --entrypoint python3 maddpg-exp:latest tools/table_change_credit.py --config configs/v2_deltacom.json --load 8
+   --search-log data/results/E026_dc/search_log.json --table-dir data/results/E026_dc --episodes 20 --workers 8 --out data/results/E026b/credit_dc.json
+  (SP-86: configs/v2_pilot4_lc.json --load 3, E026_sp.) Eval part (H1) = run_eval.sh with TABLE_FILE, no code.
 Results:
 Interpretation:
 Verdict:

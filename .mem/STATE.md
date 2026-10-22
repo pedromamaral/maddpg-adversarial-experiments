@@ -1,6 +1,6 @@
 # STATE — 2026-10-22
 
-branch main @ 5d03faf (local; .mem-only commits ahead of origin — push before deploy). Server code at 9ff3439 (E028).
+branch main @ 598d49d (pushed) (local; .mem-only commits ahead of origin — push before deploy). Server code at 598d49d.
 phases this session: research-do status + fetch E026, research-think analyze E026, research-think ideate.
 
 ## What changed
@@ -27,9 +27,9 @@ none (server idle).
 Does the Deltacom +7 pp hold on held-out eval and n=4/8 (H1), and is it invisible to own-flow credit (H2, A035)?
 
 ## EXACT next step
-research-do implement E026b (cheaper model): eval = run_eval.sh TABLE_FILE=host_data/results/E026_{sp,dc}/table_best.json
-(no code); write tools/table_change_credit.py (per accepted change: system vs own-flow PDR, paired, eval seeds; reuse
-own-flow accounting of tools/own_flow_effect.py). Then research-do deploy E026b + E028 (pick E028 margin/pretrain cells).
+research-do deploy E026b (+ E028): code done (tools/table_change_credit.py @598d49d, pushed, server pulled, smoke OK; launch cmd in
+experiments/E026b card). Launch H1 evals via run_eval.sh TABLE_FILE=host_data/results/E026_{sp,dc}/table_best.json (n=0/4/8,
+RULES="table random+flow greedy greedy_stale2 sp", LOAD=3/8) and the credit script (20 eps, 8 workers) detached; log rows in runs.md.
 
 ## Read next
 experiments/E026b-table-eval-credit.md, codebase.md, infra.md; for E028: experiments/E028-drlor-style.md.
