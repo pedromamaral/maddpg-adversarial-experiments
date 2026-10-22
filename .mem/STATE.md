@@ -1,31 +1,35 @@
-# STATE — 2026-10-17
+# STATE — 2026-10-22
 
-branch main @ "E027: analysed" commit (local, not pushed); server at b0581e1.
-phase just done: research-think analyze E027 (K17 hardening).
+branch main @ a10017b (local; 5 .mem-only commits ahead of origin — push before deploy). Server code at 9ff3439 (E028).
+phases this session: research-do status + fetch E026, research-think analyze E026, research-think ideate.
 
 ## What changed
-- experiments/E027-e025-hardening.md: results table, interpretation, verdict SUPPORTED
-- experiments/LEDGER.md: E027 line
-- avenues.md: A034 -> tried
-- conclusions.md: K17 revised -> high (Deltacom), evidence E025,E027
-- runs.md: E027 moved to Finished
+- runs.md: E026 (sp86 + dc) -> Finished, fetched 10-21; server idle
+- results/E026_{sp,dc}.json (gitignored) + host_data/results/E026_{sp,dc}/ (JSON only)
+- experiments/E026-system-static-table.md: results, interpretation, verdict (provisional); LEDGER: E026 line
+- conclusions.md: K11 revised (Deltacom HAS static headroom; medium, pending E026b)
+- decisions.md: D18 (eval E026 before claims), D19 (ideate order)
+- avenues.md: A030 updated; A025 KILL-2 also vs E026 gap; new A035 active, A036-A038 proposed
+- project.md / strategy.md: KILL-2 reference revised (D19)
+- experiments/E026b-table-eval-credit.md: new card (PROPOSED)
 
 ## Latest results
-E027: Deltacom 8x table - ECMP < 0 in 12/12 cells (2 exports x 2 eval seeds x n=0/4/8), -1.9..-3.7 pp;
-  export spread <=0.12 pp (exports share one IPS data source -> estimation noise only).
+E026 (train J, n=0): SP-86 best static table 97.0 ~ learners 96.2-97.4 (C3 ok);
+  Deltacom 87.4 (4 starts 86.9-87.4) vs ECMP 80.4, learners 80.3, greedy 84.9 -> +7 pp static headroom (K11 revised).
 
-## Plan (D17)
-E026 (A030) -> E027 done -> E028 (A028 DRL-OR-style) -> E029 (A025 diff reward).
+## Plan (D19)
+E026b (A030 eval + A035 credit, CPU) || E028 (A028 DRL-OR-style, GPU) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
 
-## Active runs (server, see runs.md)
-E026: finished (sp86 10-19 09:55, dc 10-21 09:40), fetched 10-21 -> host_data/results/E026_{sp,dc}, .mem/results/E026_{sp,dc}.json (not interpreted). Server idle.
+## Active runs
+none (server idle).
 
 ## Open problem
-Does E026's Deltacom static headroom (+7 pp train J) hold on held-out eval and under failures (E026b)?
+Does the Deltacom +7 pp hold on held-out eval and n=4/8 (H1), and is it invisible to own-flow credit (H2, A035)?
 
 ## EXACT next step
-E028 implemented (9ff3439, pushed + pulled on server; card experiments/E028-drlor-style.md). E026 has exited (hold lifted); server idle. Pick margin/pretrain cells -> research-do deploy E028 (check tools/runs_status.sh first).
-Ideate done (D19): research-do implement E026b (card experiments/E026b-table-eval-credit.md: eval needs no code; write the A035 credit script), then deploy E026b and E028 together. Afterwards E030 = A036 (table warm-start).
+research-do implement E026b (cheaper model): eval = run_eval.sh TABLE_FILE=host_data/results/E026_{sp,dc}/table_best.json
+(no code); write tools/table_change_credit.py (per accepted change: system vs own-flow PDR, paired, eval seeds; reuse
+own-flow accounting of tools/own_flow_effect.py). Then research-do deploy E026b + E028 (pick E028 margin/pretrain cells).
 
 ## Read next
-runs.md, experiments/E026-system-static-table.md (fetch/analyse) or avenues.md A028 line + codebase.md (E028).
+experiments/E026b-table-eval-credit.md, codebase.md, infra.md; for E028: experiments/E028-drlor-style.md.
