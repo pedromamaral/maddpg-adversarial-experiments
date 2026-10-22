@@ -1,6 +1,7 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
+E026b | server | maddpg-E026b-credit-{dc,sp}; E026b_{dc,sp}_<run>_LC-Simple_{0,4,8} (--rm) | tools/run_E026b.sh (sha 6d946c8) | 10-22 17:45 | ~10-23 (unknown; dc credit ~14 tables x 20 eps) | E026b/credit_{dc,sp}.json; E026_{dc,sp}... eval in v2_dc_lc/E026b_dc, v2_p4_lc/E026b_sp | running
 
 ## Finished (results on disk server + host_data/results locally, except own_flow/ server-only)
 E026 | server | maddpg-E026-{sp86,dc} (--rm) | tools/static_table_search.py (4 starts each) | 10-15 21:30 | sp 10-19 09:55 / dc 10-21 09:40 | E026_{sp,dc} (fetched 10-21) | done, analyse next
