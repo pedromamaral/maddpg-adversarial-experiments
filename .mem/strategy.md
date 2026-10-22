@@ -20,7 +20,7 @@ literature (not comparable: MLU, fluid): MAGNNETO within 2% of SRLS, 10.1109/tcc
 A028 target: DRL-OR, https://github.com/netlab-lcy/DRL-OR (MIT) -> port reward+observation+pretraining into our simulator; NOT its Mininet testbed on the shared server
 other code: MAGNNETO-TE (MIT) · Teal (MIT) · Repetita (no licence) · Topology Zoo (cite)
 KILL-1 (A029/E025, wk 1-2): Deltacom system PDR of table-for-all >= greedy - 1 SE -> externality story wrong: drop A025, rethink C4/C5
-KILL-2 (A025, end wk 5): diff-reward Deltacom 8x, 3 seeds. PASS = PDR > 80.4 by >= 1.5 pp (>2 SE) AND telemetry shuffle > 1 pp. FAIL -> C5 as open problem, submit at month 3
+KILL-2 (A025, end wk 5; reference revised D19: also report share of the ECMP -> E026 system-table gap closed): diff-reward Deltacom 8x, 3 seeds. PASS = PDR > 80.4 by >= 1.5 pp (>2 SE) AND telemetry shuffle > 1 pp. FAIL -> C5 as open problem, submit at month 3
 KILL-3 (A028, wk 4): DRL-OR port not end-to-end -> report "DRL-OR-style" learner (its reward+obs in our learner)
 KILL-4 (A030): stochastic-optimal static table beats learners by > 1 pp -> C3 becomes "learners approximate the robust table imperfectly"
 do-not-pursue: imported into avenues.md as dropped (A001-A009, A019, A003/A026, Teal/MAGNNETO training now)

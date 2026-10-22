@@ -25,7 +25,7 @@ Does E026's Deltacom static headroom (+7 pp train J) hold on held-out eval and u
 
 ## EXACT next step
 E028 implemented (9ff3439, pushed + pulled on server; card experiments/E028-drlor-style.md). E026 has exited (hold lifted); server idle. Pick margin/pretrain cells -> research-do deploy E028 (check tools/runs_status.sh first).
-E026 analysed (D18): Deltacom static table 87.4 >> ECMP 80.4 on train J -> research-do implement/deploy E026b (held-out eval of host_data/results/E026_{sp,dc}/table_best.json via run_eval.sh TABLE_FILE, n=0/4/8). E028 may run in parallel.
+Ideate done (D19): research-do implement E026b (card experiments/E026b-table-eval-credit.md: eval needs no code; write the A035 credit script), then deploy E026b and E028 together. Afterwards E030 = A036 (table warm-start).
 
 ## Read next
 runs.md, experiments/E026-system-static-table.md (fetch/analyse) or avenues.md A028 line + codebase.md (E028).
