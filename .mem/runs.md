@@ -1,6 +1,8 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
+E028 | server | maddpg-E028-{dc,sp}-s{0,1,2} (--rm, 2 cpus each) | tools/run_E028.sh (dqn, sp-pretrain 50, margin 0.05, hotspot+failures 0-8; dc then sp per seed) | 10-23 17:15 | unknown (dc first) | E028/{dc,sp}_s* ; done markers ~/idqn/run_E028.done | running
+E031 | server | maddpg-E031-search-{dc,sp} (--rm, 5 cpus) then run_eval | tools/run_E031.sh (A037, --failures 0,4 from E026 table_best; eval n=0/4/8) | 10-23 17:15 | unknown (warm restart; dc first, then sp) | E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp ; ~/idqn/run_E031.done | running
 
 ## Finished (results on disk server + host_data/results locally, except own_flow/ server-only)
 E026 | server | maddpg-E026-{sp86,dc} (--rm) | tools/static_table_search.py (4 starts each) | 10-15 21:30 | sp 10-19 09:55 / dc 10-21 09:40 | E026_{sp,dc} (fetched 10-21) | done, analyse next

@@ -1,7 +1,7 @@
 # STATE — 2026-10-23
 
 branch main @ cfa143c (pushed). Server code at 6d946c8 (tools-only diff since; src unchanged). Server idle.
-phases this session: research-do implement + deploy + status + fetch E026b. No interpretation done.
+phases this session: research-think analyze E026b; research-do deploy E028 + implement/deploy E031 (A037). Server code at 3f02e7a.
 
 ## What changed
 - tools/table_change_credit.py (new, 598d49d), tools/run_E026b.sh (new, 6d946c8); tools/runs_status.sh unchanged
@@ -18,10 +18,10 @@ E026b ANALYSED (D20, K11 high@n=0, K18): Deltacom held-out 87.35 vs ECMP 80.4 (n
 E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
 
 ## Active runs
-none.
+E028 (6 containers, dc then sp per seed) + E031 (search dc -> eval -> search sp -> eval); started 2026-10-23 17:15, ETA unknown. See runs.md.
 
 ## EXACT next step
-research-do: pick E028 cells (A028 DRL-OR-style, GPU) and deploy; optionally A037 failure-aware table search (CPU) alongside. Card: experiments/E028-drlor-style.md.
+research-do status (come back later, no polling); when done: research-do fetch E028 / E031, then research-think analyze each. If nothing else pending, ideate for E030 (A036).
 
 ## Open problem
 Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037)
