@@ -21,13 +21,14 @@ E026 (train J, n=0): SP-86 best static table 97.0 ~ learners 96.2-97.4 (C3 ok);
 E026b (A030 eval + A035 credit, CPU) || E028 (A028 DRL-OR-style, GPU) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
 
 ## Active runs
-E026b launched 10-22 17:45 (tools/run_E026b.sh @6d946c8): credit dc->sp (8 cpus) || eval dc->sp (n=0/4/8, 2 cpus each). Markers ~/idqn/run_E026b.done. E028 not launched (needs cell pick).
+none (E026b finished 10-22 19:17, not yet fetched).
 
 ## Open problem
 Does the Deltacom +7 pp hold on held-out eval and n=4/8 (H1), and is it invisible to own-flow credit (H2, A035)?
 
 ## EXACT next step
-research-do status (later) -> fetch E026b -> research-think analyze E026b. Separately: pick E028 cells and deploy it (GPU free).
+research-do fetch E026b (credit_{dc,sp}.json + eval dirs, JSON only), then research-think analyze E026b. E028 cells still to pick.
+Note: tools/runs_status.sh needs one glob/name per runs.md container cell (no braces/;).
 
 ## Read next
 experiments/E026b-table-eval-credit.md, codebase.md, infra.md; for E028: experiments/E028-drlor-style.md.
