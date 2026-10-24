@@ -18,10 +18,10 @@ E026b ANALYSED (D20, K11 high@n=0, K18): Deltacom held-out 87.35 vs ECMP 80.4 (n
 E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
 
 ## Active runs
-E028 (6 containers, dc then sp per seed) + E031 (search dc -> eval -> search sp -> eval); started 2026-10-23 17:15, ETA unknown. See runs.md.
+E028: FINISHED 2026-10-24 04:50 (6/6 containers done) -> fetch. E031: dc search (0 accepts, 1 sweep, no change from start table) + dc eval done 11:19; sp search running since 11:19, then sp eval; ETA unknown.
 
 ## EXACT next step
-research-do status (come back later, no polling); when done: research-do fetch E028 / E031, then research-think analyze each. If nothing else pending, ideate for E030 (A036).
+research-do fetch E028 now (Deltacom + SP-86, 3 seeds each); fetch E031_dc eval (E031_dc.json via run_eval output) too; E031 sp pending. Then research-think analyze E028 / E031.
 
 ## Open problem
 Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037)
