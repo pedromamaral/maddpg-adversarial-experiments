@@ -233,6 +233,8 @@ class Policy:
         self.eps = eps
         self.sp_only = False        # DRL-OR-style SP pretraining: behaviour policy = shortest path (k=0)
         self.fallback_margin = None  # DRL-OR-style safe fallback: leave k=0 only if Q gain > margin
+        self.qsum = None             # zeros [agents, dest, k]: accumulates Q for the table export
+        self.qn = 0
         self.dev = np.zeros(3)       # decisions, argmax != k=0, fallback overrode argmax to k=0 (reset per eval condition)
 
     def choose_action(self, states):
@@ -255,6 +257,9 @@ class Policy:
         return self._to_actions(q)
 
     def _to_actions(self, q):
+        if self.qsum is not None:
+            self.qsum += q
+            self.qn += 1
         choice = q.argmax(2)                                          # [agents, dest]
         self.dev += (choice.size, (choice != 0).sum(), 0)
         if self.fallback_margin is not None:
@@ -311,6 +316,9 @@ def main():
     ap.add_argument('--eval-shuffle', choices=['path', 'all', 'neighbours'], default=None,
                     help='ablation: path utilisation (path) or the whole observation (all) '
                          'from a random earlier step')
+    ap.add_argument('--export-tables', action='store_true',
+                    help='--eval-only: per failure count, write the static table argmax_k mean_t Q (observation averaged '
+                         'over held-out episodes, seed EVAL_SEED+1000) as table_<prefix>_<tag>_fail<n>.json for TABLE_FILE')
     ap.add_argument('--credit', choices=['flow', 'step'], default='flow')
     ap.add_argument('--gamma', type=float, default=0.95, help='--credit step only')
     ap.add_argument('--tau', type=float, default=0.005, help='--credit step: target update')
@@ -516,6 +524,17 @@ def main():
     for stale in (int(x) for x in args.eval_stale.split(',')):
         for nf in (int(x) for x in args.eval_failures.split(',')):
             random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
+            if args.export_tables and not stale:
+                keep, pol.shuffle_slots = pol.shuffle_slots, None
+                random.seed(EVAL_SEED + 1000); np.random.seed(EVAL_SEED + 1000); torch.manual_seed(EVAL_SEED + 1000)
+                pol.qsum, pol.qn = np.zeros((pol.n_agents, pol.n_dest, pol.k)), 0
+                runner._attack_episodes(pol, env, args.eval_episodes, T, attack=False,
+                                        offered_load_factor=eval_load, n_link_failures=nf, stale_steps=0)
+                tab = pol.qsum.argmax(2)
+                json.dump({str(a): {str(d): int(tab[a, d]) for d in range(pol.n_dest)} for a in range(pol.n_agents)},
+                          open(os.path.join(args.out, f'table_{prefix}_{tag}_fail{nf}.json'), 'w'))
+                pol.qsum, pol.shuffle_slots = None, keep
+                random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
             pol.dev[:] = 0
             pol._past = []   # NB: kept across the episodes of one condition, so 'earlier' spans them
             eng.decision_log = []
