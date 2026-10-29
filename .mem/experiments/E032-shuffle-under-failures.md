@@ -1,5 +1,5 @@
 # E032 — Shuffle ablation under failures (A039 + A028 remainder)
-Status: PROPOSED 2026-10-29 (D21). Avenues A039, A028. Follows K20 (E031), K19 (E028), K14 (E018), K08.
+Status: PARTIALLY IMPLEMENTED 2026-10-29 (D21). Avenues A039, A028. Follows K20 (E031), K19 (E028), K14 (E018), K08.
 
 Hypotheses:
  H1 (A039) SP-86 3x failure-trained DQN (E018, K14 96.7/93.6/87.8) uses current state under failures: shuffling path telemetry / whole obs
@@ -19,6 +19,10 @@ Success / reading (noise: seed 1.3 pp, eval <=1 pp):
  - Mixed (shuffle cost but table ~ DQN, or vice versa): report, inspect per-failure-count.
  - H2: report shuffle deltas + deviation rate; deviation rate feeds the margin=0 decision.
 Cost: CPU, eval-only, hours. Small code: deviation-rate counter, shuffle at n>0 if not already supported.
+Implemented (c296401, src/idqn_control.py): eval JSON now has argmax_off_sp + fallback_override per fail<n> (existing --eval-shuffle path|all, --eval-failures, --fallback-margin, --eval-only already work at n>0).
+ Smoke OK on server (E018 fail s0, shuffle path, n=0/4): off-SP 53.8%/52.8%, fallback(0.05) 14.0%/12.9%. Smoke dir host_data/results/E032_smoke (server, root-owned).
+ Checkpoints present: idqn_p4_fail/qnet_seed{0,1,2}.pt, E028/{dc,sp}_s{0,1,2}/qnet_seed*.pt.
+ NOT done: extracted-table eval for E018 at each failure count (tools/supervised_signal.py --export-table exists; check it takes a failure-trained net + obs averaging) -> next implement step; then script tools/run_E032.sh (eval-only loop: shuffle none/path/all x n=0,4,8 x seeds).
 Results:
 Interpretation:
 Verdict:

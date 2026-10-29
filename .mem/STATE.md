@@ -25,6 +25,7 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
+E032 PARTIAL (c296401 pushed, server pulled, smoke ok; see card). Remaining: (1) table-export of E018 nets at n=0/4/8 via tools/supervised_signal.py --export-table, (2) tools/run_E032.sh eval-only loop, then research-do deploy E032. Old plan below.
 research-do implement E032 (D21; card experiments/E032-shuffle-under-failures.md): first check E018 SP-86 checkpoints exist on server and that eval shuffle works at n>0; add fallback deviation-rate logging. Then E028 margin=0 cell -> E030 (A036) -> E029 (A025).
 
 ## Open problem
