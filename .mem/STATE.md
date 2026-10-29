@@ -1,7 +1,7 @@
 # STATE — 2026-10-29
 
 branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server idle.
-phase this session: research-think analyze E028 (K19) + analyze E031 (K20, A037 done, K11 edited). No D (order D20 unchanged).
+phase this session: research-think analyze E028 (K19) + analyze E031 (K20, A037 done, K11 edited) + ideate -> D21, A039 active, E032 card.
 
 ## What changed
 - tools/table_change_credit.py (new, 598d49d), tools/run_E026b.sh (new, 6d946c8); tools/runs_status.sh unchanged
@@ -25,7 +25,7 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
-research-think ideate (strongest model): candidates = E028b (shuffle + fallback deviation rate + margin=0, CPU) and shuffle-under-failures for K14 DQN (does SP-86 failure gap = state use? K20), vs D20 order E030 (A036) -> E029 (A025).
+research-do implement E032 (D21; card experiments/E032-shuffle-under-failures.md): first check E018 SP-86 checkpoints exist on server and that eval shuffle works at n>0; add fallback deviation-rate logging. Then E028 margin=0 cell -> E030 (A036) -> E029 (A025).
 
 ## Open problem
 Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037)
