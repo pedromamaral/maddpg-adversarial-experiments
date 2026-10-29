@@ -233,6 +233,7 @@ class Policy:
         self.eps = eps
         self.sp_only = False        # DRL-OR-style SP pretraining: behaviour policy = shortest path (k=0)
         self.fallback_margin = None  # DRL-OR-style safe fallback: leave k=0 only if Q gain > margin
+        self.dev = np.zeros(3)       # decisions, argmax != k=0, fallback overrode argmax to k=0 (reset per eval condition)
 
     def choose_action(self, states):
         if self.shuffle_neighbours:
@@ -255,9 +256,12 @@ class Policy:
 
     def _to_actions(self, q):
         choice = q.argmax(2)                                          # [agents, dest]
+        self.dev += (choice.size, (choice != 0).sum(), 0)
         if self.fallback_margin is not None:
             gain = q.max(2) - q[:, :, 0]
-            choice = np.where(gain > self.fallback_margin, choice, 0)
+            kept = np.where(gain > self.fallback_margin, choice, 0)
+            self.dev[2] += (kept != choice).sum()
+            choice = kept
         if self.sp_only:
             choice = np.zeros_like(choice)
         elif self.eps > 0:
@@ -512,6 +516,7 @@ def main():
     for stale in (int(x) for x in args.eval_stale.split(',')):
         for nf in (int(x) for x in args.eval_failures.split(',')):
             random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
+            pol.dev[:] = 0
             pol._past = []   # NB: kept across the episodes of one condition, so 'earlier' spans them
             eng.decision_log = []
             res = runner._attack_episodes(pol, env, args.eval_episodes, T, attack=False,
@@ -520,10 +525,14 @@ def main():
             stats = score_decisions(eng.decision_log)
             eng.decision_log = None
             key = f'fail{nf}' + (f'_stale{stale}' if stale else '')
+            nd = max(pol.dev[0], 1)
+            stats['argmax_off_sp'] = float(pol.dev[1] / nd)       # share of decisions whose argmax leaves k=0
+            stats['fallback_override'] = float(pol.dev[2] / nd)   # share the margin fallback reset to k=0
             result['eval'][key] = {'pdr': res['mean_end_to_end_pdr'], **stats}
             print(f"[EVAL] {key}: PDR={res['mean_end_to_end_pdr']:6.2f}  "
                   f"least-loaded={100 * stats.get('least_loaded', 0):5.1f}% "
-                  f"(chance {100 * stats.get('chance', 0):4.1f}%)  regret={stats.get('regret', 0):.3f}",
+                  f"(chance {100 * stats.get('chance', 0):4.1f}%)  regret={stats.get('regret', 0):.3f}  "
+                  f"off-SP={100 * stats['argmax_off_sp']:4.1f}% fallback={100 * stats['fallback_override']:4.1f}%",
                   flush=True)
             json.dump(result, open(out_json, 'w'), indent=1)
     print(f"[{prefix.upper()}] done", flush=True)
