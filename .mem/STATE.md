@@ -1,7 +1,7 @@
 # STATE — 2026-10-29
 
 branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server idle.
-phase this session: research-think analyze E028 -> card, LEDGER, A028 note, K19 written. No D (order D20 unchanged).
+phase this session: research-think analyze E028 (K19) + analyze E031 (K20, A037 done, K11 edited). No D (order D20 unchanged).
 
 ## What changed
 - tools/table_change_credit.py (new, 598d49d), tools/run_E026b.sh (new, 6d946c8); tools/runs_status.sh unchanged
@@ -16,6 +16,8 @@ E026b ANALYSED (D20, K11 high@n=0, K18): Deltacom held-out 87.35 vs ECMP 80.4 (n
 
 ## Latest: E028 (K19) DRL-OR-style ~ECMP on Deltacom (79.5); SP-86 94.5 = ECMP+3.1 but ~2 pp < flow-credit DQN.
 
+## Latest: E031 (K20) failure-aware table search: no held-out gain; SP-86 greedy/K14 DQN beat best table at n=4/8 by 1.7/4-5 pp.
+
 ## Plan (D19)
 E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
 
@@ -23,7 +25,7 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
-research-think analyze E031 (strongest model; fetched, not in LEDGER). Pending cheap CPU add-on for A028: E028b = eval-only shuffle + fallback deviation rate + margin=0 cell.
+research-think ideate (strongest model): candidates = E028b (shuffle + fallback deviation rate + margin=0, CPU) and shuffle-under-failures for K14 DQN (does SP-86 failure gap = state use? K20), vs D20 order E030 (A036) -> E029 (A025).
 
 ## Open problem
 Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037)
