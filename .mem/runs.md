@@ -1,6 +1,7 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
+E033 | server | maddpg-E033-{nofb-sp,nofb-dc,train-sp}-s{0,1,2} (--rm, 4 cpus) | tools/run_E033.sh (A: E028 ckpts eval no fallback n=0/4/8; B: E028 recipe w/o --fallback-margin, SP-86, 750 eps) | 10-30 18:43 | ~10-31 06:00 (B dominates) | E033/{nofb_sp,nofb_dc,train_sp}_s* ; ~/idqn/run_E033.done | running
 E028 | server | maddpg-E028-{dc,sp}-s{0,1,2} (--rm, 2 cpus each) | tools/run_E028.sh (dqn, sp-pretrain 50, margin 0.05, hotspot+failures 0-8; dc then sp per seed) | 10-23 17:15 | done 10-24 04:50 | E028/{dc,sp}_s* ; done markers ~/idqn/run_E028.done | done, fetched 10-28 (results/E028_{dc,sp}.json), analyse next
 E031 | server | maddpg-E031-* | tools/run_E031.sh (A037, --failures 0,4 from E026 table_best; eval n=0/4/8) | 10-23 17:15 | dc search+eval done 10-24 11:19; sp search running (47.8 s/J) | E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp ; ~/idqn/run_E031.done | done 10-25 09:54 (sp search+eval), fetched 10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json), analyse next
 
