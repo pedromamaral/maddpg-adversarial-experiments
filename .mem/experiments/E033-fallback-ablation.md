@@ -15,6 +15,8 @@ Success / reading (noise: seed 1.3 pp, eval <=1 pp):
  - Deltacom A: expected ~0 (static, ~ECMP); report.
 Cost: CPU only. A ~1 h/seed; B ~E028 sp cell time per seed. 3 parallel chains, 4 cpus each.
 Out: host_data/results/E033/{nofb_sp,nofb_dc,train_sp}_s<seed>; done marker ~/idqn/run_E033.done.
+Implemented 38bce0f (tools/run_E033.sh, no src change). Smoke OK on server 2026-10-30 (host_data/results/E033_smoke, root-owned):
+ A eval-only 2 eps n=0 PDR 95.85, fallback 0.0%; B 3 eps train + eval runs, outputs idqn_seed0.json + qnet. Next: research-do deploy E033.
 Results:
 Interpretation:
 Verdict:

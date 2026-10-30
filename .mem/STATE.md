@@ -1,7 +1,7 @@
 # STATE — 2026-10-30
 
 branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server idle.
-phase this session: research-think analyze E032 -> K21 (new), K08/K19/K20 edited, A039 done, D22, C3 reworded in project.md.
+phase this session: research-do implement E033 (after research-think analyze E032 -> K21 (new), K08/K19/K20 edited, A039 done, D22, C3 reworded in project.md).
 
 ## What changed
 - tools/table_change_credit.py (new, 598d49d), tools/run_E026b.sh (new, 6d946c8); tools/runs_status.sh unchanged
@@ -27,7 +27,7 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
-E032 ANALYSED 2026-10-30 (card, LEDGER, K21, D22). Next (D22): E028 margin=0 training cell (does the 13-17% fallback reset explain SP-86 -2 pp?) via research-think ideate or straight to research-do implement; then E030 (A036) -> E029 (A025). Optional cheap: feature-wise shuffle of path telemetry to tell failure signal vs load (K21 open).
+E033 IMPLEMENTED 2026-10-30 (38bce0f; card experiments/E033-fallback-ablation.md; launcher tools/run_E033.sh; server pulled, smoke ok). Next: research-do deploy E033 (setsid nohup bash tools/run_E033.sh from repo root; done marker ~/idqn/run_E033.done; row in runs.md). Then E030 (A036) -> E029 (A025).
 
 ## Open problem
 Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037). Is the learned failure reaction a failure flag or load reading? (K21 open)
