@@ -25,7 +25,7 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
-E032 FINISHED 2026-10-30 03:10, not fetched. Next: research-do fetch E032. Was: IMPLEMENTED (export-tables + tools/run_E032.sh pushed, server pulled, smoke ok). Next: research-do deploy E032 (bash tools/run_E032.sh detached via setsid nohup; log row in runs.md). Then plan below.
+E032 FETCHED 2026-10-30 (results/E032.json shuffle+deviation rates, results/E032_tab.json extracted-table evals; raw host_data/results/E032, v2_p4_lc/E032_tab_*). Next: research-think analyze E032. Was: IMPLEMENTED (export-tables + tools/run_E032.sh pushed, server pulled, smoke ok). Next: research-do deploy E032 (bash tools/run_E032.sh detached via setsid nohup; log row in runs.md). Then plan below.
 research-do implement E032 (D21; card experiments/E032-shuffle-under-failures.md): first check E018 SP-86 checkpoints exist on server and that eval shuffle works at n>0; add fallback deviation-rate logging. Then E028 margin=0 cell -> E030 (A036) -> E029 (A025).
 
 ## Open problem

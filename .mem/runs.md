@@ -1,7 +1,6 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
-E032 | server | maddpg-E032-* | tools/run_E032.sh (eval-only; shuffle none/path/all n=0/4/8 + E018 table export/eval + E028 cells) | 10-29 22:41 | ~ hours (unknown) | E032/{p4f,sp,dc}_s*, v2_p4_lc/E032_tab_p4f_s*_n*; marker ~/idqn/run_E032.done | FINISHED 10-30 03:10 (all 3 chains), not fetched
 E028 | server | maddpg-E028-{dc,sp}-s{0,1,2} (--rm, 2 cpus each) | tools/run_E028.sh (dqn, sp-pretrain 50, margin 0.05, hotspot+failures 0-8; dc then sp per seed) | 10-23 17:15 | done 10-24 04:50 | E028/{dc,sp}_s* ; done markers ~/idqn/run_E028.done | done, fetched 10-28 (results/E028_{dc,sp}.json), analyse next
 E031 | server | maddpg-E031-* | tools/run_E031.sh (A037, --failures 0,4 from E026 table_best; eval n=0/4/8) | 10-23 17:15 | dc search+eval done 10-24 11:19; sp search running (47.8 s/J) | E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp ; ~/idqn/run_E031.done | done 10-25 09:54 (sp search+eval), fetched 10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json), analyse next
 

@@ -47,7 +47,9 @@ def add(name, values):
 
 # idqn_control.py learner files
 learner = defaultdict(list)
-for f in sorted(glob.glob(os.path.join(run, '*_seed*.json'))):
+for f in sorted(glob.glob(os.path.join(run, '**', '*_seed*.json'), recursive=True)):
+    if os.path.basename(f).startswith('table_'):
+        continue
     m = re.match(r'(.+)_seed(\d+)(?:_(.+))?\.json$', os.path.basename(f))
     if not m:
         continue
@@ -55,10 +57,13 @@ for f in sorted(glob.glob(os.path.join(run, '*_seed*.json'))):
     if 'eval' not in d:
         continue
     prefix, seed, tag = m.group(1), m.group(2), m.group(3) or 'train'
+    sub = re.sub(r'_s\d+$', '', os.path.relpath(os.path.dirname(f), run))   # E032: cell dirs <name>_s<seed>
+    if sub != '.':
+        prefix = f'{sub}/{prefix}'
     configs.add(d.get('config', '?'))
     seeds.add(int(seed))
     for cond, e in d['eval'].items():
-        for k in ('pdr', 'least_loaded', 'chance'):
+        for k in ('pdr', 'least_loaded', 'chance', 'argmax_off_sp', 'fallback_override'):
             if k in e:
                 learner[f'{prefix}/{tag}/{cond}/{k}'].append(e[k] * (100 if k != 'pdr' else 1))
     hist = d.get('history') or []
