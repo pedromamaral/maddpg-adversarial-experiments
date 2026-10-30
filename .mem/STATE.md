@@ -1,7 +1,7 @@
-# STATE — 2026-10-29
+# STATE — 2026-10-30
 
 branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server idle.
-phase this session: research-think analyze E028 (K19) + analyze E031 (K20, A037 done, K11 edited) + ideate -> D21, A039 active, E032 card.
+phase this session: research-think analyze E032 -> K21 (new), K08/K19/K20 edited, A039 done, D22, C3 reworded in project.md.
 
 ## What changed
 - tools/table_change_credit.py (new, 598d49d), tools/run_E026b.sh (new, 6d946c8); tools/runs_status.sh unchanged
@@ -16,7 +16,9 @@ E026b ANALYSED (D20, K11 high@n=0, K18): Deltacom held-out 87.35 vs ECMP 80.4 (n
 
 ## Latest: E028 (K19) DRL-OR-style ~ECMP on Deltacom (79.5); SP-86 94.5 = ECMP+3.1 but ~2 pp < flow-credit DQN.
 
-## Latest: E031 (K20) failure-aware table search: no held-out gain; SP-86 greedy/K14 DQN beat best table at n=4/8 by 1.7/4-5 pp.
+## Latest: E032 (K21) fail-trained DQN SP-86: static at n=0, failure-reactive at n=4/8 (shuffle -1.3/-2.7, own frozen table -4.7/-4.6). E028: DC static all n; SP fallback resets 13-17% of decisions.
+
+## Prev: E031 (K20) failure-aware table search: no held-out gain; SP-86 greedy/K14 DQN beat best table at n=4/8 by 1.7/4-5 pp.
 
 ## Plan (D19)
 E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
@@ -25,11 +27,10 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
-E032 FETCHED 2026-10-30 (results/E032.json shuffle+deviation rates, results/E032_tab.json extracted-table evals; raw host_data/results/E032, v2_p4_lc/E032_tab_*). Next: research-think analyze E032. Was: IMPLEMENTED (export-tables + tools/run_E032.sh pushed, server pulled, smoke ok). Next: research-do deploy E032 (bash tools/run_E032.sh detached via setsid nohup; log row in runs.md). Then plan below.
-research-do implement E032 (D21; card experiments/E032-shuffle-under-failures.md): first check E018 SP-86 checkpoints exist on server and that eval shuffle works at n>0; add fallback deviation-rate logging. Then E028 margin=0 cell -> E030 (A036) -> E029 (A025).
+E032 ANALYSED 2026-10-30 (card, LEDGER, K21, D22). Next (D22): E028 margin=0 training cell (does the 13-17% fallback reset explain SP-86 -2 pp?) via research-think ideate or straight to research-do implement; then E030 (A036) -> E029 (A025). Optional cheap: feature-wise shuffle of path telemetry to tell failure signal vs load (K21 open).
 
 ## Open problem
-Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037)
+Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037). Is the learned failure reaction a failure flag or load reading? (K21 open)
 
 ## Read next
-experiments/E026b-table-eval-credit.md, results/E026b_*.json, conclusions.md (K11, K17), decisions.md D18-D19.
+experiments/E032-shuffle-under-failures.md, conclusions.md (K19-K21), decisions.md D21-D22.

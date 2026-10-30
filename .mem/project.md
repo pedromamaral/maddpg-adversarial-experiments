@@ -12,7 +12,7 @@ v1 victims never used their observations, see K01.)
 - C1 Credit assignment, not algorithm/architecture, decides whether MARL routing learns
   (step reward: no learning; per-decision flow credit: learns with DQN and MADDPG). [supported K05]
 - C2 Once credit is fixed, architecture (LC/CC critic, simple/duelling, GNN) is secondary. [K06,K07]
-- C3 What is learned is a demand-robust static routing table, not adaptive routing. [K08; A030 vs a stochastic-optimal
+- C3 What is learned is a demand-robust static routing table in normal operation, not load-adaptive routing; failure-trained learners add a learned failure reaction (D22, K21). [K08, K21; A030 vs a stochastic-optimal
   static table — KILL-4: >1 pp gap -> 'learners approximate the robust table imperfectly']
 - C4 Learners capture only static (demand-structure) headroom: beat ECMP where a fixed rule
   can (SP-86), match ECMP where it cannot (Deltacom). [K10,K11,K16,K17 supported]
