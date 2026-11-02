@@ -1,6 +1,6 @@
 # STATE — 2026-10-30
 
-branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server busy: E033.
+branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server idle (E033 done).
 phase this session: research-do implement E033 (after research-think analyze E032 -> K21 (new), K08/K19/K20 edited, A039 done, D22, C3 reworded in project.md).
 
 ## What changed
@@ -27,7 +27,7 @@ E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 tabl
 E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
 
 ## EXACT next step
-E033 DEPLOYED 2026-10-30 18:43 (server, 3 seed chains; ETA ~10-31 06:00; done marker ~/idqn/run_E033.done, 3 lines when finished). Next: research-do status, then fetch E033 -> research-think analyze E033. Then E030 (A036) -> E029 (A025).
+E033 FINISHED 2026-10-30 23:12 (all 9 cells wrote JSON, no errors in logs). Next: research-do fetch E033 -> research-think analyze E033. Then E030 (A036) -> E029 (A025).
 
 ## Open problem
 Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037). Is the learned failure reaction a failure flag or load reading? (K21 open)
