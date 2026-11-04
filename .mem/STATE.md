@@ -1,36 +1,29 @@
-# STATE — 2026-10-30
+# STATE — 2026-11-04
 
-branch main @ 2da2600 (pushed; only .mem/STATE.md + runs.md modified locally). Server code at 3f02e7a. Server idle (E033 done).
-phase this session: research-do implement E033 (after research-think analyze E032 -> K21 (new), K08/K19/K20 edited, A039 done, D22, C3 reworded in project.md).
+branch main @ a3ec0ff (clean, pushed). Server code at 38bce0f. Server idle (E033 done, not fetched).
+phase this session: research-think analyze E032 -> research-do implement + deploy + status E033.
+Note: ssh alias "server" is unresolved locally; use pedroamaral@10.26.110.14 (add `< /dev/null` to ssh launch cmds or they hang).
 
 ## What changed
-- tools/table_change_credit.py (new, 598d49d), tools/run_E026b.sh (new, 6d946c8); tools/runs_status.sh unchanged
-- experiments/E026b card: IMPLEMENTED + launch cmd (Results/Interpretation/Verdict still empty)
-- runs.md: E026b run rows removed (finished, fetched); not yet in LEDGER
-- results/E026b_{dc,sp}.json (eval rules n=0/4/8), results/E026b_credit_{dc,sp}.json (per-change sys/own/entry gains); raw in host_data/results/E026b + v2_dc_lc/E026b_dc + v2_p4_lc/E026b_sp
+- E032 analysed: card verdict, LEDGER line, K21 new, K08/K19/K20 edited, A039 done, A038 deprioritised, D22, C3 reworded (project.md)
+- tools/run_E033.sh (new, 38bce0f; no src change) + experiments/E033-fallback-ablation.md (card)
+- runs.md: E033 row (done 10-30 23:12); container column rewritten plain (braces/parens broke tools/runs_status.sh)
 
 ## Latest results
-E026 (train J, n=0): SP-86 best static table 97.0 ~ learners 96.2-97.4 (C3 ok);
-  Deltacom 87.4 (4 starts 86.9-87.4) vs ECMP 80.4, learners 80.3, greedy 84.9 -> +7 pp static headroom (K11 revised).
-E026b ANALYSED (D20, K11 high@n=0, K18): Deltacom held-out 87.35 vs ECMP 80.4 (n=4/8: 77.6/68.0 vs 72.8/66.7); SP-86 96.98. Table decays under failures (below greedy on SP-86). Own-agent net -1.1 vs system +9.4 on Deltacom (coordinated pair), SP-86 own>=0.
-
-## Latest: E028 (K19) DRL-OR-style ~ECMP on Deltacom (79.5); SP-86 94.5 = ECMP+3.1 but ~2 pp < flow-credit DQN.
-
-## Latest: E032 (K21) fail-trained DQN SP-86: static at n=0, failure-reactive at n=4/8 (shuffle -1.3/-2.7, own frozen table -4.7/-4.6). E028: DC static all n; SP fallback resets 13-17% of decisions.
-
-## Prev: E031 (K20) failure-aware table search: no held-out gain; SP-86 greedy/K14 DQN beat best table at n=4/8 by 1.7/4-5 pp.
-
-## Plan (D19)
-E026b done -> E028 (A028 DRL-OR-style, GPU, cells not picked) -> E030 (A036 table warm-start) -> E029 (A025 diff reward).
+E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shuffle -1.3/-2.7 pp, own frozen table -4.7/-4.6).
+E028 (K19): DRL-OR-style ~ECMP on Deltacom (79.5); SP-86 ~2 pp below flow-credit DQN; fallback 0.05 resets 13-17% of decisions.
+E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-E028: FINISHED 2026-10-24 04:50, FETCHED 2026-10-28 (results/E028_{dc,sp}.json; raw host_data/results/E028/{dc,sp}_s*). Note: ssh alias "server" is unresolved locally, use pedroamaral@10.26.110.14 for rsync. E031: FINISHED 2026-10-25 09:54, FETCHED 2026-10-28 (results/E031_{dc,sp,eval_dc,eval_sp}.json; raw host_data/results/E031_{dc,sp} + v2_dc_lc/E031_dc, v2_p4_lc/E031_sp).
-
-## EXACT next step
-E033 FINISHED 2026-10-30 23:12 (all 9 cells wrote JSON, no errors in logs). Next: research-do fetch E033 -> research-think analyze E033. Then E030 (A036) -> E029 (A025).
+E033: FINISHED 2026-10-30 23:12 on server, 9 cells (nofb_sp, nofb_dc, train_sp x s0-2), JSON present, no errors. Raw host_data/results/E033/ (server).
 
 ## Open problem
-Is Deltacom's missed headroom credit (own-flow blind) or optimisation (needs a non-greedy first step)? A036/E030 separates. Is the table failure-robust? (no: A037). Is the learned failure reaction a failure flag or load reading? (K21 open)
+Does the fallback (deployment vs training) or the SP pretraining cause E028's SP-86 2 pp gap? (E033)
+Is Deltacom's missed headroom credit or optimisation? (A036/E030). Is K21's failure reaction a failure flag or load reading? (open)
+
+## EXACT next step
+research-do fetch E033: rsync JSON-only from host_data/results/E033/ -> tools/summarize_run.py host_data/results/E033 --id E033
+(compare nofb cells vs E032 base, train_sp vs E028 sp / E018). Then research-think analyze E033. Then E030 (A036) -> E029 (A025).
 
 ## Read next
-experiments/E032-shuffle-under-failures.md, conclusions.md (K19-K21), decisions.md D21-D22.
+experiments/E033-fallback-ablation.md, results/E032.json (base with fallback), conclusions.md K19/K21, decisions.md D22.
