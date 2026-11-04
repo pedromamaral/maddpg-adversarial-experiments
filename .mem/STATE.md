@@ -18,11 +18,10 @@ E031 (K20): no failure-robust static table from local search.
 E033: FINISHED 10-30, FETCHED 11-04 -> .mem/results/E033.json (61 metrics, seeds 0-2); raw host_data/results/E033/ local+server.
 
 ## Open problem
-Does the fallback (deployment vs training) or the SP pretraining cause E028's SP-86 2 pp gap? (E033)
 Is Deltacom's missed headroom credit or optimisation? (A036/E030). Is K21's failure reaction a failure flag or load reading? (open)
 
 ## EXACT next step
-research-think analyze E033 (compare nofb cells vs E032 base, train_sp vs E028 sp / E018). Then E030 (A036) -> E029 (A025).
+E033 analysed (K19 edited; A028 done for paper). Next: research-think ideate -> E030 (A036, warm-start on E026 table, Deltacom) then E029 (A025).
 
 ## Read next
 experiments/E033-fallback-ablation.md, results/E032.json (base with fallback), conclusions.md K19/K21, decisions.md D22.
