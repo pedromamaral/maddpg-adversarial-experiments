@@ -1,27 +1,31 @@
-# STATE — 2026-11-04
+# STATE — 2026-11-05
 
-branch main @ a3ec0ff (clean, pushed). Server code at 38bce0f. Server idle (E033 done, fetched 11-04).
-phase this session: research-think analyze E032 -> research-do implement + deploy + status E033.
-Note: ssh alias "server" is unresolved locally; use pedroamaral@10.26.110.14 (add `< /dev/null` to ssh launch cmds or they hang).
+branch main @ 65ebf93 + this state commit (local, NOT pushed; origin behind). Server code at 38bce0f. Server idle.
+phase this session: research-do fetch E033 -> research-think analyze E033.
+Note: ssh alias "server" is unresolved locally; use pedroamaral@10.26.110.14 (needs VPN, else port 22 times out; add `< /dev/null` to ssh launch cmds or they hang). macOS has no `timeout`.
 
 ## What changed
-- E032 analysed: card verdict, LEDGER line, K21 new, K08/K19/K20 edited, A039 done, A038 deprioritised, D22, C3 reworded (project.md)
-- tools/run_E033.sh (new, 38bce0f; no src change) + experiments/E033-fallback-ablation.md (card)
-- runs.md: E033 row (done 10-30 23:12); container column rewritten plain (braces/parens broke tools/runs_status.sh)
+- results/E033.json + host_data/results/E033 (fetched, 9 JSON)
+- experiments/E033-fallback-ablation.md (results, interpretation, verdict), LEDGER line
+- conclusions.md K19 edited; avenues.md A028 done for paper (optional SP-pretrain-off cell); runs.md E033 row
+- no new D#: direction unchanged
 
 ## Latest results
+E033 (K19): SP-86 n=0 gap of E028 = 0.05 fallback (eval-only removal +1.00; retrain without it 96.05 vs E018 96.7). n=4/8 fallback no effect (|d|<=0.4), retrain -1.4/-1.7 vs E018. Deltacom +0.3..+0.8, still ~ECMP.
 E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shuffle -1.3/-2.7 pp, own frozen table -4.7/-4.6).
-E028 (K19): DRL-OR-style ~ECMP on Deltacom (79.5); SP-86 ~2 pp below flow-credit DQN; fallback 0.05 resets 13-17% of decisions.
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-E033: FINISHED 10-30, FETCHED 11-04 -> .mem/results/E033.json (61 metrics, seeds 0-2); raw host_data/results/E033/ local+server.
+None.
 
 ## Open problem
-Is Deltacom's missed headroom credit or optimisation? (A036/E030). Is K21's failure reaction a failure flag or load reading? (open)
+Is Deltacom's missed headroom credit or optimisation? (A036/E030; best hypothesis untested: drift back to ~80 = credit undoes the optimum, stays >=86 = exploration.)
+Is K21's failure reaction a failure flag or load reading? (open)
+Is the E033 residual at n=4/8 vs E018 SP pretraining or noise? (just above seed noise, cross-run; optional)
+Unchecked: per-seed signs of the E033 +1.00 (card notes it).
 
 ## EXACT next step
-E033 analysed (K19 edited; A028 done for paper). Next: research-think ideate -> E030 (A036, warm-start on E026 table, Deltacom) then E029 (A025).
+research-think ideate (confirm E030/A036 -> E029/A025; drift check). Then research-do implement E030.
 
 ## Read next
-experiments/E033-fallback-ablation.md, results/E032.json (base with fallback), conclusions.md K19/K21, decisions.md D22.
+experiments/E033-fallback-ablation.md, conclusions.md K11/K18/K19/K21, avenues.md A036/A025, decisions.md D19/D22.
