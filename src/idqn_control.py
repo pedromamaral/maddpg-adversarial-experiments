@@ -236,8 +236,50 @@ class Policy:
         self.qsum = None             # zeros [agents, dest, k]: accumulates Q for the table export
         self.qn = 0
         self.dev = np.zeros(3)       # decisions, argmax != k=0, fallback overrode argmax to k=0 (reset per eval condition)
+        self.pretrain_table = None   # [agents, dest]: E030 warm start, behaviour during sp_only instead of k=0
+        self.lie = None              # E035 telemetry lie: lure | repel | margin | random (path_util slots only)
+        self.lie_slots, self.lie_eps, self.grad_score = None, 0.3, None
+        self.lie_stats = np.zeros(3)  # decisions, flipped by the lie, zero-gradient (margin masking check)
+
+    def _apply_lie(self, cur):
+        """Rewrite the path telemetry of [A, obs]; same threat model as attack_framework (A004)."""
+        sl, K = self.lie_slots, self.k
+        s0, end = sl[0], sl[-1] + 1
+        with torch.no_grad():
+            choice = self.score(cur).numpy().argmax(2)
+        adv = cur.copy()
+        if self.lie == 'random':     # budget-matched control: same step size, no aim
+            step = self.lie_eps * self._rng.choice([-1.0, 1.0], size=(self.n_agents, len(sl)))
+            adv[:, sl] = np.clip(cur[:, sl] + step, 0.0, 1.0)
+        elif self.lie == 'margin':   # one-step: shrink the gap between best and second-best path
+            x = torch.tensor(cur, requires_grad=True)
+            top = self.grad_score(x).topk(2, dim=2).values
+            g = torch.autograd.grad((top[:, :, 0] - top[:, :, 1]).sum(), x)[0].numpy()[:, sl]
+            adv[:, sl] = np.clip(cur[:, sl] - self.lie_eps * np.sign(g), 0.0, 1.0)
+            self.lie_stats[2] += (g == 0).sum() / len(sl) * self.n_dest
+        else:
+            for a in range(self.n_agents):
+                for d in range(self.n_dest):
+                    idx = [s for s in range(s0 + d * K, s0 + (d + 1) * K) if s < end]
+                    if not idx:          # destinations past the truncated tail have no slots
+                        continue
+                    if self.lie == 'lure':   # most congested path shows 0, the others 1
+                        worst = idx[int(np.argmax(cur[a, idx]))]
+                        adv[a, idx] = 1.0
+                        adv[a, worst] = 0.0
+                    else:                    # repel: the chosen path shows 1, the others 0
+                        adv[a, idx] = 0.0
+                        chosen = s0 + d * K + int(choice[a, d])
+                        if chosen < end:
+                            adv[a, chosen] = 1.0
+        with torch.no_grad():
+            after = self.score(adv).numpy().argmax(2)
+        self.lie_stats[:2] += (choice.size, (after != choice).sum())
+        return adv
 
     def choose_action(self, states):
+        if self.lie:
+            states = self._apply_lie(np.asarray(states, dtype=np.float32))
         if self.shuffle_neighbours:
             cur = np.asarray(states, dtype=np.float32)
             self._past.append(cur.copy())
@@ -268,7 +310,7 @@ class Policy:
             self.dev[2] += (kept != choice).sum()
             choice = kept
         if self.sp_only:
-            choice = np.zeros_like(choice)
+            choice = np.zeros_like(choice) if self.pretrain_table is None else self.pretrain_table
         elif self.eps > 0:
             explore = np.random.rand(*choice.shape) < self.eps
             choice = np.where(explore, np.random.randint(self.k, size=choice.shape), choice)
@@ -330,6 +372,17 @@ def main():
                          'epsilon decay starts after')
     ap.add_argument('--fallback-margin', type=float, default=None,
                     help='DRL-OR-style safe fallback: use k=0 unless Q(best)-Q(k=0) > margin (train and eval)')
+    ap.add_argument('--warm-table', default=None,
+                    help='E030: during --sp-pretrain follow this table JSON instead of k=0 and add a hinge loss '
+                         'that makes its path the argmax for every (agent, dest)')
+    ap.add_argument('--warm-margin', type=float, default=0.05, help='--warm-table: hinge margin on Q')
+    ap.add_argument('--track-every', type=int, default=0,
+                    help='E030: every N episodes (and at the end of pretraining) evaluate greedily at n=0 and store '
+                         'PDR + the argmax mean-Q table in result["track"]; RNG state restored afterwards')
+    ap.add_argument('--track-episodes', type=int, default=5)
+    ap.add_argument('--eval-lie', choices=['lure', 'repel', 'margin', 'random'], default=None,
+                    help='E035: lie in the path telemetry at evaluation (utilisation-only threat model, all agents)')
+    ap.add_argument('--lie-eps', type=float, default=0.3, help='--eval-lie margin|random: per-slot budget')
     ap.add_argument('--learner', choices=['dqn', 'ac'], default='dqn')
     ap.add_argument('--critic', choices=['local', 'central'], default='local', help='--learner ac')
     ap.add_argument('--entropy', type=float, default=0.01, help='--learner ac (pilot 4: 0.01)')
@@ -371,6 +424,7 @@ def main():
                          float(nets.get('beta', 3e-4)), args.entropy, duelling=args.duelling,
                          gnn_adjacency=gnn_adj, gnn_n_relay=gnn_relay, gnn_stable=args.gnn_stable)
         pol = Policy(ac.scores, A, nd, K)
+        pol.grad_score = lambda st: torch.stack([ac.actors[a](st[a]) for a in range(A)]).view(A, nd, K)
         prefix = (f"ac_{args.critic}" + ('_duel' if args.duelling else '')
                   + (('_gnns' if args.gnn_stable else '_gnn') if args.gnn else ''))
         ckpt = f'{prefix}_seed{args.seed}.pt'
@@ -380,6 +434,7 @@ def main():
         opt = torch.optim.Adam(q.parameters(), lr=args.lr)
         pol = Policy(lambda st: q(torch.cat([torch.as_tensor(st), eye], 1)), A, nd, K)
         pol.fallback_margin = args.fallback_margin
+        pol.grad_score = lambda st: q(torch.cat([st, eye], 1))
         q_target = copy.deepcopy(q)
         prefix, ckpt = 'idqn', f'qnet_seed{args.seed}.pt'
         bufs = None
@@ -388,6 +443,33 @@ def main():
     reward_cfg = cfg.get('reward', {})
     agent_hosts = [hosts[i] for i in tr]
     train_failures = [int(x) for x in args.train_failures.split(',')]
+    warm_t = None
+    if args.warm_table:
+        assert args.learner == 'dqn' and args.credit == 'flow' and args.sp_pretrain > 0, \
+            "--warm-table needs the flow-credit DQN and --sp-pretrain N"
+        wt = json.load(open(args.warm_table))
+        pol.pretrain_table = np.array([[int(wt[str(a)][str(d)]) for d in range(nd)] for a in range(A)])
+        warm_t = torch.as_tensor(pol.pretrain_table)
+    track = []
+
+    def run_track(ep):
+        """Greedy n=0 snapshot mid-training; the training RNG stream is left untouched."""
+        rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
+        behaviour = pol.eps, pol.sp_only
+        pol.eps, pol.sp_only = 0.0, False
+        pol.qsum, pol.qn = np.zeros((A, nd, K)), 0
+        random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
+        eng.topology.restore_intact()
+        res = runner._attack_episodes(pol, env, args.track_episodes, T, attack=False,
+                                      offered_load_factor=eval_load, n_link_failures=0, stale_steps=0)
+        tab = pol.qsum.argmax(2)
+        pol.qsum = None
+        pol.eps, pol.sp_only = behaviour
+        random.setstate(rng[0]); np.random.set_state(rng[1]); torch.set_rng_state(rng[2])
+        agree = None if pol.pretrain_table is None else float((tab == pol.pretrain_table).mean())
+        track.append({'episode': ep, 'pdr': res['mean_end_to_end_pdr'], 'table_agree': agree, 'table': tab.tolist()})
+        print(f"[TRACK] ep {ep:4d}  PDR={res['mean_end_to_end_pdr']:6.2f}  table agree={agree}", flush=True)
+
     history, t0 = [], time.time()
     tag = f'seed{args.seed}'
     access = list(eng.topology.access_nodes)
@@ -465,8 +547,13 @@ def main():
                 r = torch.as_tensor([b[3 if args.credit == 'step' else 4] for b in batch],
                                     dtype=torch.float32)
                 if args.credit == 'flow':
-                    qd = q(x)[torch.arange(args.batch), [b[2] for b in batch], [b[3] for b in batch]]
+                    qa = q(x)
+                    qd = qa[torch.arange(args.batch), [b[2] for b in batch], [b[3] for b in batch]]
                     loss = ((qd - r) ** 2).mean()
+                    if warm_t is not None and ep < args.sp_pretrain:
+                        # other paths at least warm_margin below the table path (table term itself: a constant)
+                        qt = qa.gather(2, warm_t[a].unsqueeze(2))
+                        loss = loss + torch.relu(qa - qt + args.warm_margin).sum(2).mean()
                 else:
                     paths = torch.as_tensor(np.stack([b[2] for b in batch]))           # [B, nd]
                     qd = q(x).gather(2, paths.unsqueeze(2)).squeeze(2)                 # [B, nd]
@@ -498,6 +585,8 @@ def main():
                   f"loss={history[-1]['loss'] or 0:.4f}  "
                   f"buffer={sum(map(len, bufs)) if bufs is not None else len(buf)}  {time.time() - t0:6.0f}s",
                   flush=True)
+        if args.track_every and (ep + 1 == args.sp_pretrain or (ep + 1) % args.track_every == 0):
+            run_track(ep)
     if not args.eval_only:
         torch.save((ac if args.learner == 'ac' else q).state_dict(), os.path.join(args.out, ckpt))
 
@@ -510,7 +599,12 @@ def main():
               'sp_pretrain': args.sp_pretrain, 'fallback_margin': args.fallback_margin,
               'eval_hotspot': {'hot_srcs': eval_hot[0], 'hot_dsts': eval_hot[1]},
               'train_failures': args.train_failures, 'train_load': train_load,
-              'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {}}
+              'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {},
+              'warm_table': args.warm_table, 'track': track,
+              'eval_lie': args.eval_lie, 'lie_eps': args.lie_eps if args.eval_lie else None}
+    if args.eval_lie:
+        assert not args.gnn, "--eval-lie: the GNN encoder path is not implemented"
+        pol.lie, pol.lie_eps, pol.lie_slots = args.eval_lie, args.lie_eps, eng.path_util_slots
     suffix = (f'_shuffled_{args.eval_shuffle}' if args.eval_shuffle else '_eval') if args.eval_only else ''
     if args.eval_only and args.eval_tag:
         suffix = f'_{args.eval_tag}'
@@ -536,6 +630,7 @@ def main():
                 pol.qsum, pol.shuffle_slots = None, keep
                 random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
             pol.dev[:] = 0
+            pol.lie_stats[:] = 0
             pol._past = []   # NB: kept across the episodes of one condition, so 'earlier' spans them
             eng.decision_log = []
             res = runner._attack_episodes(pol, env, args.eval_episodes, T, attack=False,
@@ -547,6 +642,9 @@ def main():
             nd = max(pol.dev[0], 1)
             stats['argmax_off_sp'] = float(pol.dev[1] / nd)       # share of decisions whose argmax leaves k=0
             stats['fallback_override'] = float(pol.dev[2] / nd)   # share the margin fallback reset to k=0
+            if args.eval_lie:
+                stats['lie_flip'] = float(pol.lie_stats[1] / max(pol.lie_stats[0], 1))
+                stats['lie_zero_grad'] = float(pol.lie_stats[2] / max(pol.lie_stats[0], 1))
             result['eval'][key] = {'pdr': res['mean_end_to_end_pdr'], **stats}
             print(f"[EVAL] {key}: PDR={res['mean_end_to_end_pdr']:6.2f}  "
                   f"least-loaded={100 * stats.get('least_loaded', 0):5.1f}% "
