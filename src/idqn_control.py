@@ -425,7 +425,7 @@ def main():
                          float(nets.get('beta', 3e-4)), args.entropy, duelling=args.duelling,
                          gnn_adjacency=gnn_adj, gnn_n_relay=gnn_relay, gnn_stable=args.gnn_stable)
         pol = Policy(ac.scores, A, nd, K)
-        pol.grad_score = lambda st: torch.stack([ac.actors[a](st[a]) for a in range(A)]).view(A, nd, K)
+        pol.grad_score = lambda st: torch.stack([ac.actors[a](st[a]) for a in range(A)]).view(A, pol.n_dest, K)
         prefix = (f"ac_{args.critic}" + ('_duel' if args.duelling else '')
                   + (('_gnns' if args.gnn_stable else '_gnn') if args.gnn else ''))
         ckpt = f'{prefix}_seed{args.seed}.pt'
