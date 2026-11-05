@@ -26,6 +26,12 @@ KILL-4 (A030): stochastic-optimal static table beats learners by > 1 pp -> C3 be
 do-not-pursue: imported into avenues.md as dropped (A001-A009, A019, A003/A026, Teal/MAGNNETO training now)
 constraints: Pedro + Claude only; 1 shared server (16 cores, 1x 2080 Ti); submit Paper 1 ~2027-01-14 (3 mo), slip to 4-5 mo only if KILL-2 passes
 
+## Corrections since the digest (2026-11-05; digest above kept verbatim, these override it)
+- C4 / topologies line: Deltacom is NOT 'no static headroom'. Held-out static table 87.35 vs ECMP 80.4 (K11); learners miss it. Current wording in project.md.
+- C3: static in normal operation only; failure-trained DQN uses state under failures (K21).
+- A028 done (K19); A030 done, KILL-4 not triggered on SP-86 (K11); KILL-1 passed (K17). Open: KILL-2.
+- Paper 2 RED condition ('until a state-using learner exists') is now partly met (K21) -> gate A042, no attack work before it.
+
 ## Risk
 Reviewers read C3/C4 as a negative result; framing must be "what is learned + why".
 Literature numbers are MLU/fluid -> no direct head-to-head; A028 (in-simulator port) is the only fair comparison.

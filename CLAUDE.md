@@ -2,7 +2,8 @@
 
 Multi-agent RL routing (MADDPG / DQN, 14 PE agents) on an 86-node service-provider topology
 (+ Deltacom). Paper 1 v2 (TNSM): credit assignment, not architecture, decides whether MARL
-routing learns; what is learned is a demand-robust static table. Paper 2 (attacks) on hold.
+routing learns; what is learned is a static table in normal operation, plus a learned reaction
+to failures when trained on them. Paper 2 (attacks) on hold, gated on A042.
 
 **Start every session by reading `.mem/STATE.md`, then `.mem/INDEX.md`; read only what it routes.**
 Skills: research-memory (init/state/tidy), research-think (analyse/ideate/paper), research-do

@@ -1,5 +1,11 @@
 # Paper 2 — road to journal submission
 
+> **Update 5 Nov 2026.** Do not resume this plan as written. It describes attacks on the v1
+> victims. Flow-credit learners are static at n=0 and react to failures only (K08, K21), so
+> any restart is a new study, decided by gate A042 in `.mem/avenues.md`. Reusable from below:
+> the utilisation-only threat model and the methodology (decision vs outcome, budget-matched
+> random control, per-victim ceiling, masking check).
+>
 > **ON HOLD since 2 Oct 2026.** The victims this paper attacks never learned to route.
 > They are near-static routing tables (see `tools/learnability_probe.py`,
 > `tools/policy_attribution.py` and the README status note), so their "robustness" is

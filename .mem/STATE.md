@@ -24,8 +24,12 @@ Is K21's failure reaction a failure flag or load reading? (open)
 Is the E033 residual at n=4/8 vs E018 SP pretraining or noise? (just above seed noise, cross-run; optional)
 Unchecked: per-seed signs of the E033 +1.00 (card notes it).
 
+## Task list to publish (2026-11-05, D23, confirmed by Pedro)
+Paper 1: T1 E030 + SP-86 control (A036 design note) · T2 A042a n=8 shuffle + own table for E015 MADDPG and E014 DQN rhf (K22) · T3 paper-plan (outline; Pedro decides D13) · T4 paper1_tables.py entries for the TODO rows in paper.md, incl. E033 per-seed signs · T5 draft missing results/discussion · T6 Pedro's voice, bib, submit ~2027-01-14.
+Paper 2 gate: T7 A042b telemetry lie, eval-only, alongside T1-T2 · T8 only if PASS: lit check in Cowork, then decide scope after Paper 1 is submitted.
+
 ## EXACT next step
-research-think ideate (confirm E030/A036 -> E029/A025; drift check). Then research-do implement E030.
+research-do implement E030 (T1) + A042 eval script (T2, T7).
 
 ## Read next
-experiments/E033-fallback-ablation.md, conclusions.md K11/K18/K19/K21, avenues.md A036/A025, decisions.md D19/D22.
+paper.md, avenues.md A036/A042, decisions.md D20/D22/D23, conclusions.md K11/K18/K21.
