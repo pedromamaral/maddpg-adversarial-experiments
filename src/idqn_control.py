@@ -252,9 +252,10 @@ class Policy:
             step = self.lie_eps * self._rng.choice([-1.0, 1.0], size=(self.n_agents, len(sl)))
             adv[:, sl] = np.clip(cur[:, sl] + step, 0.0, 1.0)
         elif self.lie == 'margin':   # one-step: shrink the gap between best and second-best path
-            x = torch.tensor(cur, requires_grad=True)
-            top = self.grad_score(x).topk(2, dim=2).values
-            g = torch.autograd.grad((top[:, :, 0] - top[:, :, 1]).sum(), x)[0].numpy()[:, sl]
+            with torch.enable_grad():   # evaluation runs under no_grad
+                x = torch.tensor(cur, requires_grad=True)
+                top = self.grad_score(x).topk(2, dim=2).values
+                g = torch.autograd.grad((top[:, :, 0] - top[:, :, 1]).sum(), x)[0].numpy()[:, sl]
             adv[:, sl] = np.clip(cur[:, sl] - self.lie_eps * np.sign(g), 0.0, 1.0)
             self.lie_stats[2] += (g == 0).sum() / len(sl) * self.n_dest
         else:
