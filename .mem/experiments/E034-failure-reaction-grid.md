@@ -1,5 +1,5 @@
 # E034 — Failure reaction across learners (A042a, T2, K22)
-Status: IMPLEMENTED, smoke pending. Avenue A042. Launcher tools/run_E034.sh (shared with E035).
+Status: RUNNING since 2026-11-05 14:58, code 5599288. Avenue A042. Launcher tools/run_E034.sh (shared with E035).
 
 Hypothesis H1: the failure reaction of K21 is not DQN-specific: failure-trained MADDPG and DQN rhf also pay >1 pp shuffle at n=8.
 Change: none in src. Eval-only on existing checkpoints: idqn_p4_rhf (dqn), ac_local_rhf (lc), ac_central_rhf (cc); duelling skipped (K06).

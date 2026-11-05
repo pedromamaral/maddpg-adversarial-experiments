@@ -16,7 +16,7 @@ E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shu
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-None.
+E030 (12 cells) and E034+E035 (eval-only) on server since 11-05 14:58, code 5599288. See runs.md; check with tools/runs_status.sh or ~/idqn/run_E030.done, run_E034.done. Note: tools/run_E034.sh runs both ids. Smoke dirs E030_smoke, E035_smoke left on server (root-owned).
 
 ## Open problem
 Is Deltacom's missed headroom credit or optimisation? (A036/E030; best hypothesis untested: drift back to ~80 = credit undoes the optimum, stays >=86 = exploration.)
@@ -29,7 +29,7 @@ Paper 1: T1 E030 + SP-86 control (A036 design note) · T2 A042a n=8 shuffle + ow
 Paper 2 gate: T7 A042b telemetry lie, eval-only, alongside T1-T2 · T8 only if PASS: lit check in Cowork, then decide scope after Paper 1 is submitted.
 
 ## EXACT next step
-research-do implement E030 (T1) + A042 eval script (T2, T7).
+When done: research-do fetch E030 + E034 + E035, then research-think analyze (E034 first, then E030, then E035). Meanwhile T3 paper-plan can start.
 
 ## Read next
 paper.md, avenues.md A036/A042, decisions.md D20/D22/D23, conclusions.md K11/K18/K21.

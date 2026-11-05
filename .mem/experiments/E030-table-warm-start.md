@@ -1,5 +1,6 @@
 # E030 — Table warm start under own-flow credit (A036, D23, T1)
-Status: IMPLEMENTED, smoke pending. Avenue A036. Last Paper 1 experiment beyond E034.
+Status: RUNNING since 2026-11-05 14:58, code 5599288. Avenue A036. Last Paper 1 experiment beyond E034.
+Smoke (4 eps, 3 warm, 1-ep tracks): table agree 0.97-1.00 during warm, PDR ~86; one post-warm episode dropped agree to 0.87 (warm far shorter than the real 50 eps, not a result; check the validity gate and spW first).
 
 Hypothesis H1: own-flow credit actively undoes the system-optimal table on Deltacom (K17, K18), so a learner handed the
  E026 table drifts back toward ECMP. H0: the table holds, so credit does not undo it and the problem is reaching it.
