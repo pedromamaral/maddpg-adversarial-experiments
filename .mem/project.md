@@ -15,7 +15,7 @@ under failures (K08, K21), so Paper 2 is gated on A042, see Outputs.)
   (step reward: no learning; per-decision flow credit: learns with DQN and MADDPG on SP-86). [supported K05]
   Necessary, not sufficient: on Deltacom flow credit does not beat step or ECMP (K10; step 1 seed until E037). D24.
 - C2 Once credit is fixed, architecture (LC/CC critic, simple/duelling, GNN) is secondary. [K06,K07]
-- C3 What is learned is a static routing table in normal operation, not load-adaptive routing; demand-robust when trained on changing demand (K09), and untested for the searched table (E036); failure-trained learners add a learned failure reaction (D22, K21; generality awaits E034). [K08, K21; A030 vs a stochastic-optimal
+- C3 What is learned is a static routing table in normal operation, not load-adaptive routing; demand-robust when trained on changing demand (K09), and untested for the searched table (E036); failure-trained learners add a learned failure reaction, shown for DQN and MADDPG LC/CC on SP-86 (D22, K21, E034); none on Deltacom (K22). [K08, K21; A030 vs a stochastic-optimal
   static table — KILL-4: >1 pp gap -> 'learners approximate the robust table imperfectly']
 - C4 Learners reach static headroom only when own-flow credit points at it. SP-86: learners ~ best
   static table (K11). Deltacom: a static table reaches 87.35 vs ECMP 80.4, yet learners stay ~80.3

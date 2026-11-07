@@ -23,7 +23,7 @@ Risk (strategy.md): must read as "what is learned + why", not as a negative resu
 | static table at n=0 (C3) | T7_ablation (extend: add E018) | E012-E017,E032 | K08 | ready, tex needs fix (F1) |
 | demand generalisation of learned tables (C3) | T8, F3 | E012-E015 | K09 | ready |
 | best static table vs learners, both topologies (C3,C4) | NEW T9_static | E026,E026b,E031,E036 | K11,K20 | n=0/4/8 numbers ready; demand pending E036 |
-| failure-trained learners react to failures (C3) | NEW T10_failure | E018,E032,E034 | K14,K20,K21,K22 | pending E034 |
+| failure-trained learners react to failures (C3) | NEW T10_failure | E018,E032,E034 | K14,K20,K21,K22 | ready: reaction shared (E034 branch 1), magnitude per learner |
 | Deltacom: learners ~ECMP, ~7 pp table headroom missed (C4) | NEW T11_deltacom, F4_headroom | E019-E022,E026b | K10,K11 | numbers ready |
 | why: own-flow optimum is selfish; coordinated changes (C4) | NEW T12_mechanism | E025,E027,E026b | K17,K18 | K17 ready; K18 low-medium |
 | does credit undo the optimum, or is it not found? (C4) | in T12, NEW F5_warmstart | E030 | — | pending E030 |
