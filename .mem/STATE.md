@@ -19,7 +19,7 @@ E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shu
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-None (E030, E034, E035 finished and fetched 11-07).
+E036 running since 11-09 (server, 6 E036_* containers); done when ~/idqn/run_E036.done has "E036 all done".
 
 ## Open problem
 Is Deltacom's missed headroom credit or optimisation? (E030; drift to ~80 = credit undoes the optimum, stays >=86 = search/exploration.)

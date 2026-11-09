@@ -1,6 +1,7 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
 
+E036 | server | E036_* | tools/run_E036.sh @438c148, 2 chains (dc A->B, sp A->B), 6 ceilings x 1.5 cpus, rules table random+flow greedy policy, n=0/4/8 | 11-09 | few h (unmeasured) | v2_{dc,p4}_lc/E036_{dc,sp}_shift{A,B}; ~/idqn/run_E036.done (5 lines) | running
 E030 | server | maddpg-E030-* | tools/run_E030.sh @5599288, 2 cpus, arms dcW,spW,dcD,dcC x s0-2 (chains dcW->spW, dcD->dcC) | 11-05 14:58 | spW ~00:00, dcC ~02:30 11-06 | E030/<arm>_s<seed>; ~/idqn/run_E030.done (6 lines) | done 11-06 02:48, fetched 11-07 (results/E030.json), analyse next
 E035 | server | maddpg-E035-* | tools/run_E034.sh @5599288, 1.5 cpus, nets p4f,lc,cc x s0-2 x lure,repel,margin,rnd03,rnd10, then worst rule n=0/4/8. lc-s0/s1 margin crashed at n=4, fixed in df8fe17 (server pulled 22:05); tools/rerun_E035_margin.sh waits for the chains, then reruns MADDPG margin cells lacking n=8 | 11-05 ~19:40 | ~01:00 11-06 | E035/, v2_p4_lc/E035_worst_n*; ~/idqn/run_E034.done ends with 'E035 reruns finished' | done 11-06 00:45 (margin reruns OK, all 6 MADDPG cells have n=0/4/8), fetched 11-07 (results/E035.json), analyse next
 E034 | server | done | tools/run_E034.sh @5599288, nets dqn,lc,cc x s0-2 x base,path,all + own tables | 11-05 14:58 | done 11-05 19:51 | E034/, v2_p4_lc/E034_tab_* | done, fetched 11-07 (results/E034.json), analyse next
