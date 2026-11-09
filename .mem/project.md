@@ -7,15 +7,15 @@ K paths each) on a real 86-node SP topology ("SP-86"), second topology Deltacom 
 What do MARL routing agents actually learn, and what makes them learn at all?
 Goal: publish. Paper 1 first; everything else is judged by whether a Paper 1 claim needs it.
 (Original question — robustness of MADDPG routing to observation attacks — is ON HOLD: the
-v1 victims never used their observations (K01). Flow-credit learners do learn, but use state only
-under failures (K08, K21), so Paper 2 is gated on A042, see Outputs.)
+v1 victims never used their observations (K01). Flow-credit learners do learn, use realised state only
+under failures (K08, K21), yet out-of-range path telemetry steers them at any n (K24). Gate A042 PASSED (D26); Paper 2 waits for Paper 1 submission.)
 
 ## Target claims (Paper 1 v2, paper/paper1_v2/paper1_v2.tex)
 - C1 Credit assignment, not algorithm/architecture, decides whether MARL routing learns
   (step reward: no learning; per-decision flow credit: learns with DQN and MADDPG on SP-86). [supported K05]
   Necessary, not sufficient: on Deltacom flow credit does not beat step or ECMP (K10; step 1 seed until E037). D24.
 - C2 Once credit is fixed, architecture (LC/CC critic, DQN vs MADDPG, simple/duelling) is secondary. [K06; GNN dropped, D25]
-- C3 What is learned is a static routing table in normal operation, not load-adaptive routing; demand-robust when trained on changing demand (K09), and untested for the searched table (E036); failure-trained learners add a learned failure reaction, shown for DQN and MADDPG LC/CC on SP-86 (D22, K21, E034); none on Deltacom (K22). [K08, K21; A030 vs a stochastic-optimal
+- C3 What is learned is a static routing table in normal operation (static over the realised telemetry distribution; out-of-range telemetry still steers it, K24), not load-adaptive routing; demand-robust when trained on changing demand (K09), and untested for the searched table (E036); failure-trained learners add a learned failure reaction, shown for DQN and MADDPG LC/CC on SP-86 (D22, K21, E034); none on Deltacom (K22). [K08, K21; A030 vs a stochastic-optimal
   static table — KILL-4: >1 pp gap -> 'learners approximate the robust table imperfectly']
 - C4 Learners reach static headroom only when own-flow credit points at it. SP-86: learners ~ best
   static table (K11). Deltacom: a static table reaches 87.35 vs ECMP 80.4, yet learners stay ~80.3
@@ -43,5 +43,5 @@ under failures (K08, K21), so Paper 2 is gated on A042, see Outputs.)
 ## Outputs
 - Paper 1 v2 -> IEEE TNSM (markboth in tex), target ~2027-01-14.
 - Paper 2 (attacks, paper/paper2_robustness.tex) on hold. The v1 manuscript cannot be salvaged (K15).
-  Restart only if gate A042 passes, as a new study on flow-credit failure-trained learners.
+  Gate A042 PASSED 2026-11-09 (K24, D26). Restart after Paper 1 is submitted: T8 lit check first, then scope.
 - Two MSc theses (students/) — handed off, built on v1 results (see archive).

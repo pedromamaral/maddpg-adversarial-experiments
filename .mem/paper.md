@@ -55,6 +55,7 @@ F2 abstract, contributions, conclusions: "beat ECMP by 1.5 to 5 points" is SP-86
 F3 discussion: "adaptivity has a small and fragile value", "needs no telemetry at decision time", "did not find a regime in which
    a learner adapts", "one topology" and second-topology future work: all stale against K11,K19,K20,K21.
 F4 "demand-robust" for the searched table: untested until E036. Keep the word for learned changing-hotspot tables only (K09), with the failure caveat (D20,D22).
+F5 any sentence that the learned policy "ignores" or "does not read" state: say static over realised telemetry (shuffle, K08); out-of-range path telemetry still moves it (E035, K24). One sentence in discussion pointing to future attack work.
 
 ## Branches for pending results
 | result | outcome | what changes |
