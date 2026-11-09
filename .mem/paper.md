@@ -26,7 +26,7 @@ Risk (strategy.md): must read as "what is learned + why", not as a negative resu
 | failure-trained learners react to failures (C3) | NEW T10_failure | E018,E032,E034 | K14,K20,K21,K22 | ready: reaction shared (E034 branch 1), magnitude per learner |
 | Deltacom: learners ~ECMP, ~7 pp table headroom missed (C4) | NEW T11_deltacom, F4_headroom | E019-E022,E026b | K10,K11 | numbers ready |
 | why: own-flow optimum is selfish; coordinated changes (C4) | NEW T12_mechanism | E025,E027,E026b | K17,K18 | K17 ready; K18 low-medium |
-| does credit undo the optimum, or is it not found? (C4) | in T12, NEW F5_warmstart | E030 | — | pending E030 |
+| does credit undo the optimum, or is it not found? (C4) | in T12, NEW F5_warmstart (track PDR + agree vs episode, 4 arms) | E030 | K23 | ready: credit undoes it |
 | published-method-shaped learner (G1) | NEW T13_drlor | E028,E032,E033 | K19 | numbers ready; E033 per-seed signs unchecked |
 | C5 difference reward | future work only | — | K16 | out of paper (D23) |
 
