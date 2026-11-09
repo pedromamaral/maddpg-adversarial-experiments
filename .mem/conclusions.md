@@ -18,7 +18,7 @@ K03 | Reward is aligned with PDR (greedy 22.75 > random 20.01 > sp 16.40 > worst
 K04 | Traffic is sparse: ~1.8 flows/step, 0.6% of 294 decisions live, 19% steps empty (orig.); ~3% at k=4 3x | E004,E009 | high | 2026-10-05
 K05 | Credit, not algorithm, decides learning: step MADDPG-LC 92.7, step DQN 91.1; per-decision DQN 96.9, MADDPG LC 97.3 / CC 97.4 (seeds within 0.2) | E010-E013 | high | 2026-10-08
 K06 | With per-decision credit, LC/CC x simple/duelling (rhf) all 96.2-96.9 (n=0), 92.7-93.0 (n=4), 86.7-87.0 (n=8) -> architecture secondary | E015 | high | 2026-10-09
-K07 | Original GNN collapses (LC-GNN 90.9); stable GNN 95.5 LC / 96.3 CC; neighbour shuffle 0 pp | E016,E017 | high | 2026-10-10
+K07 | Original GNN collapses (LC-GNN 90.9); stable GNN 95.5 LC / 96.3 CC; neighbour shuffle 0 pp. NOT used in Paper 1 (D25): encoder never sees link state (own obs + zeroed switch nodes, residual skip), so 0 pp shows passthrough, not GNN irrelevance | E016,E017 | high | 2026-10-10
 K08 | Learned = demand-robust static table in normal operation: whole-obs shuffle <1 pp for every learner at n=0 (re-confirmed for fail-trained DQN and DRL-OR-style, E032). Under failures this does NOT hold for failure-trained DQN (K21) | E012-E017,E032 | high (n=0) | 2026-10-30
 K09 | Fixed-hotspot tables fall below ECMP on shift A (DQN 90.2, LC 92.8, CC 89.5 vs 93.5); changing-hotspot training generalises (DQN rh 95.9/95.7 A/B) | E012-E015 | high | 2026-10-09
 K10 | Deltacom 8x: every learner ~ECMP (step LC 80.9, fix LC 80.2/CC 79.8, rhf 80.3/79.8 vs ECMP 80.4); least-loaded at/below chance; shifts below ECMP (86-87.5 vs 88.1) | E020-E022 | high | 2026-10-13

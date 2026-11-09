@@ -19,7 +19,7 @@ Risk (strategy.md): must read as "what is learned + why", not as a negative resu
 | baseline realism, operating point | T2_realism, T3, F1 | E008,E009 | K13,K04 | ready |
 | pilots fail; credit decides learning on SP-86 (C1) | T4_pilots, T5_credit, F2 | E004-E013 | K05 | ready |
 | step vs flow credit on Deltacom (C1 scope) | row in T11 | E020-E022,E037 | K10 | WEAK: step = 1 seed until E037 |
-| architecture secondary (C2) | T6_architecture | E015-E017 | K06,K07 | ready |
+| architecture secondary (C2) | T6_architecture (drop the 4 GNN rows, D25) | E015,E018 | K06 | ready; method text: why no GNN + future work (A046) |
 | static table at n=0 (C3) | T7_ablation (extend: add E018) | E012-E017,E032 | K08 | ready, tex needs fix (F1) |
 | demand generalisation of learned tables (C3) | T8, F3 | E012-E015 | K09 | ready |
 | best static table vs learners, both topologies (C3,C4) | NEW T9_static | E026,E026b,E031,E036 | K11,K20 | n=0/4/8 numbers ready; demand pending E036 |

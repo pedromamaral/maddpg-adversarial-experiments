@@ -1,4 +1,4 @@
-# STATE — 2026-11-07
+# STATE — 2026-11-09
 
 branch main @ fd80333, origin in sync; this session's .mem/ edits are NOT committed. Server code at df8fe17 (E035 margin fix; E030 and E034 unaffected).
 phase this session: research-think paper-plan (T3 of D23), done; Pedro agreed D24.
@@ -12,6 +12,7 @@ Note: ssh alias "server" is unresolved locally; use pedroamaral@10.26.110.14 (ne
 - no tex, code or K# changes
 
 ## Latest results
+D25 (11-09): GNN dropped from Paper 1 (current encoder near-passthrough); link-aware GNN parked as A046. T4: remove GNN rows from paper1_tables.py.
 E034 (K21 revised): failure reaction shared by DQN rhf and MADDPG LC/CC rhf on SP-86: n=8 shuffle -0.7..-1.3 pp (17/18 cells <0), own table -4.4..-4.8 pp at n=8; ~half E018 on shuffle. C3 updated in project.md and paper.md.
 E033 (K19): SP-86 n=0 gap of E028 = 0.05 fallback (eval-only removal +1.00; retrain without it 96.05 vs E018 96.7). n=4/8 fallback no effect.
 E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shuffle -1.3/-2.7 pp, own frozen table -4.7/-4.6).
