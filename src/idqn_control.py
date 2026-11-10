@@ -240,6 +240,8 @@ class Policy:
         self.lie = None              # E035 telemetry lie: lure | repel | margin | random (path_util slots only)
         self.lie_slots, self.lie_eps, self.grad_score = None, 0.3, None
         self.lie_stats = np.zeros(3)  # decisions, flipped by the lie, zero-gradient (margin masking check)
+        self.collect = None          # E038: list; choose_action appends the path_util slots of the unattacked rollout
+        self.lie_lo = self.lie_hi = None   # E038: [agents, obs] per-slot bounds of the realised range (lies clamped to it)
 
     def _apply_lie(self, cur):
         """Rewrite the path telemetry of [A, obs]; same threat model as attack_framework (A004)."""
@@ -251,6 +253,9 @@ class Policy:
         if self.lie == 'random':     # budget-matched control: same step size, no aim
             step = self.lie_eps * self._rng.choice([-1.0, 1.0], size=(self.n_agents, len(sl)))
             adv[:, sl] = np.clip(cur[:, sl] + step, 0.0, 1.0)
+            if self.lie_lo is not None:   # E038 in-range control: uniform inside the realised range
+                lo, hi = self.lie_lo[:, sl], self.lie_hi[:, sl]
+                adv[:, sl] = lo + self._rng.random(lo.shape).astype(np.float32) * (hi - lo)
         elif self.lie == 'margin':   # one-step: shrink the gap between best and second-best path
             with torch.enable_grad():   # evaluation runs under no_grad
                 x = torch.tensor(cur, requires_grad=True)
@@ -273,12 +278,16 @@ class Policy:
                         chosen = s0 + d * K + int(choice[a, d])
                         if chosen < end:
                             adv[a, chosen] = 1.0
+        if self.lie_lo is not None:   # E038: no lied value outside the realised range of this slot
+            adv[:, sl] = np.clip(adv[:, sl], self.lie_lo[:, sl], self.lie_hi[:, sl])
         with torch.no_grad():
             after = self.score(adv).numpy().argmax(2)
         self.lie_stats[:2] += (choice.size, (after != choice).sum())
         return adv
 
     def choose_action(self, states):
+        if self.collect is not None:
+            self.collect.append(np.asarray(states, dtype=np.float32)[:, self.lie_slots].copy())
         if self.lie:
             states = self._apply_lie(np.asarray(states, dtype=np.float32))
         if self.shuffle_neighbours:
@@ -383,6 +392,9 @@ def main():
     ap.add_argument('--track-episodes', type=int, default=5)
     ap.add_argument('--eval-lie', choices=['lure', 'repel', 'margin', 'random'], default=None,
                     help='E035: lie in the path telemetry at evaluation (utilisation-only threat model, all agents)')
+    ap.add_argument('--lie-range', default=None,
+                    help='E038: "lo,hi" percentiles; lies are clamped per (agent, slot) to this range of the unattacked '
+                         'rollout of the same checkpoint, n and eval seed (random lie: uniform inside it)')
     ap.add_argument('--lie-eps', type=float, default=0.3, help='--eval-lie margin|random: per-slot budget')
     ap.add_argument('--learner', choices=['dqn', 'ac'], default='dqn')
     ap.add_argument('--critic', choices=['local', 'central'], default='local', help='--learner ac')
@@ -602,10 +614,15 @@ def main():
               'train_failures': args.train_failures, 'train_load': train_load,
               'eval_load': eval_load, 'episodes': args.episodes, 'history': history, 'eval': {},
               'warm_table': args.warm_table, 'track': track,
-              'eval_lie': args.eval_lie, 'lie_eps': args.lie_eps if args.eval_lie else None}
+              'eval_lie': args.eval_lie, 'lie_eps': args.lie_eps if args.eval_lie else None,
+              'lie_range': args.lie_range}
     if args.eval_lie:
         assert not args.gnn, "--eval-lie: the GNN encoder path is not implemented"
         pol.lie, pol.lie_eps, pol.lie_slots = args.eval_lie, args.lie_eps, eng.path_util_slots
+    if args.lie_range:
+        assert args.eval_lie and args.eval_only, "--lie-range needs --eval-lie and --eval-only"
+        pct = [float(x) for x in args.lie_range.split(',')]
+        assert len(pct) == 2 and 0 <= pct[0] < pct[1] <= 100, "--lie-range lo,hi"
     suffix = (f'_shuffled_{args.eval_shuffle}' if args.eval_shuffle else '_eval') if args.eval_only else ''
     if args.eval_only and args.eval_tag:
         suffix = f'_{args.eval_tag}'
@@ -630,6 +647,18 @@ def main():
                           open(os.path.join(args.out, f'table_{prefix}_{tag}_fail{nf}.json'), 'w'))
                 pol.qsum, pol.shuffle_slots = None, keep
                 random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
+            if args.lie_range:   # E038: realised per-slot range from the unattacked rollout (same seeds as the base eval)
+                keep_lie, pol.lie, pol.collect, pol.lie_lo, pol.lie_hi = pol.lie, None, [], None, None
+                runner._attack_episodes(pol, env, args.eval_episodes, T, attack=False,
+                                        offered_load_factor=eval_load, n_link_failures=nf, stale_steps=stale)
+                arr = np.stack(pol.collect)                       # [steps, agents, slots]
+                sl = pol.lie_slots
+                pol.lie_lo = np.zeros((pol.n_agents, eng.state_dims), np.float32)
+                pol.lie_hi = np.ones_like(pol.lie_lo)
+                pol.lie_lo[:, sl] = np.percentile(arr, pct[0], axis=0)
+                pol.lie_hi[:, sl] = np.percentile(arr, pct[1], axis=0)
+                pol.lie, pol.collect = keep_lie, None
+                random.seed(EVAL_SEED); np.random.seed(EVAL_SEED); torch.manual_seed(EVAL_SEED)
             pol.dev[:] = 0
             pol.lie_stats[:] = 0
             pol._past = []   # NB: kept across the episodes of one condition, so 'earlier' spans them
@@ -643,6 +672,8 @@ def main():
             nd = max(pol.dev[0], 1)
             stats['argmax_off_sp'] = float(pol.dev[1] / nd)       # share of decisions whose argmax leaves k=0
             stats['fallback_override'] = float(pol.dev[2] / nd)   # share the margin fallback reset to k=0
+            if args.lie_range:
+                stats['lie_width'] = float((pol.lie_hi - pol.lie_lo)[:, pol.lie_slots].mean())
             if args.eval_lie:
                 stats['lie_flip'] = float(pol.lie_stats[1] / max(pol.lie_stats[0], 1))
                 stats['lie_zero_grad'] = float(pol.lie_stats[2] / max(pol.lie_stats[0], 1))
