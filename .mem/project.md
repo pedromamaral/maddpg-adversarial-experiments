@@ -13,7 +13,7 @@ under failures (K08, K21), yet out-of-range path telemetry steers them at any n 
 ## Target claims (Paper 1 v2, paper/paper1_v2/paper1_v2.tex)
 - C1 Credit assignment, not algorithm/architecture, decides whether MARL routing learns
   (step reward: no learning; per-decision flow credit: learns with DQN and MADDPG on SP-86). [supported K05]
-  Necessary, not sufficient: on Deltacom flow credit does not beat step or ECMP (K10; step 1 seed until E037). D24.
+  Necessary, not sufficient: on Deltacom flow credit does not beat step or ECMP (K10; 3 seeds each, E037: |step - flow| <= 0.45 pp). D24.
 - C2 Once credit is fixed, architecture (LC/CC critic, DQN vs MADDPG, simple/duelling) is secondary. [K06; GNN dropped, D25]
 - C3 What is learned is a static routing table in normal operation (static over the realised telemetry distribution; out-of-range telemetry still steers it, K24), not load-adaptive routing; demand-robust when trained on changing demand (K09); the searched table is not (4-10 pp below ECMP on shifts, K25); failure-trained learners add a learned failure reaction, shown for DQN and MADDPG LC/CC on SP-86 (D22, K21, E034); none on Deltacom (K22). [K08, K21; A030 vs a stochastic-optimal
   static table — KILL-4: >1 pp gap -> 'learners approximate the robust table imperfectly']
