@@ -15,11 +15,11 @@ under failures (K08, K21), yet out-of-range path telemetry steers them at any n 
   (step reward: no learning; per-decision flow credit: learns with DQN and MADDPG on SP-86). [supported K05]
   Necessary, not sufficient: on Deltacom flow credit does not beat step or ECMP (K10; step 1 seed until E037). D24.
 - C2 Once credit is fixed, architecture (LC/CC critic, DQN vs MADDPG, simple/duelling) is secondary. [K06; GNN dropped, D25]
-- C3 What is learned is a static routing table in normal operation (static over the realised telemetry distribution; out-of-range telemetry still steers it, K24), not load-adaptive routing; demand-robust when trained on changing demand (K09), and untested for the searched table (E036); failure-trained learners add a learned failure reaction, shown for DQN and MADDPG LC/CC on SP-86 (D22, K21, E034); none on Deltacom (K22). [K08, K21; A030 vs a stochastic-optimal
+- C3 What is learned is a static routing table in normal operation (static over the realised telemetry distribution; out-of-range telemetry still steers it, K24), not load-adaptive routing; demand-robust when trained on changing demand (K09); the searched table is not (4-10 pp below ECMP on shifts, K25); failure-trained learners add a learned failure reaction, shown for DQN and MADDPG LC/CC on SP-86 (D22, K21, E034); none on Deltacom (K22). [K08, K21; A030 vs a stochastic-optimal
   static table — KILL-4: >1 pp gap -> 'learners approximate the robust table imperfectly']
 - C4 Learners reach static headroom only when own-flow credit points at it. SP-86: learners ~ best
-  static table (K11). Deltacom: a static table reaches 87.35 vs ECMP 80.4, yet learners stay ~80.3
-  (K10, K11, K19). Mechanism tentative: own-flow-optimal table is selfish (K17), own-flow ascent
+  static table (K11). Deltacom: on the training demand a static table reaches 87.35 vs ECMP 80.4 (it does not transfer to other demand, K25), yet learners stay ~80.3 even when started on it (K23)
+  (K10, K11, K19). Mechanism: own-flow-optimal table is selfish (K17), own-flow ascent
   misses coordinated changes (K18, low-medium); E030 tests it. Table is an n=0 result, it decays under failures.
   [Reworded 2026-11-05: 'Deltacom has no static headroom' was refuted by E026/E026b, see D20.]
 - C5 (open, optional for TNSM) Own-flow credit has no state headroom beyond the table; the remaining

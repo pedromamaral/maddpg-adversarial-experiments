@@ -12,6 +12,7 @@ Note: ssh alias "server" is unresolved locally; use pedroamaral@10.26.110.14 (ne
 - no tex, code or K# changes
 
 ## Latest results
+E036 (K25): searched tables fall 4-10 pp below ECMP on shifts A/B, 12/12 cells, both topologies. Deltacom headroom = training demand only; C4 scoped.
 E035 (K24, D26): gate A042 PASS. Lure on path_util costs 6.5-11 pp (>=4 beyond random) on DQN and MADDPG, already at n=0; failure growth DQN-only. Paper 2 after Paper 1 submission, new narrative.
 E030 (K23): Deltacom warm start on the E026 table falls 86.3 -> ~80 in 50 eps, ends = cold start = ECMP (80.3-80.5); SP-86 control holds 97. Credit undoes the optimum.
 D25 (11-09): GNN dropped from Paper 1 (current encoder near-passthrough); link-aware GNN parked as A046. T4: remove GNN rows from paper1_tables.py.
@@ -26,16 +27,16 @@ E037 running since 11-09 00:14 @236a6f1 (maddpg-E037-train-s{1,2}, ~6 h/seed, th
 
 ## Open problem
 Deltacom's missed headroom is credit, not search (E030, K23).
-Is the ~7 pp Deltacom headroom one-matrix traffic engineering? (E036; the searched table was never evaluated on other demand.)
+Deltacom headroom is one-matrix traffic engineering (E036, K25). Open: does a demand-robust static table (searched over several hotspots) beat ECMP on Deltacom? Not run.
 K21 reaction is shared across learners (E034). Failure flag or load reading: open.
 Unchecked: per-seed signs of the E033 +1.00 (T4).
 
 ## Task list to publish (D23)
-Paper 1: T1 E030 analysed (credit undoes the optimum, K23) · T2 E034 analysed (reaction shared) · T2b E036, E037 fetched, analyse (D24); E038, E039 to implement (D27) · T3 paper-plan done (D24) · T4 paper1_tables.py entries listed in paper.md · T5 draft results/discussion, fix F1-F4 · T6 Pedro's voice, bib, submit ~2027-01-14.
+Paper 1: T1 E030 analysed (credit undoes the optimum, K23) · T2 E034 analysed (reaction shared) · T2b E036 analysed (K25), E037 fetched, analyse (D24); E038, E039 to implement (D27) · T3 paper-plan done (D24) · T4 paper1_tables.py entries listed in paper.md · T5 draft results/discussion, fix F1-F4 · T6 Pedro's voice, bib, submit ~2027-01-14.
 Paper 2 gate: T7 E035 analysed: PASS (D26) · T8 only if PASS: lit check in Cowork, then decide scope after Paper 1 is submitted.
 
 ## EXACT next step
-1. E036 + E037 fetched 11-10 (.mem/results/E036.json, E037.json): research-think analyze E036, then E037.
+1. E036 + E037 fetched 11-10 (.mem/results/E036.json, E037.json): research-think analyze E037.
 1b. D27: research-do implement E038 (in-range lie, eval-only), then E039 (MADDPG LC warm start); deploy both. Cards in experiments/.
 2. E030, E034, E035 fetched 11-07 (.mem/results/E03{0,4,5}.json). Not in those summaries, read from host_data/results: E030 track (PDR + table_agree per episode), E034 own-table evals (v2_p4_lc/E034_tab_*), E035 lie_flip/lie_zero_grad and worst ceiling (v2_p4_lc/E035_worst_n*). Next: research-think analyze E030, then E035; E036/E037 after they run.
 3. Then research-do figures (T4).
