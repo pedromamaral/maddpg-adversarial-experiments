@@ -35,7 +35,7 @@ Paper 1: T1 E030 analysed (credit undoes the optimum, K23) · T2 E034 analysed (
 Paper 2 gate: T7 E035 analysed: PASS (D26) · T8 only if PASS: lit check in Cowork, then decide scope after Paper 1 is submitted.
 
 ## EXACT next step
-1. E036 + E037 deployed 11-09: research-do status, then fetch both.
+1. E036 + E037 finished 11-09 (status 11-10): research-do fetch E036, E037, then research-think analyze.
 1b. D27: research-do implement E038 (in-range lie, eval-only), then E039 (MADDPG LC warm start); deploy both. Cards in experiments/.
 2. E030, E034, E035 fetched 11-07 (.mem/results/E03{0,4,5}.json). Not in those summaries, read from host_data/results: E030 track (PDR + table_agree per episode), E034 own-table evals (v2_p4_lc/E034_tab_*), E035 lie_flip/lie_zero_grad and worst ceiling (v2_p4_lc/E035_worst_n*). Next: research-think analyze E030, then E035; E036/E037 after they run.
 3. Then research-do figures (T4).
