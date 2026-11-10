@@ -18,7 +18,7 @@ Risk (strategy.md): must read as "what is learned + why", not as a negative resu
 | v1 step-reward MADDPG does not route (C1) | T1_v1 | E001,E002 | K01,K02 | ready |
 | baseline realism, operating point | T2_realism, T3, F1 | E008,E009 | K13,K04 | ready |
 | pilots fail; credit decides learning on SP-86 (C1) | T4_pilots, T5_credit, F2 | E004-E013 | K05 | ready |
-| step vs flow credit on Deltacom (C1 scope) | row in T11 | E020-E022,E037 | K10 | WEAK: step = 1 seed until E037 |
+| step vs flow credit on Deltacom (C1 scope) | row in T11 | E020-E022,E037 | K10 | ready: 3 seeds each, no credit effect on Deltacom (E037 branch 1) |
 | architecture secondary (C2) | T6_architecture (drop the 4 GNN rows, D25) | E015,E018 | K06 | ready; method text: why no GNN + future work (A046) |
 | static table at n=0 (C3) | T7_ablation (extend: add E018) | E012-E017,E032 | K08 | ready, tex needs fix (F1) |
 | demand generalisation of learned tables (C3) | T8, F3 | E012-E015 | K09 | ready |

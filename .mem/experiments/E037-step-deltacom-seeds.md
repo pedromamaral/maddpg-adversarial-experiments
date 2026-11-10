@@ -1,5 +1,5 @@
 # E037 — Step credit on Deltacom, 2 more seeds (A045, D24)
-Status: IMPLEMENTED 2026-11-09 (not smoke-run: local venv has no numpy; first server run is the smoke), not deployed. Avenue A045. Follows E020 (1 seed, 80.9), K10.
+Status: DONE 2026-11-09 @236a6f1, analysed 2026-11-10. Avenue A045. Follows E020 (1 seed, 80.9), K10.
 
 Hypothesis H1: with 3 seeds, step MADDPG-LC on Deltacom 8x stays within noise of flow-credit LC, so credit has no detectable PDR effect there.
 Change: none in src expected. Same recipe as E020, new seeds only.
@@ -17,3 +17,20 @@ Cost: CPU, ~6 h per seed (estimate from E028 scale; confirm at implement). Runs 
 - tools/run_E037.sh: 2 parallel chains (train GPU 0 -> run_eval.sh policy/random+flow/greedy, n=0/4/8, 8x, 20 eps seed 20240601). Out host_data/results/v2_dc_lc_s{1,2}/E037_eval/n_*; marker ~/idqn/run_E037.done (2 lines).
 - E020's eval was eval_8x (rules incl. stale/sp/worst); E037 reruns only policy/ECMP/greedy, n=0/4/8, so the s42 row for n=8 needs a rerun or is read from eval_8x if it has n=8 (check at fetch).
 - Risk: both chains share GPU 0 (fine on 2080 Ti for this size, unverified). commit: see git log E037.
+
+## Results (2026-11-10; Deltacom 8x, fixed hotspot, 20 eps, eval seed 20240601; seeds in brackets)
+| learner | n=0 | n=4 | n=8 |
+|---|---|---|---|
+| step MADDPG-LC (s42 = E020, s1, s2) | 80.51 (80.85 80.54 80.13) | 72.87 (72.60 72.73 73.29) | 65.98 (65.89 66.07 65.99) |
+| flow MADDPG-LC, E021 (s0 s1 s2) | 80.19 (80.33 80.30 79.93) | 72.84 (72.97 72.78 72.78) | 65.53 (65.48 65.65 65.45) |
+| ECMP | 80.40 | 72.80 | 66.75 |
+| greedy | 84.89 | 76.46 | 68.86 |
+step - flow: +0.32 / +0.03 / +0.45; step - ECMP: +0.11 / +0.07 / -0.77. Seed ranges overlap at n=0 and n=4; at n=8 they separate by 0.24 pp.
+s42 n=8 read from v2_dc_lc/eval_8x (same eval seed; its greedy and n=0/4/8 rule rows equal E037's).
+
+## Interpretation
+- Fixed-hotspot seed spread on Deltacom is small (<=0.7 pp for both learners), so the comparison has more power than the card assumed; still no difference: |step - flow| <= 0.45 pp at every n.
+- Both credits sit on ECMP, 4.4 pp below greedy and ~7 pp below the same-demand searched table.
+- Caveat: step numbers come from run_eval.sh (old pipeline), flow numbers from the in-script eval of idqn_control.py; same eval seed and the ECMP/greedy references agree, but the two are not one paired run. Least-loaded share of the new step seeds not read (not in the summary).
+## Verdict
+H1 supported: no credit effect detected on Deltacom with 3 seeds per arm (difference <=0.45 pp, within seed spread at n=0/4). C1 stays scoped: credit decides learning on SP-86; on Deltacom neither credit beats ECMP (credit necessary, not sufficient, D24).
