@@ -28,7 +28,7 @@ E036 running since 11-09 (server, E036_* containers); done when ~/idqn/run_E036.
 E037 running since 11-09 00:14 @236a6f1 (maddpg-E037-train-s{1,2}, ~6 h/seed, then E037_eval_*); ~/idqn/run_E037.done (2 lines).
 
 ## Decided 11-12 (D29)
-E040 (A043 retargeted): second public topology for the credit effect, staged (rules-only screen -> go/no-go -> step vs flow). A050: paired-bootstrap CIs in tools/paper1_tables.py (T4, no run). Next: research-do implement E040 stage 1; A050 with the T4 table work.
+E040 (A043 retargeted): second public topology for the credit effect, staged (rules-only screen -> go/no-go -> step vs flow). A050: paired-bootstrap CIs in tools/paper1_tables.py (T4, no run). E040 stage 1 implemented @90018a9; next: push, research-do deploy E040 (can run beside E038); A050 with the T4 table work.
 
 ## Open problem
 Deltacom's missed headroom is credit, not search (E030, K23).
