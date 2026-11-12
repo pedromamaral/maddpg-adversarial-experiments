@@ -144,7 +144,8 @@ class ActorCritic:
                     out.append(self.actors[a](self.encode(mix)[a]))
             return torch.stack(out).view(self.n_agents, self.n_dest, self.k)
 
-    def update(self, a, batch):
+    def update(self, a, batch, warm=None, warm_margin=0.05):
+        """warm: [n_dest] table path of agent a (E039): hinge keeps its actor score above the others' by warm_margin."""
         own = torch.as_tensor(np.stack([b[0] for b in batch]), dtype=torch.float32)
         B = len(batch)
         if self.needs_all_obs:
@@ -172,6 +173,9 @@ class ActorCritic:
         a_loss = -critic(critic_in, act).mean()
         if self.entropy > 0:
             a_loss = a_loss - self.entropy * -(blocks * blocks.clamp_min(1e-12).log()).sum(-1).mean()
+        if warm is not None:   # E039: other paths at least warm_margin below the table path
+            qt = blocks.gather(2, warm.view(1, -1, 1).expand(B, -1, 1))
+            a_loss = a_loss + torch.relu(blocks - qt + warm_margin).sum(2).mean()
         self.a_opt[a].zero_grad()
         if self.gnn is not None and not self.gnn_stable:
             self.g_opt.zero_grad()
@@ -383,7 +387,7 @@ def main():
     ap.add_argument('--fallback-margin', type=float, default=None,
                     help='DRL-OR-style safe fallback: use k=0 unless Q(best)-Q(k=0) > margin (train and eval)')
     ap.add_argument('--warm-table', default=None,
-                    help='E030: during --sp-pretrain follow this table JSON instead of k=0 and add a hinge loss '
+                    help='E030 (DQN), E039 (--learner ac, hinge on actor scores): during --sp-pretrain follow this table JSON instead of k=0 and add a hinge loss '
                          'that makes its path the argmax for every (agent, dest)')
     ap.add_argument('--warm-margin', type=float, default=0.05, help='--warm-table: hinge margin on Q')
     ap.add_argument('--track-every', type=int, default=0,
@@ -458,8 +462,7 @@ def main():
     train_failures = [int(x) for x in args.train_failures.split(',')]
     warm_t = None
     if args.warm_table:
-        assert args.learner == 'dqn' and args.credit == 'flow' and args.sp_pretrain > 0, \
-            "--warm-table needs the flow-credit DQN and --sp-pretrain N"
+        assert args.credit == 'flow' and args.sp_pretrain > 0, "--warm-table needs flow credit and --sp-pretrain N"
         wt = json.load(open(args.warm_table))
         pol.pretrain_table = np.array([[int(wt[str(a)][str(d)]) for d in range(nd)] for a in range(A)])
         warm_t = torch.as_tensor(pol.pretrain_table)
@@ -549,7 +552,9 @@ def main():
             for _ in range(args.updates):
                 for a in range(A):
                     if len(bufs[a]) >= args.batch:
-                        losses.append(ac.update(a, random.sample(bufs[a], args.batch)))
+                        losses.append(ac.update(a, random.sample(bufs[a], args.batch),
+                                           warm_t[a] if warm_t is not None and ep < args.sp_pretrain else None,
+                                           args.warm_margin))
                 ac.step_gnn()
         elif len(buf) >= args.batch:
             for _ in range(args.updates):
