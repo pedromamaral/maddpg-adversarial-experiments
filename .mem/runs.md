@@ -1,5 +1,7 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
+E038 | server | maddpg-E038-* | tools/run_E038.sh @8993bcc, eval-only, nets p4f,lc,cc x s0-2 x lure_in,repel_in,random_in, n=0/4/8, 1.5 cpus, 3 chains (first run = smoke: check lie_width, lie_flip) | 11-12 16:05 | ~3 h (estimate) | E038/<net>_s<seed>; ~/idqn/run_E038.done (4 lines) | running
+
 E037 | server | maddpg-E037-* E037_eval_* | tools/run_E037.sh @236a6f1, step MADDPG-LC Deltacom 8x, seeds 1,2 (E020 = seed 42), policy random+flow greedy n=0/4/8 | 11-09 00:14 | ~6 h/seed (estimate, 5 workers each) | v2_dc_lc_s{1,2}/E037_eval; ~/idqn/run_E037.done (2 lines) | done 11-09, fetched 11-10 (results/E037.json), analyse next
 
 E036 | server | E036_* | tools/run_E036.sh @438c148, 2 chains (dc A->B, sp A->B), 6 ceilings x 1.5 cpus, rules table random+flow greedy policy, n=0/4/8 | 11-09 | few h (unmeasured) | v2_{dc,p4}_lc/E036_{dc,sp}_shift{A,B}; ~/idqn/run_E036.done (5 lines) | done 11-09 02:03, fetched 11-10 (results/E036.json), analyse next
