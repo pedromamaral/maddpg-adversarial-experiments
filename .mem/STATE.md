@@ -38,7 +38,7 @@ Paper 2 gate: T7 E035 analysed: PASS (D26) · T8 only if PASS: lit check in Cowo
 
 ## EXACT next step
 1. E036 + E037 analysed 11-10. All fetched runs are analysed.
-1b. D27: E038 implemented @73eba58 (src/idqn_control.py --lie-range, tools/run_E038.sh): git push, research-do deploy E038 (first run is the smoke; check lie_width and lie_flip). Then research-do implement E039 and deploy.
+1b. D27: E038 implemented @73eba58 (src/idqn_control.py --lie-range, tools/run_E038.sh): git push, research-do deploy E038 (first run is the smoke; check lie_width and lie_flip). E039 implemented @b347dcf (tools/run_E039.sh); push, then research-do deploy E038 and E039 (check E039 warm-end agree ~1.00 first).
 2. E030, E034, E035 fetched 11-07 (.mem/results/E03{0,4,5}.json). Not in those summaries, read from host_data/results: E030 track (PDR + table_agree per episode), E034 own-table evals (v2_p4_lc/E034_tab_*), E035 lie_flip/lie_zero_grad and worst ceiling (v2_p4_lc/E035_worst_n*). Next: research-think analyze E030, then E035; E036/E037 after they run.
 3. Then research-do figures (T4).
 
