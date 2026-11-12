@@ -27,6 +27,9 @@ E038 running since 11-12 16:05 @8993bcc (maddpg-E038-*); done when ~/idqn/run_E0
 E036 running since 11-09 (server, E036_* containers); done when ~/idqn/run_E036.done has "E036 all done".
 E037 running since 11-09 00:14 @236a6f1 (maddpg-E037-train-s{1,2}, ~6 h/seed, then E037_eval_*); ~/idqn/run_E037.done (2 lines).
 
+## Decided 11-12 (D29)
+E040 (A043 retargeted): second public topology for the credit effect, staged (rules-only screen -> go/no-go -> step vs flow). A050: paired-bootstrap CIs in tools/paper1_tables.py (T4, no run). Next: research-do implement E040 stage 1; A050 with the T4 table work.
+
 ## Open problem
 Deltacom's missed headroom is credit, not search (E030, K23).
 Deltacom headroom is one-matrix traffic engineering (E036, K25). Open: does a demand-robust static table (searched over several hotspots) beat ECMP on Deltacom? Not run.
