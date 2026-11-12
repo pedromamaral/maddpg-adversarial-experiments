@@ -35,6 +35,7 @@ ap.add_argument('--src', default=os.path.join(os.path.dirname(__file__), '..', '
 ap.add_argument('--config', required=True)
 ap.add_argument('--episodes', type=int, default=20)
 ap.add_argument('--out', default=None)
+ap.add_argument('--load', type=float, default=None, help='E040: override attack_eval.offered_load_factor')
 args = ap.parse_args()
 sys.path.insert(0, args.src)
 sys.path.insert(0, os.path.join(args.src, 'maddpg_clean'))
@@ -44,7 +45,7 @@ from standalone_experiment_runner import StandaloneExperimentRunner  # noqa: E40
 SEED, TAIL = 20240601, 20
 runner = StandaloneExperimentRunner(args.config, 0, '/tmp/own_flow')
 ae = runner.config.get('attack_eval', {})
-load = float(ae.get('offered_load_factor', 2.0))
+load = args.load if args.load is not None else float(ae.get('offered_load_factor', 2.0))
 T = runner.config['training']['timesteps_per_episode']
 env = runner._make_attack_env(ae.get('hotspot') or None)
 eng = env.engine
