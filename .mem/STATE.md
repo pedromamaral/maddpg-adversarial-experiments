@@ -23,6 +23,7 @@ E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shu
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
+E039 running since 11-14 @dd10c82 (maddpg-E039-*, 6 containers); done when ~/idqn/run_E039.done has 'E039 all done'. Validity gate first: `grep TRACK ~/idqn/maddpg-E039-*_s0.log` at ep 49 (agree ~1.00, PDR ~86 dc / ~97 sp); else void, fix hinge.
 E040 stage 1 done 11-12 18:53, fetched 11-14: .mem/results/E040_screen.json (tools/e040_screen.py table, no analysis yet); research-think analyze E040.
 E038 done 11-12 20:46, fetched 11-14: .mem/results/E038.json; smoke OK (cc_s0 lure_in n=0: lie_width 0.54, lie_flip 0.33, zero_grad 0); research-think analyze E038.
 E036 running since 11-09 (server, E036_* containers); done when ~/idqn/run_E036.done has "E036 all done".
