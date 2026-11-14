@@ -23,8 +23,8 @@ E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shu
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-E040 stage 1 running since 11-12 16:35 @dd10c82 (maddpg-E040-*); done when ~/idqn/run_E040.done has 'E040 all done'; then fetch + tools/e040_screen.py.
-E038 running since 11-12 16:05 @8993bcc (maddpg-E038-*); done when ~/idqn/run_E038.done has 'E038 all done'. Check first cells for lie_width / lie_flip (smoke).
+E040 stage 1 DONE 11-12 18:53 (26 JSONs): research-do fetch E040, then tools/e040_screen.py.
+E038 DONE 11-12 20:46 (27 JSONs): research-do fetch E038; check lie_width / lie_flip first (smoke).
 E036 running since 11-09 (server, E036_* containers); done when ~/idqn/run_E036.done has "E036 all done".
 E037 running since 11-09 00:14 @236a6f1 (maddpg-E037-train-s{1,2}, ~6 h/seed, then E037_eval_*); ~/idqn/run_E037.done (2 lines).
 

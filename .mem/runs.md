@@ -1,7 +1,7 @@
 # Run registry — active on top
 # id | host | container | command | started | ETA | output | status
-E040 | server | maddpg-E040-* | tools/run_E040.sh @dd10c82, stage 1 screen: own_flow_effect.py 20 eps, graphs interoute,gtsce,tatanld,geant2012 x loads 3,5,8,12,16,24 + calib sp86_L3, deltacom_L8, 1.5 cpus, 5 chains | 11-12 16:35 | few h (unmeasured) | E040/<g>_L<load>.json; ~/idqn/run_E040.done (5 lines + all done) | running
-E038 | server | maddpg-E038-* | tools/run_E038.sh @8993bcc, eval-only, nets p4f,lc,cc x s0-2 x lure_in,repel_in,random_in, n=0/4/8, 1.5 cpus, 3 chains (first run = smoke: check lie_width, lie_flip) | 11-12 16:05 | ~3 h (estimate) | E038/<net>_s<seed>; ~/idqn/run_E038.done (4 lines) | running
+E040 | server | maddpg-E040-* | tools/run_E040.sh @dd10c82, stage 1 screen: own_flow_effect.py 20 eps, graphs interoute,gtsce,tatanld,geant2012 x loads 3,5,8,12,16,24 + calib sp86_L3, deltacom_L8, 1.5 cpus, 5 chains | 11-12 16:35 | few h (unmeasured) | E040/<g>_L<load>.json; ~/idqn/run_E040.done (5 lines + all done) | done 11-12 18:53 (26 JSONs, no errors), fetch next
+E038 | server | maddpg-E038-* | tools/run_E038.sh @8993bcc, eval-only, nets p4f,lc,cc x s0-2 x lure_in,repel_in,random_in, n=0/4/8, 1.5 cpus, 3 chains (first run = smoke: check lie_width, lie_flip) | 11-12 16:05 | ~3 h (estimate) | E038/<net>_s<seed>; ~/idqn/run_E038.done (4 lines) | done 11-12 20:46 (27 JSONs, no errors), fetch next
 
 E037 | server | maddpg-E037-* E037_eval_* | tools/run_E037.sh @236a6f1, step MADDPG-LC Deltacom 8x, seeds 1,2 (E020 = seed 42), policy random+flow greedy n=0/4/8 | 11-09 00:14 | ~6 h/seed (estimate, 5 workers each) | v2_dc_lc_s{1,2}/E037_eval; ~/idqn/run_E037.done (2 lines) | done 11-09, fetched 11-10 (results/E037.json), analyse next
 
