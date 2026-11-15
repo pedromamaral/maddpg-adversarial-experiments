@@ -22,7 +22,7 @@ Cost: eval-only, ~30 lines, ~3 h CPU (E035 scale).
 | DQN E018 (p4f) | 96.47/93.62/87.82 | -5.0/-8.4/-9.5 | -4.7/-4.7/-7.1 | -1.0/-1.8/-3.1 | -4.0 -3.7 -4.4 | -3.7 -3.0 -4.4 |
 | MADDPG LC rhf | 96.27/92.91/86.67 | -5.7/-6.4/-7.0 | -2.4/-3.1/-4.4 | -0.8/-1.1/-1.6 | -4.7 -6.5 -3.6 | -2.2 -1.3 -1.4 |
 | MADDPG CC rhf | 97.03/92.97/86.72 | -8.0/-6.5/-8.0 | -4.0/-4.7/-6.4 | -0.7/-1.0/-1.3 | -10.3 -5.4 -6.1 | -3.2 -4.6 -2.2 |
-Beyond random_in at n=4/8 (mean): lure -6.6/-6.5 (DQN), -5.4/-5.5 (LC), -5.5/-6.7 (CC); repel -2.9/-4.1, -2.0/-2.8, -3.7/-5.1; all 18 lure seed cells and all 18 repel seed cells < -1.9 at n=4/8 except none.
+Beyond random_in at n=4/8 (mean): lure -6.6/-6.5 (DQN), -5.4/-5.5 (LC), -5.5/-6.7 (CC); repel -2.9/-4.1, -2.0/-2.8, -3.7/-5.1; per seed at n=4/8, all 18 lure cells are -4.2 or lower and all 18 repel cells -1.9 or lower.
 Decisions flipped at n=0 (lure/repel/random_in): DQN 0.53/0.53/0.39, LC 0.38/0.31/0.23, CC 0.34/0.29/0.21. lie_width (mean p95-p5 per slot) 0.54-0.56 at n=0, 0.68 at n=8; zero-gradient 0.
 vs E035 out-of-range lure at n=0 (-7.4 DQN, -6.5 LC, -9.8 CC): the in-range lure keeps ~68% / ~88% / ~81% of the damage.
 ## Interpretation
