@@ -23,7 +23,7 @@ E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shu
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-E039 run 1 VOID (gate: warm-end agree 0.50-0.69, low-traffic agents never hit the 512 batch). Fixed @5d93837 (hinge on all agents from observations; local smoke agree 1.00 x14). Server and local E039 moved to E039_run1_void (11-15). Next: push, research-do deploy E039 (~14 h).
+E039 RUN 2 running since 11-15 @c6e2ef7 (6 containers, ~14 h; run 1 void, in E039_run1_void). Gate first: `grep 'TRACK] ep   49' ~/idqn/maddpg-E039-*.log` must show agree ~1.00 (local smoke 1.00 x14 agents). Done when ~/idqn/run_E039.done has 'E039 all done'. Server also has another user's netslice-drl container (not ours).
 E040 stage 1 done 11-12 18:53, fetched 11-14: .mem/results/E040_screen.json (tools/e040_screen.py table, no analysis yet); research-think analyze E040.
 E038 done 11-12 20:46, fetched 11-14: .mem/results/E038.json; smoke OK (cc_s0 lure_in n=0: lie_width 0.54, lie_flip 0.33, zero_grad 0); research-think analyze E038.
 E036 running since 11-09 (server, E036_* containers); done when ~/idqn/run_E036.done has "E036 all done".
