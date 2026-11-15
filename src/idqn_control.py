@@ -188,6 +188,15 @@ class ActorCritic:
                 self.g_opt.step()
         return c_loss.item()
 
+    def warm_update(self, a, obs, warm, warm_margin=0.05):
+        """E039: hinge-only actor step from observations alone, so agents whose own replay buffer is still below
+        the batch size (low-traffic PEs) are anchored on the table too. Needs no rewards; no GNN."""
+        assert self.gnn is None, "--warm-table does not support --gnn"
+        blocks = self.actors[a](torch.as_tensor(np.stack(obs), dtype=torch.float32)).view(len(obs), self.n_dest, self.k)
+        qt = blocks.gather(2, warm.view(1, -1, 1).expand(len(obs), -1, 1))
+        loss = torch.relu(blocks - qt + warm_margin).sum(2).mean()
+        self.a_opt[a].zero_grad(); loss.backward(); self.a_opt[a].step()
+
     def step_gnn(self):
         """Stable GNN: one step on the gradient averaged over this round's agents."""
         if self.gnn is not None and self.gnn_stable and self._g_pending:
@@ -466,6 +475,7 @@ def main():
         wt = json.load(open(args.warm_table))
         pol.pretrain_table = np.array([[int(wt[str(a)][str(d)]) for d in range(nd)] for a in range(A)])
         warm_t = torch.as_tensor(pol.pretrain_table)
+    warm_obs = [deque(maxlen=20_000) for _ in range(A)] if (warm_t is not None and bufs is not None) else None
     track = []
 
     def run_track(ep):
@@ -518,6 +528,9 @@ def main():
         for t in range(T):
             t_states = [states[i] for i in tr]
             seen[eng.time_step + 1] = t_states
+            if warm_obs is not None and ep < args.sp_pretrain:   # E039: observations of every agent, every step
+                for a_ in range(A):
+                    warm_obs[a_].append(t_states[a_])
             acts = pol.choose_action(t_states)
             states, _, info = env.step(runner._build_full_actions(acts, eng.n_total_hosts, tr, eng.n_actions))
             if args.credit == 'step':
@@ -555,6 +568,10 @@ def main():
                         losses.append(ac.update(a, random.sample(bufs[a], args.batch),
                                            warm_t[a] if warm_t is not None and ep < args.sp_pretrain else None,
                                            args.warm_margin))
+                if warm_obs is not None and ep < args.sp_pretrain:
+                    for a in range(A):
+                        if len(warm_obs[a]) >= args.batch:
+                            ac.warm_update(a, random.sample(warm_obs[a], args.batch), warm_t[a], args.warm_margin)
                 ac.step_gnn()
         elif len(buf) >= args.batch:
             for _ in range(args.updates):
