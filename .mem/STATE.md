@@ -23,8 +23,8 @@ E032 (K21): SP-86 fail-trained DQN static at n=0, failure-reactive at n=4/8 (shu
 E031 (K20): no failure-robust static table from local search.
 
 ## Active runs
-E039 RUN 2 running since 11-15 @c6e2ef7 (6 containers, ~14 h; run 1 void, in E039_run1_void). Gate first: `grep 'TRACK] ep   49' ~/idqn/maddpg-E039-*.log` must show agree ~1.00 (local smoke 1.00 x14 agents). Done when ~/idqn/run_E039.done has 'E039 all done'. Server also has another user's netslice-drl container (not ours).
-E040 stage 1 analysed 11-15 (K26): no go at gridded loads; stage 1b proposed (Geant2012 9,10,11x; TataNld 6,7x), awaiting Pedro.
+E039 RUN 2 running since 11-15 @c6e2ef7 (6 containers, ~14 h; run 1 void, in E039_run1_void). Gate at ep49: spW x3 PASS (agree 1.00, PDR 97.24); dcW x3 not yet reached at 11-15 check, still to verify. Done when ~/idqn/run_E039.done has 'E039 all done'. Server also has another user's netslice-drl container (not ours).
+E040 stage 1 analysed 11-15 (K26): no go at gridded loads; stage 1b (Geant2012 9,10,11x; TataNld 6,7x) agreed and running since 11-15 @f790305; done when ~/idqn/run_E040b.done has 'E040b all done'; then fetch E040 + tools/e040_screen.py; GO -> write the prediction in the card before stage 2, no-go -> stop E040.
 E038 analysed 11-15: H1 refuted, in-range lies still steer (K24 revised, D30; C3/F5 wording updated in project.md, paper.md).
 E036 running since 11-09 (server, E036_* containers); done when ~/idqn/run_E036.done has "E036 all done".
 E037 running since 11-09 00:14 @236a6f1 (maddpg-E037-train-s{1,2}, ~6 h/seed, then E037_eval_*); ~/idqn/run_E037.done (2 lines).
