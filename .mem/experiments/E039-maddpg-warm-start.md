@@ -1,5 +1,5 @@
 # E039 — Table warm start with MADDPG LC (A049, D27)
-Status: IMPLEMENTED 2026-11-12 @b347dcf (src/idqn_control.py --warm-table now also for --learner ac; tools/run_E039.sh), not deployed. Avenue A049. Replicates E030 (K23) on the second learner.
+Status: RUN 1 VOID (validity gate), fix @5d93837 2026-11-15, rerun pending. First impl was @b347dcf (src/idqn_control.py --warm-table now also for --learner ac; tools/run_E039.sh), not deployed. Avenue A049. Replicates E030 (K23) on the second learner.
 
 Hypothesis H1: own-flow credit undoes the system-optimal Deltacom table for MADDPG LC too: a warm-started learner falls from ~86 to ~80 (ECMP), while the SP-86 control keeps ~97.
  H0: MADDPG LC holds the table (>=86) -> K23 is DQN-specific; C1/C4 wording scoped to DQN.
@@ -15,3 +15,10 @@ Cost: ~60 lines; 2 arms x 3 seeds x ~6 h CPU; can share the server with E036/E03
 - Cold ref: E021 dc_ac_local_fix has the same protocol (flow, local critic, fixed hotspot, n=0, 750 eps, eps 1->0.05, 8x), so no dcC_lc arm.
 - Smoke (local, 8 eps, 6 warm, SP-86): runs; track agree 0.31 after only ~300 updates, not a result. Synthetic check: hinge alone gives agree 1.0 after 300 steps. Real gate is the warm-end track in the first deploy; if agree < ~0.95 raise --warm-margin or drop the critic term in warm.
 - Launcher: 6 chains (2 arms x 3 seeds), flat eps 0.05, --cpus 2 each.
+
+## Run 1 (b347dcf, dd10c82 on server, 11-14 -> 11-15 06:28): VOID, validity gate not met
+Warm end (ep49) table agree: dcW 0.69/0.66/0.67, spW 0.51/0.54/0.50 (PDR near the table: 85.8-86.1 dc, 96.3-96.6 sp). Per agent: 7/14 (dc) and 4/14 (sp) agents at 1.00, the rest 0.14-0.62, same agents in all 3 seeds.
+Cause (inferred from code, not instrumented): MADDPG agents have per-agent replay buffers and update only when len(buf) >= batch (512); low-traffic PEs never reach it in 50 warm episodes, so their actors got no hinge. The DQN (E030) shares one buffer. First guess (critic term competing with hinge) was wrong: agents that updated sat at exactly 1.00.
+Provisional, NOT to be quoted (gate failed): final n=0 dcW 80.55/79.93/80.43, spW 97.25/97.36/97.24; track ep699 agree 0.34-0.45. Run took ~14 h (not 6).
+## Fix (@5d93837)
+ActorCritic.warm_update: hinge-only actor step from observations alone, for every agent each update round during warm start, from a per-agent observation deque filled every step (no reward needed); hinge in update() kept. Smoke (local, SP-86, 6 warm eps, 1 seed): warm-end agree 1.00 for all 14 agents, PDR 95.3 (1-ep track). Rerun: tools/run_E039.sh unchanged, results dir E039 must be moved/cleared first (run 1 JSONs, local host_data/results/E039 and server).
